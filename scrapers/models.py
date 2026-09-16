@@ -8,13 +8,18 @@ Ce module définit :
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+import logging
 
-from pydantic import BaseModel, ConfigDict, Field
+from collections.abc import Mapping
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 # Identifiant de source normalisé (wttj | linkedin | jobteaser).
 Source = Literal["wttj", "linkedin", "jobteaser"]
+
+_logger = logging.getLogger("scrapers.models")
 
 # --------------------------------------------------------------------------- #
 # Filtrage métier
@@ -108,6 +113,41 @@ class ScraperConfig(BaseModel):
         default_factory=lambda: ["wttj", "linkedin", "jobteaser"]
     )
     max_offers_per_source: int = 50
+    # Quota par requête cible : garantit que CHAQUE requête contribue à la collecte.
+    # ``None`` ⇒ répartition équitable de ``max_offers_per_source`` entre les requêtes.
+    max_offers_per_query: int | None = None
+
+    @property
+    def per_query_quota(self) -> int:
+        """Nombre d'offres visé par requête cible (toujours au moins 1)."""
+        if self.max_offers_per_query:
+            return max(1, int(self.max_offers_per_query))
+        return max(1, self.max_offers_per_source // max(1, len(self.target_queries)))
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None) -> "ScraperConfig":
+        """Construit la configuration depuis ``config.yaml`` (section ``scrapers``).
+
+        Les clés absentes conservent les valeurs par défaut du modèle ; une section
+        absente, mal typée ou invalide ne casse jamais le pipeline (défauts
+        réappliqués + avertissement journalisé).
+        """
+        section = (config or {}).get("scrapers") or {}
+        if not isinstance(section, dict):
+            _logger.warning(
+                "config.yaml, clé 'scrapers' : dictionnaire attendu ; valeurs par défaut utilisées."
+            )
+            return cls()
+        known = {key: value for key, value in section.items() if key in cls.model_fields}
+        if not known:
+            return cls()
+        try:
+            return cls(**known)
+        except ValidationError as exc:
+            _logger.warning(
+                "config.yaml, clé 'scrapers' invalide (%s) ; valeurs par défaut utilisées.", exc
+            )
+            return cls()
 
 
 class ScrapeResult(BaseModel):

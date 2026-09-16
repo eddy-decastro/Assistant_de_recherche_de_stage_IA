@@ -4,6 +4,8 @@
 # de scoring sont définis ici.
 # ============================================================
 
+# ⚠️ HISTORIQUE : section non lue par le code (décrit l'ancienne API WTTJ v1,
+# retirée par l'éditeur fin 2024). La collecte est pilotée par `scrapers:` ci-dessous.
 scraping:
   source: "welcome_to_the_jungle"
   base_url: "https://www.welcometothejungle.com"
@@ -23,6 +25,39 @@ scraping:
 
   max_offers: 150
   request_timeout_seconds: 30
+
+# ============================================================
+# Collecte : paramètres RÉELLEMENT lus par les scrapers
+# (ScraperConfig / scrapers/models.py — plus de valeurs codées en dur)
+# ============================================================
+scrapers:
+  # Sources activées : wttj (actuellement indisponible : l'application Algolia
+  # codée en dur n'existe plus, cf. AUDIT.md), linkedin (mode invité),
+  # jobteaser (intranet école, cookies .env pour la liste mais pas pour le détail).
+  enabled_sources:
+    - "wttj"
+    - "linkedin"
+    - "jobteaser"
+
+  # Requêtes cibles envoyées aux plateformes. Les moteurs indexent la requête
+  # telle quelle : conserver le préfixe « Stage » pour ne remonter que des stages.
+  target_queries:
+    - "Stage Data Scientist"
+    - "Stage Machine Learning"
+    - "Stage Recherche IA"
+
+  # Plafond global par source ET quota par requête cible. Le quota par requête
+  # garantit que CHAQUE requête contribue à la collecte : auparavant la première
+  # requête consommait tout le budget et les suivantes n'étaient jamais lancées.
+  max_offers_per_source: 120
+  max_offers_per_query: 40
+
+  request_timeout_seconds: 30
+
+  # Les listes de mots-clés (exclusion BI / signaux DS-ML) restent aux valeurs du
+  # code ; décommenter pour les surcharger depuis le YAML :
+  # exclusion_keywords: ["power bi", "tableau", "qlik", "vba", "data analyst"]
+  # positive_ds_ml_keywords: ["data scientist", "machine learning", "pytorch", "llm"]
 
 scoring:
   model_name: "all-MiniLM-L6-v2"

@@ -26,6 +26,13 @@ pandas
 # --- Embeddings sémantiques (similarité CV vs offres) ---
 sentence-transformers
 
+# --- scikit-learn (dépendance de sentence-transformers via util.metrics) ---
+# Version épinglée : les wheels les plus récentes (1.9.x) sont bloquées par le
+# contrôle d'application Windows de cette machine (Smart App Control / AppLocker)
+# — « DLL load failed while importing _dist_metrics » — alors que la 1.6.1 est
+# autorisée et suffisante pour l'encodage.
+scikit-learn==1.6.1
+
 # --- PyTorch ---
 torch
 

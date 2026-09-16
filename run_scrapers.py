@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scrapers.manager import ScraperManager  # noqa: E402
-from scrapers.models import RawJob, ScraperConfig  # noqa: E402
+from scrapers.models import RawJob, ScrapeResult, ScraperConfig  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
 from src.storage.database import Database  # noqa: E402
@@ -52,9 +52,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Recalcule le score Bi-Encoder de TOUTES les offres en base.",
     )
     parser.add_argument(
+        "--no-collect",
+        action="store_true",
+        help="Saute la collecte et travaille sur la base existante (scoring/rerank seuls).",
+    )
+    parser.add_argument(
         "--trigger-rerank",
         action="store_true",
         help="Étape 2 : juge LLM (DeepSeek) sur le Top-N des offres non encore analysées.",
+    )
+    parser.add_argument(
+        "--reset-rerank",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Ré-évaluation forcée : remet à zéro l'analyse LLM des N meilleures offres "
+            "avant le rerank (utile après un enrichissement des descriptions)."
+        ),
     )
     parser.add_argument(
         "--top-rerank",
@@ -155,9 +170,21 @@ def main(argv: list[str] | None = None) -> None:
     config = load_config()
     db = Database(config["database"]["path"])
 
-    # 1. Collecte via le manager unifié.
-    manager = ScraperManager(ScraperConfig())
-    result = manager.run()
+    # 1. Collecte via le manager unifié (paramètres lus dans config.yaml → 'scrapers').
+    if args.no_collect:
+        logger.info(" Collecte ignorée (--no-collect) : travail sur la base existante.")
+        result = ScrapeResult(jobs=[], found=0, rejected_bi=0)
+    else:
+        scraper_config = ScraperConfig.from_config(config)
+        logger.info(
+            " Paramètres scrapers          : %s | %d requête(s) | %d offre(s)/requête | plafond %d",
+            ", ".join(scraper_config.enabled_sources),
+            len(scraper_config.target_queries),
+            scraper_config.per_query_quota,
+            scraper_config.max_offers_per_source,
+        )
+        manager = ScraperManager(scraper_config)
+        result = manager.run()
 
     # 2. Identifier les nouvelles offres AVANT insertion (pour le scoring ciblé).
     new_jobs = find_new_raw_jobs(result.jobs, db) if args.trigger_scoring else []
@@ -193,6 +220,12 @@ def main(argv: list[str] | None = None) -> None:
                 logger.info(" Scoring : aucune offre à évaluer.")
 
     # 6. Étape 2 du ranking : reranking LLM du Top-N non encore analysé.
+    if args.reset_rerank:
+        reset_ids = db.clear_rerank(args.reset_rerank)
+        logger.info(
+            " Ré-évaluation forcée         : %d analyse(s) LLM remise(s) à zéro",
+            len(reset_ids),
+        )
     if args.trigger_rerank:
         logger.info(" Reranking LLM                : %d offre(s)", _rerank_top(db, config, args.top_rerank))
 
@@ -212,7 +245,8 @@ def main(argv: list[str] | None = None) -> None:
             )
             logger.info("      %s", job.url)
     else:
-        logger.warning("Aucune offre valide collectée.")
+        if not args.no_collect:
+            logger.warning("Aucune offre valide collectée.")
 
     # 8. Top opportunités globales (base complète, tri par score effectif).
     ranked = db.get_jobs(limit=5)

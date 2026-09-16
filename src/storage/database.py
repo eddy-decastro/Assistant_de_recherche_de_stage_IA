@@ -19,9 +19,13 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    event,
+
     func,
     select,
 )
+from sqlalchemy.engine import Engine
+
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from src.constants import STATUS_NEW, TIER_ESN, VALID_STATUSES
@@ -30,6 +34,33 @@ Base = declarative_base()
 
 # Colonnes stockant du JSON sérialisé (listes de chaînes).
 _JSON_COLUMNS = ("match_reasons", "red_flags", "tech_stack")
+# --- Robustesse SQLite ------------------------------------------------------ #
+# WAL : le dashboard peut LIRE pendant qu'un scraper ÉCRIT (fin des
+# ``database is locked`` quand les deux tournent en même temps).
+# busy_timeout : on patiente 5 s au lieu d'échouer immédiatement sur un verrou.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def configure_sqlite_engine(engine: Engine) -> None:
+    """Applique les PRAGMA de robustesse à chaque connexion SQLite ouverte.
+
+    Sans effet sur un moteur non SQLite (le projet ne cible que SQLite, mais la
+    garde évite de casser d'éventuels usages sur un autre backend).
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(engine, "connect")
+    def _apply_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+
 
 
 def _decode_json_list(value: Any) -> list[str]:
@@ -101,6 +132,7 @@ class Database:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(f"sqlite:///{self.db_path}", future=True)
+        configure_sqlite_engine(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, future=True, expire_on_commit=False)
         Base.metadata.create_all(self.engine)
         self._migrate()
@@ -237,6 +269,70 @@ class Database:
                 .limit(limit)
             )
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
+
+    def update_description(self, job_id: str, description: str) -> bool:
+        """Enregistre la description complète d'une offre. False si introuvable."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.description = description
+            session.commit()
+            return True
+
+    def get_jobs_missing_description(
+        self, sources: Iterable[str] | None = None, limit: Optional[int] = None
+    ) -> list[dict[str, Any]]:
+        """Offres sans description exploitable (cibles du rattrapage).
+
+        Tri par score effectif décroissant : les offres qui comptent le plus sont
+        enrichies en premier si le rattrapage est interrompu (rate limit).
+        """
+        with self.SessionLocal() as session:
+            stmt = select(Job).where(func.coalesce(func.trim(Job.description), "") == "")
+            if sources:
+                stmt = stmt.where(Job.source.in_(list(sources)))
+            stmt = stmt.order_by(func.coalesce(Job.rerank_score, Job.final_score).desc())
+            if limit:
+                stmt = stmt.limit(limit)
+            return [row.to_dict() for row in session.execute(stmt).scalars().all()]
+
+    def count_with_description(self) -> int:
+        """Nombre d'offres disposant d'une description non vide."""
+        with self.SessionLocal() as session:
+            stmt = (
+                select(func.count())
+                .select_from(Job)
+                .where(func.coalesce(func.trim(Job.description), "") != "")
+            )
+            return int(session.execute(stmt).scalar_one())
+
+    def clear_rerank(self, limit: int) -> list[str]:
+        """Remet à zéro l'analyse LLM des ``limit`` meilleures offres.
+
+        Sert à la ré-évaluation forcée : des offres déjà jugées — par exemple sur
+        un titre seul, faute de description — redeviennent candidates au Top-N.
+        Les valeurs précédentes sont récupérables via un snapshot
+        (``compare_scores.py --snapshot``). Retourne les identifiants réinitialisés.
+        """
+        with self.SessionLocal() as session:
+            stmt = (
+                select(Job)
+                .where(Job.rerank_score.is_not(None))
+                .order_by(func.coalesce(Job.rerank_score, Job.final_score).desc())
+                .limit(max(0, int(limit)))
+            )
+            records = session.execute(stmt).scalars().all()
+            ids: list[str] = []
+            for record in records:
+                record.rerank_score = None
+                record.verdict = None
+                record.match_reasons = None
+                record.red_flags = None
+                record.tech_stack = None
+                ids.append(record.id)
+            session.commit()
+            return ids
 
     def count_jobs(self, status: Optional[str] = None) -> int:
         """Compte le nombre d'offres (optionnellement filtrées par statut)."""
