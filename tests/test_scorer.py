@@ -44,6 +44,10 @@ def main() -> None:
     assert scorer.company_score(TIER_ESN) == 20.0
     print("[OK] company_score")
 
+    # 3bis. Fenêtre de contexte pilotée par config.yaml (mesure : 128 > 256).
+    assert scorer.max_seq_length == config["scoring"].get("max_seq_length"), scorer.max_seq_length
+    print(f"[OK] max_seq_length issu de la config ({scorer.max_seq_length} tokens)")
+
     # 4. Scoring complet (déclenche le chargement du modèle au 1er appel)
     try:
         from sentence_transformers import SentenceTransformer  # noqa: F401
@@ -65,6 +69,7 @@ def main() -> None:
     scored = scorer.score(job)
     assert 0.0 <= scored["final_score"] <= 100.0
     assert scored["company_tier"] == TIER_1
+    assert scorer._model.max_seq_length == scorer.max_seq_length, "Fenêtre non appliquée."
     print(
         f"[OK] score() final={scored['final_score']:.1f}, "
         f"semantic={scored['semantic_score']:.1f}"

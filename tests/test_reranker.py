@@ -189,6 +189,21 @@ def test_clear_rerank_revaluation() -> None:
     print("[OK] ré-évaluation forcée : clear_rerank libère le Top-N pour un nouveau jugement")
 
 
+def test_unranked_exclut_les_offres_ecartees() -> None:
+    """Le juge LLM ne dépense pas de tokens sur une offre écartée par filtrage métier."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "test.db")
+        db.upsert_job({**SAMPLE_JOB, "title": "Offre écartée", "url": "https://x/rej"})
+        db.upsert_job({**SAMPLE_JOB, "title": "Offre valide", "url": "https://x/ok"})
+        rejected_id = next(job["id"] for job in db.get_jobs() if job["title"] == "Offre écartée")
+        assert db.reject_job(rejected_id, "contrat incompatible (« freelance »)") is True
+
+        candidates = db.get_unranked_jobs(limit=10)
+        assert [job["title"] for job in candidates] == ["Offre valide"], candidates
+        db.engine.dispose()
+    print("[OK] rerank : les offres écartées ne sont plus candidates au juge LLM")
+
+
 def main() -> None:
     test_parsing_valide()
     test_alias_verdict_et_score_borne()
@@ -197,6 +212,7 @@ def main() -> None:
     test_erreur_http_fallback()
     test_prompt_sans_score_bi_encoder()
     test_clear_rerank_revaluation()
+    test_unranked_exclut_les_offres_ecartees()
     test_persistance_rerank()
     test_tri_par_rerank()
     print("\n[OK] test_reranker.py : tous les tests passent.")

@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config  # noqa: E402
-from src.constants import VERDICT_LABELS  # noqa: E402
+from src.constants import STATUS_REJECTED, VERDICT_LABELS  # noqa: E402
 from src.storage.database import Database  # noqa: E402
 
 logger = logging.getLogger("compare")
@@ -144,6 +144,29 @@ def compare(db: Database, path: Path, top: int = 5) -> int:
     return 0
 
 
+def leaderboard(db: Database, top: int = 5) -> int:
+    """Affiche le Top N courant : titre, entreprise, score effectif et verdict."""
+    jobs = [job for job in db.get_jobs() if job.get("status") != STATUS_REJECTED]
+    logger.info("=" * 104)
+    logger.info(" TOP %d — %d offre(s) active(s) en base", top, len(jobs))
+    logger.info("=" * 104)
+    logger.info(" %-3s %-50s %-24s %6s  %s", "#", "Titre", "Entreprise", "Score", "Verdict")
+    logger.info("-" * 104)
+    for rank, job in enumerate(jobs[: max(1, top)], start=1):
+        judged = job.get("rerank_score") is not None
+        logger.info(
+            " %-3d %-50s %-24s %6.0f  %s (%s)",
+            rank,
+            (job.get("title") or "")[:48],
+            (job.get("company") or "")[:22],
+            effective_score(job),
+            _label(job.get("verdict")) if judged else "non jugée",
+            "LLM" if judged else "hybride",
+        )
+    logger.info("-" * 104)
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Analyse les arguments de la ligne de commande."""
     parser = argparse.ArgumentParser(
@@ -151,6 +174,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--snapshot", action="store_true", help="Enregistre l'état AVANT.")
     parser.add_argument("--compare", action="store_true", help="Affiche le comparatif APRÈS.")
+    parser.add_argument(
+        "--leaderboard", action="store_true", help="Affiche le Top N courant de la base."
+    )
     parser.add_argument("--top", type=int, default=5, help="Nombre d'offres affichées (défaut 5).")
     parser.add_argument("--path", default=str(DEFAULT_SNAPSHOT), help="Fichier de snapshot JSON.")
     return parser.parse_args(argv)
@@ -172,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             count = take_snapshot(db, path)
             logger.info(" Snapshot AVANT enregistré : %d offre(s) -> %s", count, path)
             return 0
+        if args.leaderboard:
+            return leaderboard(db, top=args.top)
         return compare(db, path, top=args.top)
     finally:
         db.engine.dispose()

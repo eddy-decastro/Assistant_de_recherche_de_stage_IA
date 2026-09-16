@@ -60,7 +60,17 @@ scrapers:
   # positive_ds_ml_keywords: ["data scientist", "machine learning", "pytorch", "llm"]
 
 scoring:
+  # Modèle d'embedding. Mesures sur la base réelle (68 fiches, verdicts du juge LLM
+  # comme vérité terrain) : all-MiniLM-L6-v2 corrèle faiblement mais POSITIVEMENT au
+  # classement du juge (rho +0,09 à n=30), tandis que
+  # paraphrase-multilingual-MiniLM-L12-v2 (FR/EN) est franchement CONTRE-productif
+  # (rho -0,59) : le vocabulaire discriminant du corpus est technique et anglophone
+  # (PyTorch, GNN, RAG, MLOps). Décision : conserver le modèle anglais.
   model_name: "all-MiniLM-L6-v2"
+  # Fenêtre de contexte en tokens (None = fenêtre native du modèle). À n=30, l'écart
+  # 128 / 256 tokens (rho +0,01 contre +0,09) est DANS LE BRUIT (erreur type ~0,19) :
+  # la fenêtre native est conservée, le levier est pilotable mais sans gain démontré.
+  max_seq_length: 256
   cv_path: "data/cv_eddy.txt"
 
   # Pondération du score final (la somme doit faire 1.0)

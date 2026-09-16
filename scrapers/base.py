@@ -68,6 +68,75 @@ def markup_to_text(node: Any, separator: str = "\n") -> str:
     return separator.join(line for line in lines if line)
 
 
+# --- Re-validation métier sur texte COMPLET (titre + description) ------------ #
+# Marqueurs explicites de contrat NON-stage. Deux niveaux :
+#   « durs »  : la mention suffit à écarter l'offre (freelance, alternance exclusive…) ;
+#   « doux »  : la mention n'écarte que si le TITRE n'annonce pas déjà un stage
+#               (une annonce « Stage … possibilité de CDI à l'issue » reste un stage).
+NON_INTERNSHIP_HARD_MARKERS: tuple[str, ...] = (
+    "freelance",
+    "alternance uniquement",
+    "uniquement en alternance",
+    "alternance exclusivement",
+    "apprentissage uniquement",
+    "rythme 3j/2j",
+    "rythme 2j/3j",
+    "rythme 3 jours / 2 jours",
+    "contrat cdi",
+    "poste en cdi",
+    "cdi uniquement",
+)
+NON_INTERNSHIP_SOFT_MARKERS: tuple[str, ...] = (
+    "cdi",
+    "cdd",
+    "alternance",
+    "apprentissage",
+)
+# Signaux de stage recherchés dans le TITRE (ce que le candidat lit en premier).
+INTERNSHIP_TITLE_CUES: tuple[str, ...] = (
+    "stage",
+    "stagiaire",
+    "intern",
+    "internship",
+    "pfmp",
+)
+
+
+def describe_rejection(title: str, description: str, config: ScraperConfig) -> str:
+    """Motif d'exclusion d'une offre lue en entier (``""`` ⇒ offre retenue).
+
+    Complète :func:`BaseScraper.is_valid_job` (qui ne voit, à la collecte, que le
+    titre et le résumé de la page de liste) en appliquant les règles sur le texte
+    COMPLET récupéré depuis les pages détail :
+
+      1. contrat incompatible explicitement mentionné (freelance, CDI, alternance
+         exclusive, rythme 3j/2j…) ;
+      2. orientation BI / reporting détectée dans le corps de l'offre ;
+      3. absence de tout signal Data Science / ML.
+    """
+    title_low = (title or "").casefold()
+    combined = f"{title_low}\n{(description or '').casefold()}"
+    announced_as_internship = any(cue in title_low for cue in INTERNSHIP_TITLE_CUES)
+
+    for marker in NON_INTERNSHIP_HARD_MARKERS:
+        if marker in combined:
+            return f"contrat incompatible (« {marker} »)"
+
+    if not announced_as_internship:
+        for marker in NON_INTERNSHIP_SOFT_MARKERS:
+            if _contains_keyword(combined, marker):
+                return f"contrat incompatible (« {marker} »), non annoncé comme un stage"
+
+    for keyword in config.exclusion_keywords:
+        if _contains_keyword(combined, keyword):
+            return f"orientation BI / reporting (« {keyword} »)"
+
+    if not any(_contains_keyword(combined, keyword) for keyword in config.positive_ds_ml_keywords):
+        return "aucun signal Data Science / ML dans la fiche"
+
+    return ""
+
+
 class BaseScraper(ABC):
     """Contrat commun à tous les scrapers de sources d'offres."""
 

@@ -28,6 +28,11 @@ class Scorer:
             "weights", {"semantic": 0.60, "company": 0.25, "keywords": 0.15}
         )
         self.model_name = scoring.get("model_name", "all-MiniLM-L6-v2")
+        # Fenêtre de contexte (tokens) — ``None`` = fenêtre native du modèle. Mesuré
+        # sur la base réelle (68 fiches, verdicts du juge LLM) : l'écart 128 / 256 est
+        # dans le bruit à n=30 (rho +0,01 contre +0,09, erreur type ~0,19), la fenêtre
+        # native est donc conservée ; le levier reste pilotable si la base grossit.
+        self.max_seq_length = scoring.get("max_seq_length")
         self.keywords = scoring.get("excellence_keywords", [])
 
         cv_path = Path(scoring.get("cv_path", "data/cv_eddy.txt"))
@@ -45,6 +50,10 @@ class Scorer:
             from sentence_transformers import SentenceTransformer  # lazy import
 
             self._model = SentenceTransformer(self.model_name)
+            if self.max_seq_length:
+                # La fenêtre n'est pas un paramètre du constructeur : on l'impose
+                # explicitement pour que la troncature soit pilotable depuis config.yaml.
+                self._model.max_seq_length = int(self.max_seq_length)
             self._cv_embedding = self._model.encode(
                 self.cv_text, normalize_embeddings=True, show_progress_bar=False
             )

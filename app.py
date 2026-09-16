@@ -41,7 +41,9 @@ from src.constants import (  # noqa: E402
     STATUS_IGNORED,
     STATUS_INTERVIEW,
     STATUS_NEW,
+    STATUS_OPTIONS,
     STATUS_ORDER,
+    STATUS_REJECTED,
     TIER_1,
     TIER_ESN,
     TIER_LABELS,
@@ -85,16 +87,18 @@ STATUS_LABELS = {
     STATUS_APPLIED: "Postulé",
     STATUS_INTERVIEW: "Entretien",
     STATUS_IGNORED: "Archivé",
+    STATUS_REJECTED: "Rejeté",
 }
 
 # Statuts considérés comme « traités » (masquables via la vue focus).
-PROCESSED_STATUSES = (STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED)
+PROCESSED_STATUSES = (STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED, STATUS_REJECTED)
 
 STATUS_TONES = {
     STATUS_NEW: "mute",
     STATUS_APPLIED: "positive",
     STATUS_INTERVIEW: "accent",
     STATUS_IGNORED: "warn",
+    STATUS_REJECTED: "alert",
 }
 
 VERDICT_TONES = {
@@ -735,6 +739,10 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     sources = set(filters.sources)
     selected: list[dict[str, Any]] = []
     for job in jobs:
+        # Les offres écartées par la re-validation métier ne polluent pas le flux :
+        # elles n'apparaissent que si l'utilisateur coche explicitement « Rejeté ».
+        if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in set(filters.statuses):
+            continue
         if filters.min_score and effective_score(job) < filters.min_score:
             continue
         if statuses and job.get("status") not in statuses:
@@ -932,6 +940,17 @@ def _description_block(job: dict[str, Any]) -> str:
     return f'{header}<p class="sc-excerpt">{_esc(short)}</p>{more}</div>'
 
 
+def _rejection_block(job: dict[str, Any]) -> str:
+    """Motif d'exclusion métier, affiché uniquement pour les offres écartées."""
+    reason = (job.get("rejection_reason") or "").strip()
+    if not reason:
+        return ""
+    return (
+        '<div class="sc-block"><div class="sc-section">Écartée par le filtre métier</div>'
+        f'<p class="sc-excerpt">{_esc(reason)}</p></div>'
+    )
+
+
 def job_card_html(job: dict[str, Any], keywords: Sequence[str]) -> str:
     """Carte d'offre autonome : en-tête, jauge de score, badges, accordéon, CTA."""
     url = str(job.get("url") or "")
@@ -946,7 +965,7 @@ def job_card_html(job: dict[str, Any], keywords: Sequence[str]) -> str:
         f"{_chips_html(technologies)}"
         '<details class="sc-details">'
         '<summary><span class="sc-chev">›</span>Détails &amp; évaluation</summary>'
-        f'<div class="sc-details-body">{_verdict_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
+        f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
         "</details>"
     )
     cta = (
@@ -1057,7 +1076,11 @@ def render_kpis(
     filters_active: bool,
 ) -> None:
     """Bandeau KPI : volume actif, offres qualifiées, couverture LLM, plateformes."""
-    active = [job for job in jobs if job.get("status") != STATUS_IGNORED]
+    active = [
+        job
+        for job in jobs
+        if job.get("status") not in (STATUS_IGNORED, STATUS_REJECTED)
+    ]
     qualified = sum(1 for job in active if effective_score(job) >= QUALIFIED_SCORE)
     ranked = sum(1 for job in active if is_reranked(job))
     base = max(len(active), 1)
@@ -1136,7 +1159,7 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         with st.expander("Critères avancés"):
             statuses = st.multiselect(
                 "Statut de candidature",
-                options=STATUS_ORDER,
+                options=STATUS_OPTIONS,
                 default=STATUS_ORDER,
                 format_func=lambda status: STATUS_LABELS.get(status, status),
                 disabled=hide_processed,

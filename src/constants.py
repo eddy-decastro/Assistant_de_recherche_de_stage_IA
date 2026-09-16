@@ -16,16 +16,23 @@ STATUS_NEW = "NOUVEAU"
 STATUS_APPLIED = "POSTULÉ"
 STATUS_INTERVIEW = "ENTRETIEN"
 STATUS_IGNORED = "IGNORÉ"
+# Offre écartée par la re-validation métier sur texte complet (faux stage, BI…).
+STATUS_REJECTED = "REJETÉ"
 
 VALID_STATUSES = {
     STATUS_NEW,
     STATUS_APPLIED,
     STATUS_INTERVIEW,
     STATUS_IGNORED,
+    STATUS_REJECTED,
 }
 
-# Ordre d'affichage dans le dashboard
+# Ordre d'affichage dans le dashboard : statuts de travail (hors flux par défaut
+# pour l'offre écartée, qui reste consultable en cochant explicitement « Rejeté »).
 STATUS_ORDER = [STATUS_NEW, STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED]
+
+# Options proposées par le sélecteur de statut (le rejet est opt-in).
+STATUS_OPTIONS = [*STATUS_ORDER, STATUS_REJECTED]
 
 # --- Verdicts du juge LLM (étape 2 : reranking) ---
 VERDICT_EXCELLENT = "EXCELLENT"

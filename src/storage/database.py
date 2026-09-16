@@ -28,7 +28,7 @@ from sqlalchemy.engine import Engine
 
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from src.constants import STATUS_NEW, TIER_ESN, VALID_STATUSES
+from src.constants import STATUS_NEW, STATUS_REJECTED, TIER_ESN, VALID_STATUSES
 
 Base = declarative_base()
 
@@ -103,6 +103,9 @@ class Job(Base):
     semantic_score = Column(Float, default=0.0, nullable=False)
     final_score = Column(Float, default=0.0, nullable=False, index=True)
     status = Column(String(30), default=STATUS_NEW, nullable=False, index=True)
+    # Motif d'exclusion métier (« contrat incompatible », « orientation BI »…) :
+    # renseigné par la re-validation sur texte complet, NULL sinon.
+    rejection_reason = Column(String(300), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # --- Étape 2 : reranking par juge LLM (NULL tant que non évalué) ---
@@ -145,6 +148,7 @@ class Database:
             "match_reasons": "TEXT",
             "red_flags": "TEXT",
             "tech_stack": "TEXT",
+            "rejection_reason": "VARCHAR(300)",
         }
         with self.engine.begin() as conn:
             existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")}
@@ -170,6 +174,29 @@ class Database:
                     setattr(record, key, value)
             session.commit()
             return record
+
+    def reject_job(self, job_id: str, reason: str) -> bool:
+        """Écarte une offre (statut REJETÉ) et conserve le motif d'exclusion."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.status = STATUS_REJECTED
+            record.rejection_reason = (reason or "")[:300] or None
+            session.commit()
+            return True
+
+    def delete_jobs(self, job_ids: Iterable[str]) -> int:
+        """Supprime définitivement des offres (doublons fusionnés). Nombre supprimé."""
+        ids = [job_id for job_id in job_ids if job_id]
+        if not ids:
+            return 0
+        with self.SessionLocal() as session:
+            records = session.execute(select(Job).where(Job.id.in_(ids))).scalars().all()
+            for record in records:
+                session.delete(record)
+            session.commit()
+            return len(records)
 
     def update_status(self, job_id: str, status: str) -> bool:
         """Met à jour le statut d'une offre. Retourne False si l'offre n'existe pas."""
@@ -260,11 +287,15 @@ class Database:
             return True
 
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Top des offres NON encore évaluées par le juge LLM (tri par score initial)."""
+        """Top des offres NON encore évaluées par le juge LLM (tri par score initial).
+
+        Les offres écartées par la re-validation métier sont exclues : inutile de
+        dépenser des tokens du juge sur une offre déjà disqualifiée.
+        """
         with self.SessionLocal() as session:
             stmt = (
                 select(Job)
-                .where(Job.rerank_score.is_(None))
+                .where(Job.rerank_score.is_(None), Job.status != STATUS_REJECTED)
                 .order_by(Job.final_score.desc())
                 .limit(limit)
             )

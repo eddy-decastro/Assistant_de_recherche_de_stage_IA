@@ -27,10 +27,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scrapers.base import describe_rejection  # noqa: E402
 from scrapers.manager import ScraperManager  # noqa: E402
 from scrapers.models import RawJob, ScrapeResult, ScraperConfig  # noqa: E402
 from src.config import load_config  # noqa: E402
+from src.constants import STATUS_REJECTED  # noqa: E402
 from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
+from src.storage.cleanup import choose_keeper, find_duplicate_groups  # noqa: E402
 from src.storage.database import Database  # noqa: E402
 
 logger = logging.getLogger("run_scrapers")
@@ -55,6 +58,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-collect",
         action="store_true",
         help="Saute la collecte et travaille sur la base existante (scoring/rerank seuls).",
+    )
+    parser.add_argument(
+        "--dedupe",
+        action="store_true",
+        help="Fusionne les offres en doublon (URL canonique ou entreprise + titre similaire).",
+    )
+    parser.add_argument(
+        "--revalidate",
+        action="store_true",
+        help="Ré-applique le filtre métier sur les FICHES COMPLÈTES (statut REJETÉ).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simule les étapes d'hygiène (--dedupe/--revalidate) sans rien écrire en base.",
     )
     parser.add_argument(
         "--trigger-rerank",
@@ -93,6 +111,77 @@ def _load_scorer(config: dict[str, Any]) -> Any | None:
         logger.warning("Scoring indisponible (sentence-transformers/torch absents) : %s", exc)
         return None
     return Scorer(config)
+
+
+def _dedupe_jobs(db: Database, *, dry_run: bool) -> dict[str, int]:
+    """Fusionne les doublons (URL canonique ou entreprise + titre très proche).
+
+    La fiche conservée est la plus complète (description la plus longue, puis
+    verdict LLM, puis score) ; si elle n'a pas de description et qu'un doublon en
+    a une, le texte est transféré avant suppression.
+    """
+    groups = find_duplicate_groups(db.get_jobs())
+    removed = 0
+    transferred = 0
+    for group in groups:
+        keeper, duplicates = choose_keeper(group)
+        if not (keeper.get("description") or "").strip():
+            donor = next(
+                (job for job in duplicates if (job.get("description") or "").strip()), None
+            )
+            if donor is not None:
+                transferred += 1
+                if not dry_run:
+                    db.update_description(keeper["id"], donor["description"])
+        if dry_run:
+            removed += len(duplicates)
+        else:
+            removed += db.delete_jobs([job["id"] for job in duplicates])
+    logger.info(
+        " Dédoublonnage                : %d groupe(s), %d doublon(s) %s, %d description(s) transférée(s)",
+        len(groups),
+        removed,
+        "à supprimer (simulation)" if dry_run else "supprimé(s)",
+        transferred,
+    )
+    return {"groups": len(groups), "removed": removed, "transferred": transferred}
+
+
+def _revalidate_jobs(db: Database, config: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    """Ré-applique le filtre métier sur le texte COMPLET des offres documentées.
+
+    Seules les offres ayant une description sont jugées : sans fiche, la
+    re-validation n'apporterait aucune information nouvelle (elle ne verrait que
+    le titre) et risquerait d'écarter des offres sur un simple effet de style.
+    """
+    scraper_config = ScraperConfig.from_config(config)
+    reasons: dict[str, int] = {}
+    rejected = 0
+    skipped = 0
+    for job in db.get_jobs():
+        if job.get("status") == STATUS_REJECTED:
+            continue
+        if not (job.get("description") or "").strip():
+            skipped += 1
+            continue
+        reason = describe_rejection(
+            job.get("title", ""), job.get("description", ""), scraper_config
+        )
+        if not reason:
+            continue
+        rejected += 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+        if not dry_run:
+            db.reject_job(job["id"], reason)
+    logger.info(
+        " Re-validation métier         : %d offre(s) écartée(s)%s | %d sans description (ignorées)",
+        rejected,
+        " (simulation)" if dry_run else "",
+        skipped,
+    )
+    for reason, count in sorted(reasons.items(), key=lambda item: -item[1])[:8]:
+        logger.info("    %3d x %s", count, reason)
+    return {"rejected": rejected, "reasons": reasons, "skipped": skipped}
 
 
 def _score_jobs(db: Database, jobs: list[dict[str, Any]], scorer: Any) -> int:
@@ -169,6 +258,13 @@ def main(argv: list[str] | None = None) -> None:
 
     config = load_config()
     db = Database(config["database"]["path"])
+
+    # 0. Hygiène de la base (optionnelle) : doublons, puis re-validation métier sur
+    #    les fiches complètes (le filtre de collecte ne voyait que les titres).
+    if args.dedupe:
+        _dedupe_jobs(db, dry_run=args.dry_run)
+    if args.revalidate:
+        _revalidate_jobs(db, config, dry_run=args.dry_run)
 
     # 1. Collecte via le manager unifié (paramètres lus dans config.yaml → 'scrapers').
     if args.no_collect:

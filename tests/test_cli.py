@@ -50,6 +50,15 @@ def test_option_no_collect() -> None:
     print("  CLI : --no-collect OK (travail sur la base existante)")
 
 
+def test_options_hygiene() -> None:
+    """--dedupe / --revalidate / --dry-run : nettoyage avant dépense de tokens."""
+    args = parse_args(["--dedupe", "--revalidate", "--dry-run"])
+    assert args.dedupe is True and args.revalidate is True and args.dry_run is True
+    defaults = parse_args([])
+    assert defaults.dedupe is False and defaults.revalidate is False and defaults.dry_run is False
+    print("  CLI : --dedupe / --revalidate / --dry-run OK")
+
+
 def test_run_pipeline_delegue() -> None:
     """run_pipeline est un raccourci : il ne doit contenir aucun code de collecte."""
     source = (PROJECT_ROOT / "run_pipeline.py").read_text(encoding="utf-8")
@@ -65,5 +74,6 @@ if __name__ == "__main__":
     test_options_actives()
     test_option_reset_rerank()
     test_option_no_collect()
+    test_options_hygiene()
     test_run_pipeline_delegue()
     print("TOUS LES TESTS PASSENT")
