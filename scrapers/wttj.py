@@ -17,7 +17,7 @@ from urllib.parse import quote
 import httpx
 
 from .base import BaseScraper
-from .models import RawJob, ScrapeResult, ScraperConfig
+from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
 
 ALGOLIA_HOST = "https://v3splegsrc-dsn.algolia.net"
 ALGOLIA_QUERIES_ENDPOINT = f"{ALGOLIA_HOST}/1/indexes/*/queries"
@@ -83,9 +83,21 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 class WelcomeToTheJungleScraper(BaseScraper):
-    """Récupère les offres de stage WTTJ via l'index Algolia public."""
+    """Récupère les offres de stage WTTJ via l'index Algolia public.
+
+    Capacités : l'index expose le classement natif d'Algolia (pertinence). Aucun
+    tri par date ni filtre temporel serveur n'est garanti (le champ de date et une
+    éventuelle réplique triée n'ont pas pu être vérifiés : la source est
+    injoignable dans l'environnement de développement — DNS). Le scraper reste donc
+    conservateur : ``DATE_ORDER_RELIABLE`` et ``SERVER_WINDOW_FILTER`` à ``False``,
+    la sélection fine revenant au filtre métier et au scoring en aval.
+    """
 
     source = "wttj"
+    #: Non vérifié (Algolia renvoie son classement de pertinence) -> pire cas.
+    DATE_ORDER_RELIABLE = False
+    #: Non vérifié : aucun filtre temporel serveur n'est demandé.
+    SERVER_WINDOW_FILTER = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         super().__init__(config)
@@ -96,6 +108,7 @@ class WelcomeToTheJungleScraper(BaseScraper):
                 "Content-Type": "application/json",
             }
         )
+        self._sort_notice_logged = False
 
     # ------------------------------------------------------------------ #
     # Requête Algolia
@@ -172,36 +185,34 @@ class WelcomeToTheJungleScraper(BaseScraper):
     # ------------------------------------------------------------------ #
     # Orchestration
     # ------------------------------------------------------------------ #
-    def fetch(self) -> ScrapeResult:
-        jobs: list[RawJob] = []
-        found = 0
-        max_offers = self.config.max_offers_per_source
+    def _iter_pages(self, query: str, mode: str, cursor: Any, plan: PassPlan) -> PageResult:
+        """Une page de hits Algolia (50 par appel).
 
-        for query in self.config.target_queries:
-            if len(jobs) >= max_offers:
-                break
-            page = 0
-            while len(jobs) < max_offers:
-                try:
-                    hits = self._search(query, page)
-                except httpx.HTTPStatusError as exc:
-                    self._logger.warning(
-                        "WTTJ : erreur HTTP (query=%r, page=%d) : %s", query, page, exc
-                    )
-                    break
-                except httpx.RequestError as exc:
-                    self._logger.warning(
-                        "WTTJ : erreur réseau (query=%r, page=%d) : %s", query, page, exc
-                    )
-                    break
-                if not hits:
-                    break
-                found += len(hits)
-                for hit in hits:
-                    job = self._to_raw_job(hit)
-                    if job:
-                        jobs.append(job)
-                page += 1
-
-        return ScrapeResult(jobs=jobs, found=found)
+        Le tri n'est pas différencié par mode : Algolia renvoie son classement de
+        pertinence (le mode « Fraîcheur » ne bénéficie donc d'aucune garantie
+        temporelle côté plateforme — l'information est consignée une fois par run).
+        """
+        if plan.sort == "date" and not self._sort_notice_logged:
+            self._sort_notice_logged = True
+            self._logger.info(
+                "WTTJ : tri par date non exposé par l'index Algolia — classement natif "
+                "(pertinence) utilisé pour la passe « Fraîcheur »."
+            )
+        page = int(cursor or 0)
+        hits = self._search(query, page)
+        entries: list[CardEntry] = []
+        for hit in hits:
+            job = self._to_raw_job(hit)
+            key = (
+                (job.id_externe if job else "")
+                or _first_str(hit.get("objectID"), hit.get("id"), hit.get("slug"))
+            )
+            if key:
+                entries.append(CardEntry(key=key, job=job))
+        return PageResult(
+            entries=entries,
+            next_cursor=page + 1,
+            exhausted=not hits,
+            http_calls=1,
+        )
 

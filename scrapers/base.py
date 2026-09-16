@@ -1,10 +1,18 @@
-"""Classe de base des scrapers : client HTTP partagé + filtre anti-BI.
+"""Classe de base des scrapers : client HTTP partagé, filtrage métier, moteur hybride.
 
 Fournit :
-  - ``BaseScraper`` (classe abstraite) avec un ``httpx.Client`` pré-configuré
-    (timeout, User-Agent moderne, gestion des redirections) ;
-  - la méthode concrète ``is_valid_job`` qui implémente le filtrage métier
-    (exclusion stricte des offres BI/reporting + exigence d'un signal DS/ML).
+
+* ``BaseScraper`` (classe abstraite) et son client ``httpx`` pré-configuré
+  (timeout, User-Agent moderne, redirections) ;
+* le filtrage métier ``is_valid_job`` / ``validate`` (exclusion stricte des offres
+  BI/reporting + exigence d'un signal DS/ML) ;
+* le **moteur de collecte hybride** (``collect``) : pour chaque source et chaque
+  requête cible, une passe « Fraîcheur » (tri par date, filtre temporel serveur,
+  arrêt anticipé) puis une passe « Rattrapage » (tri par pertinence, aucun arrêt
+  anticipé). Chaque source ne fournit plus que ``_iter_pages`` : le quota, la
+  déduplication transverse, la fenêtre temporelle, l'arrêt anticipé et la
+  consignation de la **raison exacte d'arrêt** sont mutualisés ici — ils
+  s'appliquent donc identiquement à toutes les plateformes.
 """
 
 from __future__ import annotations
@@ -13,13 +21,33 @@ import logging
 import os
 import re
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, Sequence
 
 import httpx
 from bs4 import BeautifulSoup
 
-from .models import RawJob, ScrapeResult, ScraperConfig, Source
+from .known import KnownIndex, NullKnownIndex
+from .models import (
+    SEEN_DUPLICATE,
+    SEEN_KNOWN,
+    SEEN_OUT_OF_WINDOW,
+    SEEN_REJECTED_BI,
+    SEEN_REJECTED_CONTRACT,
+    SEEN_VALIDATED,
+    CardEntry,
+    PageResult,
+    PassPlan,
+    PassReport,
+    RawJob,
+    ScrapeResult,
+    ScraperConfig,
+    SeenEntry,
+    Source,
+    canonical_url,
+    is_incomplete_stop,
+)
 
 
 def load_env_file(path: str | Path | None = None) -> None:
@@ -137,10 +165,50 @@ def describe_rejection(title: str, description: str, config: ScraperConfig) -> s
     return ""
 
 
+def screen_rejection(title: str, description: str, config: ScraperConfig) -> str:
+    """Motif de rejet d'une offre selon le filtre de page de liste (``""`` = retenue).
+
+    Implémente **exactement** les règles historiques de ``is_valid_job`` (exclusion
+    BI/reporting prioritaire, puis exigence d'au moins un signal Data Science / ML)
+    tout en retournant le motif : c'est ce motif qui est archivé dans la mémoire de
+    collecte (``seen_jobs.rejection_reason``) pour l'observabilité.
+
+    À ne pas confondre avec :func:`describe_rejection`, plus strict, réservé à la
+    re-validation sur fiche complète (``--revalidate``).
+    """
+    title_low = (title or "").casefold()
+    description_low = (description or "").casefold()
+
+    for keyword in config.exclusion_keywords:
+        if _contains_keyword(title_low, keyword) or _contains_keyword(description_low, keyword):
+            return f"orientation BI / reporting (« {keyword} »)"
+
+    combined = f"{title_low} {description_low}"
+    if any(_contains_keyword(combined, keyword) for keyword in config.positive_ds_ml_keywords):
+        return ""
+    return "aucun signal Data Science / ML dans l'annonce"
+
+
 class BaseScraper(ABC):
-    """Contrat commun à tous les scrapers de sources d'offres."""
+    """Contrat commun à tous les scrapers : collecte hybride + filtrage métier.
+
+    Une source concrète n'implémente que ``_iter_pages`` (une page de résultats
+    pour une requête et un mode) et déclare deux capacités **mesurées** :
+
+    * ``DATE_ORDER_RELIABLE`` — l'ordre du flux est-il chronologique ? C'est la
+      condition de validité de l'arrêt anticipé ;
+    * ``SERVER_WINDOW_FILTER`` — la plateforme sait-elle filtrer la fraîcheur
+      côté serveur (LinkedIn : ``f_TPR``) ?
+    """
 
     source: ClassVar[Source]
+    #: Ordre chronologique garanti par la plateforme ? LinkedIn : NON (mesuré le
+    #: 16/09/2026 — 7 inversions de date sur 2 pages consécutives, voir
+    #: ``tools/probe_sources.py``). Par défaut, on suppose le pire cas.
+    DATE_ORDER_RELIABLE: ClassVar[bool] = False
+    #: Filtre temporel serveur disponible ? LinkedIn : OUI (``f_TPR=r604800``
+    #: ramène 100 % de cartes de la semaine, vérifié par sonde).
+    SERVER_WINDOW_FILTER: ClassVar[bool] = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         self.config = config or ScraperConfig()
@@ -167,51 +235,442 @@ class BaseScraper(ABC):
           2. acceptation seulement si au moins un signal positif Data Science /
              Machine Learning est détecté dans le titre ou le résumé.
         """
-        title_low = (title or "").casefold()
-        description_low = (description or "").casefold()
+        return screen_rejection(title, description, self.config) == ""
 
-        for keyword in self.config.exclusion_keywords:
-            if _contains_keyword(title_low, keyword) or _contains_keyword(description_low, keyword):
-                return False
-
-        combined = f"{title_low} {description_low}"
-        return any(
-            _contains_keyword(combined, keyword)
-            for keyword in self.config.positive_ds_ml_keywords
-        )
+    def validation_reason(self, job: RawJob) -> str:
+        """Motif d'exclusion d'une offre (``""`` si elle est retenue)."""
+        if not job.is_internship:
+            return "contrat incompatible (hors stage)"
+        return screen_rejection(job.title, job.description, self.config)
 
     def validate(self, job: RawJob) -> bool:
         """Filtre complet : offre de stage + anti-BI + signal DS/ML."""
-        return job.is_internship and self.is_valid_job(job.title, job.description)
+        return self.validation_reason(job) == ""
 
     # ------------------------------------------------------------------ #
-    # Cycle de vie
+    # Source : une page de résultats
     # ------------------------------------------------------------------ #
     @abstractmethod
-    def fetch(self) -> ScrapeResult:
-        """Récupère et normalise les offres brutes de la source."""
+    def _iter_pages(self, query: str, mode: str, cursor: Any, plan: PassPlan) -> PageResult:
+        """Récupère UNE page de résultats pour ``(query, mode)``.
 
-    def run(self) -> ScrapeResult:
-        """Lance le scraping et applique le filtre métier sur les offres récupérées."""
-        result = self.fetch()
-        validated: list[RawJob] = []
-        rejected = 0
-        for job in result.jobs:
-            if self.validate(job):
-                validated.append(job)
-            else:
-                rejected += 1
-                self._logger.debug("Offre rejetée (anti-BI/DS-ML) : %s", job.title)
-        result.jobs = validated
-        result.rejected_bi += rejected
-        self._logger.info(
-            "%s : %d offre(s) récupérée(s) -> %d validée(s), %d rejetée(s).",
-            self.source,
-            result.found,
-            len(validated),
-            rejected,
-        )
+        ``cursor`` est le curseur renvoyé par la page précédente (``None`` pour la
+        première) ; ``plan`` porte les paramètres résolus de la passe (tri, fenêtre
+        temporelle, filtre serveur…). Les erreurs réseau/HTTP sont laissées
+        remonter : le moteur les traduit en motif d'arrêt.
+
+        Aucun état interne : la source ne décide ni du quota, ni de l'arrêt.
+        """
+
+    def unavailable_reason(self) -> str:
+        """Motif d'indisponibilité de la source (``""`` si elle est disponible).
+
+        JobTeaser surcharge ce point : sans cookies, la source est inactive et
+        chaque passe doit être consignée comme telle plutôt que silencieusement vide.
+        """
+        return ""
+
+    # ------------------------------------------------------------------ #
+    # Moteur de collecte hybride
+    # ------------------------------------------------------------------ #
+    def collect(
+        self,
+        known_index: KnownIndex | None = None,
+        *,
+        validate_jobs: bool = False,
+        modes: Sequence[str] | None = None,
+        queries: Sequence[str] | None = None,
+    ) -> ScrapeResult:
+        """Exécute les passes demandées et retourne offres + télémétrie.
+
+        ``validate_jobs`` applique le filtre métier à chaque carte retenue (chemin
+        de production) ; à ``False`` (``fetch``), les offres sont renvoyées brutes.
+        """
+        index = known_index or NullKnownIndex()
+        result = ScrapeResult()
+        #: Clés croisées pendant CE run (toutes passes et toutes requêtes confondues).
+        #: Ensemble intrinsèque au moteur : la déduplication transverse ne dépend donc
+        #: pas de l'index injecté (un run sans mémoire reste correct).
+        run_keys: set[str] = set()
+        selected_modes = list(modes) if modes else self.config.enabled_modes()
+        selected_queries = list(queries) if queries else list(self.config.target_queries)
+        reason = self.unavailable_reason()
+        if reason:
+            self._logger.warning(
+                "%s : source indisponible pour ce run (%s) — passes consignées, pipeline non bloqué.",
+                self.source,
+                reason,
+            )
+        for mode in selected_modes:
+            if not self.config.pass_config(mode).enabled:
+                result.query_reports.extend(
+                    self._skipped_reports(mode, selected_queries, "disabled", "passe désactivée")
+                )
+                continue
+            if reason:
+                result.query_reports.extend(
+                    self._skipped_reports(mode, selected_queries, "auth_missing", reason)
+                )
+                continue
+            plan = self.config.build_plan(
+                mode,
+                date_order_reliable=self.DATE_ORDER_RELIABLE,
+                server_window_filter=self.SERVER_WINDOW_FILTER,
+            )
+            self._logger.info(
+                "%s : passe « %s » — tri=%s, quota=%d/requête, fenêtre=%s, arrêt anticipé=%s",
+                self.source,
+                mode,
+                plan.sort,
+                plan.quota,
+                f"{plan.window_days:g} j" if plan.window_days else "aucune",
+                plan.early_stop_threshold or "désactivé",
+            )
+            if plan.notes:
+                self._logger.info("%s : garde-fous appliqués — %s", self.source, plan.notes)
+            for query in selected_queries:
+                # Budget restant de la source : le plafond global est appliqué
+                # *pendant* la passe (sinon chaque requête pourrait consommer son
+                # quota entier et le dépasser).
+                budget = self.config.max_offers_per_source - len(result.jobs)
+                if budget <= 0:
+                    self._logger.info(
+                        "%s : plafond de source atteint (%d) — requête %r non lancée.",
+                        self.source,
+                        self.config.max_offers_per_source,
+                        query,
+                    )
+                    break
+                report, jobs, seen = self._collect_pass(
+                    query, mode, plan, index, run_keys, budget, validate=validate_jobs
+                )
+                result.query_reports.append(report)
+                result.seen.extend(seen)
+                result.jobs.extend(jobs)
+                result.found += report.cards_seen
+                result.rejected_bi += report.jobs_rejected
+        self._log_reports(result.query_reports)
         return result
+
+    def fetch(self, known_index: KnownIndex | None = None) -> ScrapeResult:
+        """Collecte brute (sans filtre métier) — tests, sondes, inspection."""
+        return self.collect(known_index, validate_jobs=False)
+
+    def run(
+        self,
+        known_index: KnownIndex | None = None,
+        *,
+        modes: Sequence[str] | None = None,
+        queries: Sequence[str] | None = None,
+    ) -> ScrapeResult:
+        """Collecte hybride + filtre métier : chemin de production."""
+        return self.collect(known_index, validate_jobs=True, modes=modes, queries=queries)
+
+    # ------------------------------------------------------------------ #
+    # Une passe complète pour une requête cible
+    # ------------------------------------------------------------------ #
+    def _collect_pass(
+        self,
+        query: str,
+        mode: str,
+        plan: PassPlan,
+        index: KnownIndex,
+        run_keys: set[str],
+        budget: int,
+        *,
+        validate: bool,
+    ) -> tuple[PassReport, list[RawJob], list[SeenEntry]]:
+        """Déroule une passe jusqu'à son motif d'arrêt, télémétrie à l'appui.
+
+        Invariants garantis ici, pour toutes les sources :
+
+        * une carte **déjà connue** ne consomme pas le quota, mais alimente le
+          compteur d'arrêt anticipé (N connues **consécutives**) ;
+        * toute carte inconnue remet ce compteur à zéro ;
+        * une offre antérieure à la fenêtre temporelle est écartée — et arrête la
+          passe uniquement si l'ordre du flux est jugé fiable ;
+        * une page sans aucune carte inédite arrête la passe (pagination
+          stagnante : utile quand la plateforme ignore un paramètre de page).
+        """
+        started = datetime.now(timezone.utc)
+        counters = {
+            "pages_fetched": 0,
+            "http_requests": 0,
+            "cards_seen": 0,
+            "jobs_kept": 0,
+            "jobs_known": 0,
+            "jobs_duplicate": 0,
+            "jobs_rejected": 0,
+            "jobs_out_of_window": 0,
+        }
+        kept: list[RawJob] = []
+        seen: list[SeenEntry] = []
+        # Quota effectif : le plus contraignant entre le quota de la passe et le
+        # budget restant de la source.
+        limit = max(0, min(plan.quota, int(budget)))
+        limit_detail = (
+            f"quota de la passe atteint ({plan.quota})"
+            if plan.quota <= int(budget)
+            else f"plafond de la source atteint ({int(budget)} offre(s) restante(s))"
+        )
+        stop_reason = "stream_end"
+        stop_detail = ""
+        stop_page: int | None = None
+        error: str | None = None
+        streak = 0
+        newest: datetime | None = None
+        oldest: datetime | None = None
+        cursor: Any = None
+        page_number = 0
+        halt = False
+
+        while page_number < plan.max_pages:
+            if len(kept) >= limit:  # limite atteinte (quota de passe ou de source)
+                stop_reason = "quota"
+                stop_detail = limit_detail
+                break
+            page_number += 1
+            try:
+                page = self._iter_pages(query, mode, cursor, plan)
+            except httpx.HTTPStatusError as exc:
+                status = getattr(exc.response, "status_code", 0)
+                if status == 429:
+                    stop_reason, stop_detail = "rate_limit", "HTTP 429 (quota plateforme)"
+                else:
+                    stop_reason, stop_detail = "http_error", f"HTTP {status}"
+                error = stop_detail
+                break
+            except httpx.RequestError as exc:
+                stop_reason, stop_detail = "network_error", type(exc).__name__
+                error = str(exc)[:300]
+                break
+            except Exception as exc:  # noqa: BLE001 — aucune passe ne doit tuer le run
+                stop_reason, stop_detail = "error", f"{type(exc).__name__}: {exc}"[:300]
+                error = stop_detail
+                break
+
+            counters["http_requests"] += max(0, int(page.http_calls))
+            if not page.entries:
+                stop_reason = "stream_end"
+                stop_detail = f"plus de résultats (page {page_number})"
+                break
+
+            counters["pages_fetched"] += 1
+            stop_page = page_number
+            new_keys_in_page = 0
+
+            for entry in page.entries:
+                counters["cards_seen"] += 1
+                job = entry.job
+                key = entry.key or (job.id_externe if job else "") or (job.url if job else "")
+                url = job.url if job else ""
+                title = job.title if job else ""
+                canon = canonical_url(url)
+                published = job.published_at if job else None
+                if published is not None:
+                    newest = published if newest is None else max(newest, published)
+                    oldest = published if oldest is None else min(oldest, published)
+
+                # 1) Fenêtre temporelle : filet de sécurité local quand la
+                #    plateforme ne filtre pas la fraîcheur côté serveur.
+                if (
+                    published is not None
+                    and plan.window_deadline is not None
+                    and published < plan.window_deadline
+                ):
+                    counters["jobs_out_of_window"] += 1
+                    seen.append(
+                        SeenEntry(
+                            source=self.source,
+                            external_key=str(key),
+                            canonical_url=canon,
+                            title=title,
+                            decision=SEEN_OUT_OF_WINDOW,
+                        )
+                    )
+                    if plan.stop_on_window:
+                        stop_reason = "window_end"
+                        stop_detail = (
+                            f"offre publiée le {published.date().isoformat()} "
+                            f"hors fenêtre de {plan.window_days:g} j"
+                        )
+                        halt = True
+                        break
+                    continue
+
+                # 2) Déjà connue (base ou run en cours) : ni quota, ni retraitement
+                #    — c'est la jonction avec le scrape précédent.
+                already_in_run = bool(key) and str(key) in run_keys
+                if str(key) and (index.is_known(self.source, str(key), url) or already_in_run):
+                    if already_in_run:
+                        counters["jobs_duplicate"] += 1
+                    else:
+                        counters["jobs_known"] += 1
+                        seen.append(
+                            SeenEntry(
+                                source=self.source,
+                                external_key=str(key),
+                                canonical_url=canon,
+                                title=title,
+                                decision=SEEN_KNOWN,
+                            )
+                        )
+                    streak += 1
+                    if (
+                        plan.early_stop_threshold
+                        and counters["pages_fetched"] >= plan.early_stop_min_pages
+                        and streak >= plan.early_stop_threshold
+                    ):
+                        stop_reason = "early_stop"
+                        stop_detail = (
+                            f"{streak} offre(s) consécutive(s) déjà connue(s) "
+                            f"(seuil {plan.early_stop_threshold}, page {page_number})"
+                        )
+                        halt = True
+                        break
+                    continue
+
+                # 3) Carte inédite : elle interrompt la série de connues.
+                streak = 0
+                if key:
+                    run_keys.add(str(key))
+                    index.remember(self.source, str(key), url)
+                if job is None:  # carte inexploitable : comptée, non conservée
+                    continue
+                new_keys_in_page += 1
+
+                rejection = self.validation_reason(job) if validate else ""
+                if rejection:
+                    counters["jobs_rejected"] += 1
+                    decision = (
+                        SEEN_REJECTED_CONTRACT
+                        if rejection.startswith("contrat incompatible")
+                        else SEEN_REJECTED_BI
+                    )
+                    seen.append(
+                        SeenEntry(
+                            source=self.source,
+                            external_key=str(key),
+                            canonical_url=canon,
+                            title=title,
+                            decision=decision,
+                            rejection_reason=rejection,
+                        )
+                    )
+                    continue
+
+                kept.append(job)
+                counters["jobs_kept"] += 1
+                seen.append(
+                    SeenEntry(
+                        source=self.source,
+                        external_key=str(key),
+                        canonical_url=canon,
+                        title=title,
+                        decision=SEEN_VALIDATED,
+                    )
+                )
+                if len(kept) >= limit:
+                    stop_reason = "quota"
+                    stop_detail = limit_detail
+                    halt = True
+                    break
+
+            if halt:
+                break
+            if page.exhausted:
+                stop_reason = "stream_end"
+                stop_detail = f"flux épuisé (page {page_number})"
+                break
+            if new_keys_in_page == 0:
+                stop_reason = "duplicate_page"
+                stop_detail = (
+                    f"page {page_number} sans carte inédite "
+                    "(toutes déjà connues, ou paramètre de page ignoré par la plateforme)"
+                )
+                break
+            if page.next_cursor in (None, ""):
+                stop_reason = "stream_end"
+                stop_detail = "aucune page suivante"
+                break
+            cursor = page.next_cursor
+        else:
+            stop_reason = "max_pages"
+            stop_detail = (
+                f"plafond de {plan.max_pages} page(s) atteint — flux potentiellement tronqué"
+            )
+
+        finished = datetime.now(timezone.utc)
+        report = PassReport(
+            source=self.source,
+            query=query,
+            mode=mode,
+            started_at=started,
+            finished_at=finished,
+            duration_seconds=round((finished - started).total_seconds(), 3),
+            pages_fetched=counters["pages_fetched"],
+            http_requests=counters["http_requests"],
+            cards_seen=counters["cards_seen"],
+            jobs_kept=counters["jobs_kept"],
+            jobs_known=counters["jobs_known"],
+            jobs_duplicate=counters["jobs_duplicate"],
+            jobs_rejected=counters["jobs_rejected"],
+            jobs_out_of_window=counters["jobs_out_of_window"],
+            stop_reason=stop_reason,
+            stop_detail=(f"{stop_detail} ; {plan.notes}" if plan.notes else stop_detail),
+            stop_page=stop_page,
+            newest_published_at=newest,
+            oldest_published_at=oldest,
+            error=error,
+        )
+        return report, kept, seen
+
+    def _skipped_reports(
+        self, mode: str, queries: Sequence[str], reason: str, detail: str
+    ) -> list[PassReport]:
+        """Télémétrie d'une passe non exécutée (désactivée ou source indisponible)."""
+        now = datetime.now(timezone.utc)
+        return [
+            PassReport(
+                source=self.source,
+                query=query,
+                mode=mode,
+                started_at=now,
+                finished_at=now,
+                duration_seconds=0.0,
+                stop_reason=reason,
+                stop_detail=detail,
+            )
+            for query in queries
+        ]
+
+    def _log_reports(self, reports: Sequence[PassReport]) -> None:
+        """Consigne une ligne par passe et alerte sur les pertes de flux."""
+        for report in reports:
+            self._logger.info(
+                "%s | %s | %s | %d page(s) | %d HTTP | %d vue(s) | %d gardée(s) | "
+                "%d connue(s) | %d rejetée(s) | arrêt=%s (%s)",
+                report.source,
+                report.query,
+                report.mode,
+                report.pages_fetched,
+                report.http_requests,
+                report.cards_seen,
+                report.jobs_kept,
+                report.jobs_known,
+                report.jobs_rejected,
+                report.stop_reason,
+                report.stop_detail or "—",
+            )
+            if is_incomplete_stop(report.stop_reason):
+                self._logger.warning(
+                    "%s | %s | %s : flux potentiellement perdu (%s : %s)",
+                    report.source,
+                    report.query,
+                    report.mode,
+                    report.stop_reason,
+                    report.stop_detail or "—",
+                )
 
     def close(self) -> None:
         """Libère le client HTTP sous-jacent."""

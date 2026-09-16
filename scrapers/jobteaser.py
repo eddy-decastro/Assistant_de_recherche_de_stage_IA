@@ -34,7 +34,7 @@ from bs4 import BeautifulSoup
 
 from .base import BaseScraper, load_env_file, markup_to_text
 from .cache import DiskCache
-from .models import RawJob, ScrapeResult, ScraperConfig
+from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
 
 try:  # Transport optionnel : impersonation TLS (contourne le challenge Cloudflare).
     from curl_cffi import requests as curl_requests
@@ -132,9 +132,21 @@ def _location_of(value: Any) -> str:
 
 
 class JobTeaserScraper(BaseScraper):
-    """Interroge la page d'offres de l'intranet JobTeaser de l'école."""
+    """Interroge la page d'offres de l'intranet JobTeaser de l'école.
+
+    Capacités : ni l'ordre chronologique ni le filtre temporel serveur n'ont pu
+    être vérifiés en conditions réelles (l'intranet exige des cookies de session
+    qui n'étaient pas disponibles lors de la mise en place). Le scraper reste donc
+    **conservateur** : l'arrêt anticipé et l'arrêt sur fenêtre sont désactivés, la
+    pagination s'appuie sur les paramètres ``JOBTEASER_PAGE_*`` et une page sans
+    carte inédite (paramètre de page ignoré) arrête proprement la passe.
+    """
 
     source = "jobteaser"
+    #: Non vérifié -> on suppose le pire cas (pas d'arrêt anticipé).
+    DATE_ORDER_RELIABLE = False
+    #: Non vérifié -> aucun filtre temporel serveur demandé.
+    SERVER_WINDOW_FILTER = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         load_env_file()
@@ -262,6 +274,82 @@ class JobTeaserScraper(BaseScraper):
             except Exception:  # noqa: BLE001 - fermeture best-effort
                 pass
         super().close()
+
+    # ------------------------------------------------------------------ #
+    # Collecte hybride : une page de résultats
+    # ------------------------------------------------------------------ #
+    def unavailable_reason(self) -> str:
+        """JobTeaser est inactif sans cookies de session (intranet école)."""
+        if self._has_auth:
+            return ""
+        return (
+            "cookies JOBTEASER_COOKIES / JOBTEASER_SESSION absents — "
+            "renseignez .env pour activer la source"
+        )
+
+    def _search_params(self, mode: str, plan: PassPlan) -> dict[str, str]:
+        """Paramètres de tri et de pagination d'une passe.
+
+        Nom des paramètres **configurable par variables d'environnement**, car le
+        tri de ``/fr/job-offers`` n'a pas pu être vérifié en conditions réelles
+        (cookies absents lors de la mise en place) :
+
+        * ``JOBTEASER_SORT_PARAM`` (défaut ``sort``) — nom du paramètre de tri ;
+        * ``JOBTEASER_SORT_DATE`` (défaut ``date``) — valeur pour la passe Fraîcheur ;
+        * ``JOBTEASER_SORT_RELEVANCE`` (défaut ``relevance``) — valeur pour la
+          passe Rattrapage ;
+        * ``JOBTEASER_PAGE_PARAM`` (défaut ``page``) — nom du paramètre de page ;
+        * ``JOBTEASER_PAGE_START`` (défaut ``1``) — première page.
+
+        Un tri non honoré par la plateforme est sans danger : le moteur détecte la
+        pagination stagnante (page sans carte inédite) et consigne l'arrêt.
+        """
+        params: dict[str, str] = {}
+        sort_param = os.getenv("JOBTEASER_SORT_PARAM", "sort").strip()
+        date_value = os.getenv("JOBTEASER_SORT_DATE", "date").strip()
+        relevance_value = os.getenv("JOBTEASER_SORT_RELEVANCE", "relevance").strip()
+        if sort_param:
+            value = date_value if plan.sort == "date" else relevance_value
+            if value:
+                params[sort_param] = value
+        return params
+
+    def _page_start(self) -> int:
+        """Numéro de la première page (``JOBTEASER_PAGE_START``, défaut 1)."""
+        try:
+            return max(0, int(os.getenv("JOBTEASER_PAGE_START", "1").strip() or "1"))
+        except ValueError:
+            return 1
+
+    def _iter_pages(self, query: str, mode: str, cursor: Any, plan: PassPlan) -> PageResult:
+        """Une page de résultats JobTeaser (SSR ``jobad-card``, replis inclus)."""
+        page_number = int(cursor) if cursor is not None else self._page_start()
+        params: dict[str, str] = dict(self.base_params)
+        params["q"] = query
+        params.update(self._search_params(mode, plan))
+        page_param = os.getenv("JOBTEASER_PAGE_PARAM", "page").strip()
+        if page_param and page_number > self._page_start():
+            params[page_param] = str(page_number)
+
+        status, html_text = self._fetch_html(self.offers_url, params)
+        if status >= 400:
+            request = httpx.Request("GET", self.offers_url)
+            raise httpx.HTTPStatusError(
+                f"HTTP {status} sur {self.offers_url}",
+                request=request,
+                response=httpx.Response(status, request=request),
+            )
+
+        raw_jobs = self._extract_jobs_from_html(html_text)
+        cards = [job for raw in raw_jobs if (job := self._to_raw_job(raw)) is not None]
+        by_key = {(job.id_externe or job.url): job for job in cards}
+        entries = [CardEntry(key=key, job=by_key.get(key)) for key in by_key]
+        return PageResult(
+            entries=entries,
+            next_cursor=page_number + 1,
+            exhausted=not entries,
+            http_calls=1,
+        )
 
 
     # ------------------------------------------------------------------ #
@@ -524,65 +612,6 @@ class JobTeaserScraper(BaseScraper):
         if description and cache is not None:
             cache.set(CACHE_NAMESPACE, key, description)
         return description
-
-    # ------------------------------------------------------------------ #
-    # Orchestration
-    # ------------------------------------------------------------------ #
-    def fetch(self) -> ScrapeResult:
-        if not self._has_auth:
-            self._logger.warning(
-                "Cookies JobTeaser absents (JOBTEASER_COOKIES/JOBTEASER_SESSION) — "
-                "scraper JobTeaser désactivé pour ce run, sans bloquer le pipeline."
-            )
-            return ScrapeResult(jobs=[], found=0)
-
-        jobs: list[RawJob] = []
-        found = 0
-        quota = self.config.per_query_quota
-        for query in self.config.target_queries:
-            if len(jobs) >= self.config.max_offers_per_source:
-                break
-            params = dict(self.base_params)
-            params["q"] = query
-
-            try:
-                status, html_text = self._fetch_html(self.offers_url, params)
-            except httpx.RequestError as exc:
-                self._logger.warning("JobTeaser : erreur réseau httpx : %s", exc)
-                break
-            except Exception as exc:  # noqa: BLE001 - transport curl_cffi / autres
-                self._logger.warning("JobTeaser : erreur de transport : %s", exc)
-                break
-
-            if status == 403:
-                self._logger.warning(
-                    "JobTeaser : 403 Cloudflare (impersonation '%s' ou cookies expirés). "
-                    "Rafraîchissez JOBTEASER_COOKIES depuis le navigateur.",
-                    self.impersonate,
-                )
-                break
-            if status >= 400:
-                self._logger.warning("JobTeaser : réponse HTTP %d (%s).", status, self.offers_url)
-                break
-
-            raw_jobs = self._extract_jobs_from_html(html_text)
-            if not raw_jobs:
-                self._logger.warning("JobTeaser : aucune offre extraite (query=%r).", query)
-                continue
-            found += len(raw_jobs)
-            # Quota PAR REQUÊTE : chaque requête cible contribue à la collecte
-            # (l'ancienne boucle s'arrêtait dès le plafond global atteint, ce qui
-            # privait les requêtes suivantes de toute chance).
-            added_for_query = 0
-            for raw in raw_jobs:
-                if added_for_query >= quota or len(jobs) >= self.config.max_offers_per_source:
-                    break
-                job = self._to_raw_job(raw)
-                if job:
-                    jobs.append(job)
-                    added_for_query += 1
-
-        return ScrapeResult(jobs=jobs, found=found)
 
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -17,7 +18,14 @@ from scrapers.base import _contains_keyword, BaseScraper
 from scrapers.jobteaser import JobTeaserScraper
 from scrapers.linkedin import GUEST_ENDPOINT, LinkedInGuestScraper
 from scrapers.manager import ScraperManager
-from scrapers.models import RawJob, ScrapeResult, ScraperConfig
+from scrapers.models import (
+    CardEntry,
+    PageResult,
+    PassConfig,
+    RawJob,
+    ScrapeResult,
+    ScraperConfig,
+)
 
 
 class _FakeResponse:
@@ -106,12 +114,20 @@ def _run_linkedin_fetch(
     client: _FakeClient | None = None,
     max_offers_per_source: int = 50,
     max_offers_per_query: int | None = None,
+    mode: str = "relevance",
 ) -> tuple[ScrapeResult, _FakeClient]:
-    """Exécute ``fetch()`` avec un client factice, sans réseau ni pause entre pages."""
+    """Exécute ``fetch()`` avec un client factice, sans réseau ni pause entre pages.
+
+    Mono-passe par défaut (``relevance``) : ces tests vérifient la mécanique de
+    pagination et de quota, indépendamment de la stratégie hybride — qui est
+    couverte par ``tests/test_hybrid_collection.py``.
+    """
     config = ScraperConfig(
         target_queries=queries or ["Stage Data Scientist"],
         max_offers_per_source=max_offers_per_source,
-        max_offers_per_query=max_offers_per_query,
+        passes=PassConfig.only(
+            mode, max_offers_per_query=max_offers_per_query or max_offers_per_source
+        ),
     )
     scraper = LinkedInGuestScraper(config)
     real_client = scraper.client
@@ -134,8 +150,8 @@ def test_is_valid_job() -> None:
     class _FakeScraper(BaseScraper):
         source = "wttj"
 
-        def fetch(self) -> ScrapeResult:  # pragma: no cover
-            return ScrapeResult()
+        def _iter_pages(self, query: str, mode: str, cursor: Any, plan: Any) -> PageResult:
+            return PageResult()  # pragma: no cover
 
     scraper = _FakeScraper(cfg)
     try:
@@ -169,7 +185,14 @@ def test_word_boundary() -> None:
 
 def test_models() -> None:
     cfg = ScraperConfig()
-    assert cfg.max_offers_per_source == 50
+    assert cfg.max_offers_per_source == 120
+    # Collecte hybride par défaut : fraîcheur (7 j, arrêt anticipé) + rattrapage
+    # (quota 20, aucun arrêt anticipé).
+    assert set(cfg.enabled_modes()) == {"freshness", "relevance"}, cfg.enabled_modes()
+    assert cfg.pass_config("freshness").early_stop_after_known == 5
+    assert cfg.pass_config("relevance").early_stop_after_known == 0
+    assert cfg.pass_config("freshness").window_days == 7.0
+    assert cfg.pass_config("freshness").window_seconds == 604800
     job = RawJob(
         id_externe="1",
         source="wttj",
@@ -356,8 +379,10 @@ def test_linkedin_dedupe_across_queries() -> None:
         {0: _linkedin_page("80")}, queries=["Stage Data Scientist", "Stage NLP"]
     )
 
-    # Chaque requête pagine (0 -> 10, puis page vide) et les offres communes sont filtrées.
-    assert client.requested_starts == [0, 10, 0, 10], client.requested_starts
+    # 1re requête : 0 -> 10, puis page vide (flux épuisé). 2e requête : la première
+    # page ne contient QUE des cartes déjà connues du run -> arrêt immédiat
+    # (déduplication transverse) sans requêter la page suivante.
+    assert client.requested_starts == [0, 10, 0], client.requested_starts
     assert len(result.jobs) == 10, len(result.jobs)
     print("  LinkedIn : déduplication inter-requêtes OK")
 
@@ -395,7 +420,10 @@ def test_linkedin_quota_par_requete() -> None:
     # la 1re requête court-circuitait toutes les suivantes.
     assert client.requested_starts == [0, 0], client.requested_starts
     assert len(result.jobs) == 10, len(result.jobs)
-    assert result.found == 20, result.found
+    # ``found`` compte désormais les cartes EXAMINÉES : 5 par requête, le quota
+    # interrompant la page dès la 5e offre retenue (au lieu de 10 auparavant, où
+    # la page entière était comptée).
+    assert result.found == 10, result.found
     urns = {job.id_externe for job in result.jobs}
     assert urns == {*(f"90{i:02d}" for i in range(5)), *(f"70{i:02d}" for i in range(5))}, urns
     print("  LinkedIn : quota par requête OK (chaque requête contribue)")
@@ -409,7 +437,9 @@ def test_jobteaser_quota_par_requete() -> None:
         for i in range(8)
     )
     config = ScraperConfig(
-        target_queries=["q1", "q2"], max_offers_per_source=10, max_offers_per_query=3
+        target_queries=["q1", "q2"],
+        max_offers_per_source=10,
+        passes=PassConfig.only("relevance", max_offers_per_query=3),
     )
     scraper = JobTeaserScraper(config)
     real_client, real_curl = scraper.client, scraper._curl
@@ -433,7 +463,10 @@ def test_jobteaser_quota_par_requete() -> None:
 
     assert requested == ["q1", "q2"], requested
     assert len(result.jobs) == 6, len(result.jobs)
-    assert result.found == 16, result.found
+    # Cartes examinées : 3 en q1 (quota) puis 6 en q2 — les 3 premières cartes de
+    # q2 sont déjà connues du run (déduplication transverse) avant d'atteindre le
+    # quota. Aucune offre n'est donc collectée deux fois.
+    assert result.found == 9, result.found
     print("  JobTeaser : quota par requête OK (les 2 requêtes contribuent)")
 
 

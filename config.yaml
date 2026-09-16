@@ -31,11 +31,11 @@ scraping:
 # (ScraperConfig / scrapers/models.py — plus de valeurs codées en dur)
 # ============================================================
 scrapers:
-  # Sources activées : wttj (actuellement indisponible : l'application Algolia
-  # codée en dur n'existe plus, cf. AUDIT.md), linkedin (mode invité),
-  # jobteaser (intranet école, cookies .env pour la liste mais pas pour le détail).
+  # Sources activées. wttj : retiré car injoignable dans cet environnement
+  # (DNS `v3splegsrc-dsn.algolia.net`) — le scraper reste implémenté et aligné sur
+  # la collecte hybride, il suffit de le remettre ici pour le réactiver.
+  # jobteaser : inactif tant que .env ne contient pas JOBTEASER_COOKIES.
   enabled_sources:
-    - "wttj"
     - "linkedin"
     - "jobteaser"
 
@@ -46,13 +46,75 @@ scrapers:
     - "Stage Machine Learning"
     - "Stage Recherche IA"
 
-  # Plafond global par source ET quota par requête cible. Le quota par requête
-  # garantit que CHAQUE requête contribue à la collecte : auparavant la première
-  # requête consommait tout le budget et les suivantes n'étaient jamais lancées.
+  # Plafond GLOBAL (union des deux passes) pour une source. Il est appliqué
+  # pendant les passes : dès qu'il est atteint, les requêtes suivantes ne sont
+  # plus lancées. Borne la charge réseau et le risque de 429.
   max_offers_per_source: 120
-  max_offers_per_query: 40
+  # DÉPRÉCIÉ (conservé pour les configurations antérieures) : quota « à plat »,
+  # utilisé uniquement si la section `passes` ci-dessous est absente.
+  # max_offers_per_query: 40
 
   request_timeout_seconds: 30
+
+  # ------------------------------------------------------------
+  # Stratégie de collecte hybride : deux passes complémentaires par requête
+  # ------------------------------------------------------------
+  # « Fraîcheur »  : tri par date + filtre temporel serveur (LinkedIn : f_TPR) et
+  #                  arrêt anticipé dès que le flux rejoint le scrape précédent.
+  # « Rattrapage » : classement algorithmique de la plateforme, sans arrêt
+  #                  anticipé (le tri n'étant pas temporel), jusqu'au quota ou à
+  #                  l'épuisement de la pagination.
+  # La déclaration est EXPLICITE : un mode absent de cette section n'est pas
+  # exécuté. Une offre collectée en « Fraîcheur » n'est jamais recomptée en
+  # « Rattrapage » (déduplication transverse).
+  passes:
+    freshness:
+      enabled: true
+      sort: "date"
+      # Quota de NOUVELLES offres par requête cible.
+      max_offers_per_query: 40
+      # Fenêtre temporelle : 1 = 24 h, 7 = une semaine, null = aucune limite.
+      window_days: 7
+      # Nombre d'offres DÉJÀ CONNUES consécutives déclenchant l'arrêt anticipé.
+      # ⚠️ Neutralisé automatiquement si la source ne garantit pas un flux trié
+      # (LinkedIn : 7 inversions de date mesurées sur 2 pages — le coût est alors
+      # borné par la fenêtre serveur, le quota et max_pages_per_query).
+      early_stop_after_known: 5
+      # Pages minimales avant d'autoriser un arrêt anticipé.
+      early_stop_min_pages: 1
+      # Plafond de pages par requête : borne la charge réseau. Mesuré en réel : à
+      # 6 pages, la requête « Stage Data Scientist » s'arrête sur `max_pages`
+      # (17 offres retenues) ⇒ plafond relevé à 12 pages (120 cartes), la fenêtre
+      # de 7 jours restant naturellement bornée.
+      max_pages_per_query: 12
+      # Arrêter la passe sur la première offre antérieure à la fenêtre (utile
+      # uniquement si l'ordre du flux est chronologique).
+      stop_when_older_than_window: true
+      # Demander le filtrage temporel à la plateforme quand elle le permet
+      # (LinkedIn : f_TPR=r<secondes>).
+      use_server_window_filter: true
+      # Réglage expert : forcer la confiance dans l'ordre renvoyé par la source.
+      trust_source_order: false
+
+    relevance:
+      enabled: true
+      sort: "relevance"
+      max_offers_per_query: 20
+      window_days: null
+      early_stop_after_known: 0   # jamais d'arrêt anticipé (classement non temporel)
+      max_pages_per_query: 12
+      stop_when_older_than_window: false
+      use_server_window_filter: false
+
+  # ------------------------------------------------------------
+  # Observabilité : télémétrie des passes + mémoire de collecte
+  # ------------------------------------------------------------
+  telemetry:
+    enabled: true
+    # Rétention des runs et des passes tracés (jours).
+    retention_days: 180
+    # Élaguer aussi la mémoire de collecte (offres vues mais jamais retenues).
+    prune_seen_jobs: true
 
   # Les listes de mots-clés (exclusion BI / signaux DS-ML) restent aux valeurs du
   # code ; décommenter pour les surcharger depuis le YAML :

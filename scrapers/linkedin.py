@@ -5,10 +5,11 @@ avec BeautifulSoup (backend lxml). Une pause aléatoire est insérée entre les
 pages pour respecter les serveurs ; l'erreur 429 est gérée proprement.
 
 Pagination : l'endpoint invité ne renvoie pas 25 cartes mais **10 par appel**.
-Le pas d'avancement est donc déduit du *nombre réel de cartes reçues*
-(``start += len(cartes)``) au lieu d'une constante, ce qui évite de sauter des
-offres et reste correct si LinkedIn change la taille de page. Une page dont
-aucune carte n'est inédite termine la pagination (garde-fou anti-boucle).
+Le pas d'avancement est déduit du *nombre réel de cartes reçues* (``start +=
+len(cartes)``), ce qui évite de sauter des offres et reste correct si LinkedIn
+change la taille de page. Le moteur commun (``BaseScraper._collect_pass``) arrête
+la pagination sur page stagnante, plafond de pages, quota ou erreur, et consigne
+la raison exacte de chaque arrêt.
 """
 
 from __future__ import annotations
@@ -17,13 +18,14 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, markup_to_text
 from .cache import DiskCache
-from .models import RawJob, ScrapeResult, ScraperConfig
+from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
 
 GUEST_ENDPOINT = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 # Page détail invitée : elle expose la description COMPLÈTE, absente des cartes de
@@ -32,8 +34,6 @@ DETAIL_ENDPOINT = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_
 CACHE_NAMESPACE = "linkedin"
 LOCATION = "France"
 SLEEP_RANGE = (2.0, 4.0)
-# Garde-fou : nombre maximal d'appels HTTP par requête cible (anti-boucle infinie).
-MAX_PAGES_PER_QUERY = 60
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -96,9 +96,25 @@ def parse_description(html_text: str) -> str:
 
 
 class LinkedInGuestScraper(BaseScraper):
-    """Récupère les cartes d'offres publiques LinkedIn (mode invité)."""
+    """Récupère les cartes d'offres publiques LinkedIn (mode invité).
+
+    Capacités mesurées par sonde (``tools/probe_sources.py``, 16/09/2026) :
+
+    * le filtre temporel serveur ``f_TPR`` **fonctionne** (``r86400`` ⇒ 10/10
+      cartes publiées le jour même ; ``r604800`` ⇒ 10/10 dans la semaine) : c'est
+      lui qui garantit la fraîcheur ;
+    * l'ordre renvoyé n'est **pas** chronologique (``sortBy=DD`` sans ``f_TPR``
+      renvoie exactement le même ordre que la pertinence, et 7 inversions de date
+      ont été mesurées sur 2 pages) : l'arrêt anticipé est donc désactivé par
+      défaut (``DATE_ORDER_RELIABLE = False``) et le coût de la passe « Fraîcheur »
+      est borné par la fenêtre serveur, le quota et le plafond de pages.
+    """
 
     source = "linkedin"
+    #: Mesuré : NON (voir le docstring ci-dessus).
+    DATE_ORDER_RELIABLE = False
+    #: Mesuré : OUI (``f_TPR``).
+    SERVER_WINDOW_FILTER = True
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         super().__init__(config)
@@ -109,30 +125,63 @@ class LinkedInGuestScraper(BaseScraper):
             }
         )
 
-    def _fetch_page(self, query: str, start: int) -> tuple[list[RawJob], list[str]]:
-        """Récupère une page de cartes LinkedIn.
+    # ------------------------------------------------------------------ #
+    # Paramètres de recherche par mode
+    # ------------------------------------------------------------------ #
+    def _search_params(self, mode: str, plan: PassPlan) -> dict[str, Any]:
+        """Paramètres LinkedIn d'une passe : tri et filtre temporel serveur.
 
-        Returns:
-            ``(offres exploitables, clés de toutes les cartes reçues)``. Les clés
-            servent à mesurer l'avancement de la pagination même lorsque des
-            cartes sont inexploitables (titre ou entreprise manquants).
+        * mode « Fraîcheur » : ``sortBy=DD`` (tri par date demandé) et, si la
+          fenêtre est active, ``f_TPR=r<secondes>`` — c'est ce filtre qui borne le
+          vivier à la fenêtre, indépendamment de l'ordre réellement renvoyé ;
+        * mode « Rattrapage » : aucun ``sortBy``, la plateforme applique son
+          classement par pertinence (vérifié : ordre différent de ``sortBy=DD``
+          dès qu'un filtre temporel est présent).
         """
+        params: dict[str, Any] = {}
+        if plan.sort == "date":
+            params["sortBy"] = "DD"
+        if plan.use_server_window_filter and plan.window_days:
+            seconds = int(plan.window_days * 86400)
+            params["f_TPR"] = f"r{seconds}"
+        return params
+
+    def _iter_pages(
+        self, query: str, mode: str, cursor: Any, plan: PassPlan
+    ) -> PageResult:
+        """Une page de cartes LinkedIn (10 cartes par appel en mode invité)."""
+        start = int(cursor or 0)
+        if start > 0:  # respect des serveurs : pause uniquement entre deux pages
+            time.sleep(random.uniform(*SLEEP_RANGE))
         params = {
             "keywords": query,
             "location": LOCATION,
             "f_JT": "I",  # stage / internship
-            "sortBy": "DD",
             "start": start,
+            **self._search_params(mode, plan),
         }
         response = self.client.get(GUEST_ENDPOINT, params=params)
         response.raise_for_status()
-        return self._parse_cards_page(response.text)
+        jobs, card_keys = self._parse_cards_page(response.text)
+        # Les cartes inexploitables doivent compter dans l'avancement de la
+        # pagination : la clé est associée à sa carte quand elle existe.
+        by_key = {(job.id_externe or job.url): job for job in jobs}
+        entries = [CardEntry(key=key, job=by_key.get(key)) for key in card_keys]
+        return PageResult(
+            entries=entries,
+            # Pas réel = nombre de cartes reçues (plus de saut d'offres si
+            # LinkedIn change la taille de page).
+            next_cursor=start + len(card_keys) if card_keys else None,
+            exhausted=not card_keys,
+            http_calls=1,
+        )
 
     @staticmethod
     def _parse_cards(html_text: str) -> list[RawJob]:
         """Extrait les offres d'un fragment HTML (compatibilité historique)."""
         jobs, _ = LinkedInGuestScraper._parse_cards_page(html_text)
         return jobs
+
 
     @staticmethod
     def _parse_cards_page(html_text: str) -> tuple[list[RawJob], list[str]]:
@@ -214,72 +263,3 @@ class LinkedInGuestScraper(BaseScraper):
         if description and cache is not None:
             cache.set(CACHE_NAMESPACE, job_id, description)
         return description
-
-    def fetch(self) -> ScrapeResult:
-        jobs: list[RawJob] = []
-        found = 0
-        max_offers = self.config.max_offers_per_source
-        quota = self.config.per_query_quota
-        seen_ids: set[str] = set()  # déduplication inter-requêtes
-
-        for query in self.config.target_queries:
-            # Quota PAR REQUÊTE : une requête qui remplit son quota ne prive plus les
-            # suivantes (l'ancien ``break`` global arrêtait la collecte dès que
-            # ``max_offers_per_source`` était atteint par la première requête).
-            collected_for_query = 0
-            start = 0
-            seen_page_keys: set[str] = set()  # détection de stagnation (par requête)
-
-            for _page in range(MAX_PAGES_PER_QUERY):
-                if collected_for_query >= quota or len(jobs) >= max_offers:
-                    break
-                try:
-                    batch, card_keys = self._fetch_page(query, start)
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 429:
-                        self._logger.warning(
-                            "LinkedIn : 429 Too Many Requests (query=%r) — repli propre.", query
-                        )
-                    else:
-                        self._logger.warning(
-                            "LinkedIn : erreur HTTP %d (query=%r).",
-                            exc.response.status_code,
-                            query,
-                        )
-                    break
-                except httpx.RequestError as exc:
-                    self._logger.warning("LinkedIn : erreur réseau (query=%r) : %s", query, exc)
-                    break
-
-                if not card_keys:
-                    break
-
-                new_keys = [key for key in card_keys if key not in seen_page_keys]
-                seen_page_keys.update(card_keys)
-                if not new_keys:
-                    self._logger.debug(
-                        "LinkedIn : page déjà vue (query=%r, start=%d) — fin de pagination.",
-                        query,
-                        start,
-                    )
-                    break
-
-                found += len(batch)
-                for job in batch:
-                    key = job.id_externe or job.url
-                    if key in seen_ids:
-                        continue
-                    if collected_for_query >= quota or len(jobs) >= max_offers:
-                        break
-                    seen_ids.add(key)
-                    jobs.append(job)
-                    collected_for_query += 1
-
-                # Pas réel = nombre de cartes reçues (10 aujourd'hui) : plus de
-                # saut d'offres si LinkedIn change la taille de page.
-                start += len(card_keys)
-                if collected_for_query >= quota or len(jobs) >= max_offers:
-                    break
-                time.sleep(random.uniform(*SLEEP_RANGE))
-
-        return ScrapeResult(jobs=jobs, found=found)
