@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,14 @@ import httpx
 
 from src.config import PROJECT_ROOT, load_config
 from src.constants import (
+    DEFAULT_SUB_SCORE,
+    SUB_SCORE_KEYS,
     VERDICT_EXCELLENT,
     VERDICT_GOOD,
     VERDICT_MIXED,
     VERDICT_OFF_TOPIC,
-    VERDICTS,
+    coerce_sub_score,
+    first_number,
 )
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -47,34 +51,74 @@ _VERDICT_ALIASES = {
 }
 
 SYSTEM_PROMPT = """
-Tu es un Lead Data Scientist qui évalue, pour un candidat précis, l'adéquation d'une offre de stage de fin d'études.
+Tu es le Head of Data d'une scale-up tech de référence, mentor exigeant d'un candidat d'élite. Ton rôle est d'évaluer avec intransigeance l'adéquation d'une offre pour son stage de fin d'études (PFE) afin de lui garantir le meilleur tremplin de carrière possible en Data Science et R&D.
 
 PROFIL DU CANDIDAT
-- Élève-ingénieur en dernière année (École des Mines), Data Science / Machine Learning, orientation Master Recherche en Mathématiques Appliquées (type MAEA / ENS / Mines).
-- Compétences : Python, PyTorch, scikit-learn, Graph ML (GNN), optimisation, NLP/LLM, Docker, Spark.
+- Formation : Élève-ingénieur Mines Saint-Étienne + Master 2 Recherche MAEA (Mathématiques en Action : optimisation, modélisation stochastique, HPC - Mines Saint-Étienne / Centrale Lyon / ENS Lyon) + Licence 3 Mathématiques Générales.
+- Bagage technique : PyTorch (AutoGrad), Graph ML (spectral, Laplacien), Machine Learning appliqué (médical/3D, tabulaire), statistiques inférentielles avancées (bootstrap, tests non paramétriques), Docker, Linux/Bash, SQL, FastAPI, Streamlit, Git.
+- Contraintes PFE : Stage conventionné de fin d'études de 6 mois, début début avril, Paris / Île-de-France impératif (ou télétravail partiel/complet compatible).
+- Objectif de carrière : Entrer directement par le haut du panier (scale-up Tier 1, grand labo industriel ou académique, pôle R&D de grand groupe tech). Exclure tout rôle d'exécutant ou de support.
 
-MISSION
-Évaluer RIGOUREUSEMENT l'offre selon ces critères :
-1. Richesse de la modélisation : PyTorch, Machine Learning, Graph ML, optimisation, probabilités, statistiques avancées (et NON un simple usage d'outils de reporting).
-2. Niveau de responsabilités et d'autonomie réelles confiées au stagiaire.
-3. Crédibilité et niveau de l'équipe technique (data scientists, chercheurs, équipe ML structurée).
-4. Détection des offres déguisées : simple reporting Excel/PowerBI, pur support data, dashboards, saisie/nettoyage répétitif sans modélisation → à pénaliser fortement.
+VERROUS BLOQUANTS (HARD CAPS)
+Si une offre déclenche l'une de ces conditions, plafonne IMMÉDIATEMENT le score global (rerank_score) au plafond indiqué, peu importe la qualité du sujet :
+- Alternance stricte, contrat pro ou durée < 5 mois non négociable en PFE : NOTE MAXIMALE = 15.
+- Livrable principal axé sur le reporting, dashboards BI (Power BI, Tableau, Excel, Qlik) ou support data analyst : NOTE MAXIMALE = 20.
+- Localisation hors Île-de-France sans mention explicite de télétravail compatible : NOTE MAXIMALE = 25.
+- « IA » superficielle (simple prompt engineering, wrappers LangChain/API sans modélisation, fine-tuning ni entraînement) : NOTE MAXIMALE = 40.
 
-RÈGLES DE NOTATION (rerank_score, 0-100)
-- 85-100 (EXCELLENT) : forte composante recherche / modélisation avancée (ML/DL/GNN/optimisation).
-- 60-84 (BON) : vraie mission data science avec modélisation, périmètre stimulant.
-- 40-59 (MITIGÉ) : data science générique ou périmètre limité, potentiel de montée en compétence.
-- 0-39 (HORS_SUJET) : reporting / pur support / Business Intelligence sans modélisation.
+GRILLE D'ÉVALUATION PAR CRITÈRES (Sous-scores de 1 à 5)
+Évalue chaque dimension de manière factuelle (ce qui n'est pas écrit n'existe pas) :
 
-FORMAT DE SORTIE
-Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, au format exact suivant :
+1. modeling_depth (Profondeur mathématique & algorithmique)
+- 1 : Simple requêtage SQL, dashboarding, nettoyage de données répétitif ou script d'automatisation.
+- 2 : Machine Learning basique de surface (scikit-learn générique, régression/clustering simple sans feature engineering avancé).
+- 3 : Vrai Machine Learning / Deep Learning appliqué avec modélisation solide et pipeline de validation rigoureux.
+- 4 : Deep Learning avancé, Computer Vision 3D, NLP/LLM open-weights avec fine-tuning, ou pipelines d'optimisation complexes.
+- 5 : R&D de pointe, formulation mathématique sur mesure (fonctions de perte custom, optimisation non convexe, Graph ML, physique/IA).
+
+2. mentorship_team (Qualité de l'encadrement & séniorité)
+- 1 : Stagiaire isolé sur la data ou encadré uniquement par des profils business/produit sans compétences ML.
+- 2 : Équipe tech sans data scientists seniors identifiés, encadrement flou.
+- 3 : Équipe Data Science existante avec des seniors capables de relire du code et cadrer les projets.
+- 4 : Pôle ML structuré, Lead Data Scientists expérimentés, méthodologies d'ingénierie robustes (MLOps, revues de code).
+- 5 : Chercheurs (PhD), Staff ML Engineers reconnus, laboratoire de recherche ou équipe de référence internationale.
+
+3. career_leverage (Prestige & tremplin professionnel)
+- 1 : ESN non spécialisée ou société de conseil en régie avec incertitude sur la mission finale.
+- 2 : Entreprise traditionnelle avec faible culture tech/data, stage peu différenciant sur un CV.
+- 3 : PME technologique solide, grande entreprise reconnue ou scale-up établie avec visibilité marché correcte.
+- 4 : Scale-up tech en forte croissance (Tier 1/2) ou grand pôle R&D industriel très valorisé par les recruteurs.
+- 5 : Acteur de premier plan mondial de l'IA (Inria, CEA, licornes IA, labos tech d'élite), impact direct garanti sur le réseau.
+
+4. pfe_compatibility (Adéquation PFE, dates & logistique)
+- 1 : Incompatible (alternance imposée, césure 3 mois, hors IDF sans remote).
+- 3 : Partiellement compatible mais ambigu (mention "stage ou alternance", date floue).
+- 5 : Parfaitement aligné (stage conventionné 6 mois, démarrage mars/avril, Paris/remote).
+
+FORMAT DE SORTIE (JSON STRICT)
+Réponds UNIQUEMENT avec un objet JSON valide, sans texte d'introduction ni balises superflues. Remplis les champs dans cet ordre précis :
+
 {
-  "rerank_score": <entier 0-100>,
+  "reasoning": "<Synthèse critique en 3 phrases : adéquation du calendrier, réalité mathématique de la mission vs buzzwords, calibre de l'encadrement>",
+  "hard_cap_triggered": "<Nom de la contrainte bloquante déclenchée, ou null>",
+  "sub_scores": {
+    "modeling_depth": <Entier de 1 à 5>,
+    "mentorship_team": <Entier de 1 à 5>,
+    "career_leverage": <Entier de 1 à 5>,
+    "pfe_compatibility": <Entier de 1 à 5>
+  },
+  "match_reasons": ["<Point fort factuel 1>", "<Point fort factuel 2>"],
+  "red_flags": ["<Risque ou manque d'information 1>", "<Risque 2>"],
+  "tech_stack_detected": ["<Techno 1>", "<Techno 2>"],
   "verdict": "EXCELLENT" | "BON" | "MITIGÉ" | "HORS_SUJET",
-  "match_reasons": ["<raison factuelle du match>", "..."],
-  "red_flags": ["<point d'attention éventuel>", "..."],
-  "tech_stack_detected": ["PyTorch", "SQL", "..."]
+  "rerank_score": <Entier de 0 à 100 reflétant les sous-scores et plafonné par les hard caps>
 }
+
+RÈGLES D'ALIGNEMENT DU SCORE GLOBAL :
+- EXCELLENT (85-100) : modeling_depth >= 4, mentorship_team >= 4, pfe_compatibility = 5, aucun hard cap.
+- BON (65-84) : modeling_depth >= 3, encadrement solide, PFE compatible.
+- MITIGÉ (40-64) : mission générique, manque de visibilité sur l'encadrement ou stack standard.
+- HORS_SUJET (0-39) : hard cap déclenché, reporting ou inadéquation PFE.
 """
 
 
@@ -95,10 +139,14 @@ def load_env_file(path: str | Path | None = None) -> None:
 
 
 def verdict_from_score(score: float) -> str:
-    """Déduit un verdict (fallback) à partir d'un score 0-100."""
-    if score >= 80:
+    """Déduit un verdict (fallback) à partir d'un score 0-100.
+
+    Bandes alignées sur la grille du juge : EXCELLENT ≥ 85, BON ≥ 65, MITIGÉ ≥ 40,
+    HORS_SUJET en deçà.
+    """
+    if score >= 85:
         return VERDICT_EXCELLENT
-    if score >= 60:
+    if score >= 65:
         return VERDICT_GOOD
     if score >= 40:
         return VERDICT_MIXED
@@ -114,6 +162,86 @@ def _as_str_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item) for item in value if str(item).strip()]
     return [str(value)]
+
+
+# --- Verrous bloquants (hard caps) ------------------------------------------- #
+# Le prompt demande au modèle de plafonner lui-même le score, mais on applique ici
+# un filet défensif : si un verrou est signalé, le score est borné par son plafond
+# quoi que le modèle ait répondu (garantie d'alignement indépendante du LLM).
+_HARD_CAPS: tuple[tuple[tuple[str, ...], int], ...] = (
+    # Contrat / durée
+    (("alternance", "contrat pro", "apprentissage", "durée", "5 mois",
+      "césure", "cesure", "cursus"), 15),
+    # Reporting / BI / support data
+    (("reporting", "dashboard", "power bi", "qlik", "business intelligence",
+      "analyst", "support", "excel", "tableau"), 20),
+    # Localisation
+    (("localisation", "localization", "île-de-france", "ile-de-france", "idf",
+      "télétravail", "teletravail", "remote", "paris", "géographi", "geographi"), 25),
+    # « IA » superficielle
+    (("superficiel", "superficielle", "prompt engineering", "wrapper", "langchain",
+      "sans modélisation", "sans modelisation", "automatisation"), 40),
+)
+
+
+def _normalize_hard_cap(value: Any) -> str | None:
+    """Normalise ``hard_cap_triggered`` en chaîne, ou ``None`` si aucun verrou."""
+    text = str(value or "").strip()
+    if not text or text.casefold() in ("null", "none", "aucun", "aucune"):
+        return None
+    return text
+
+
+def hard_cap_max(reason: str | None) -> int | None:
+    """Plafond associé à un verrou bloquant (``None`` = pas de plafond).
+
+    Correspondance par mots-clés, volontairement défensive : ``hard_cap_triggered``
+    est un nom libre, on matche donc les familles de contraintes (contrat, BI,
+    localisation, « IA » superficielle).
+    """
+    if not reason:
+        return None
+    lowered = reason.casefold()
+    for keywords, max_score in _HARD_CAPS:
+        if any(keyword in lowered for keyword in keywords):
+            return max_score
+    return None
+
+
+def _key_signature(name: Any) -> str:
+    """Signature insensible à la casse, aux accents et aux séparateurs d'une clé.
+
+    ``"modeling_depth"``, ``"modelingDepth"`` et ``"Modeling Depth"`` produisent la
+    même signature (``modelingdepth``).
+    """
+    decomposed = unicodedata.normalize("NFKD", str(name or "").casefold())
+    ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]", "", ascii_only)
+
+
+#: Correspondance signature -> clé canonique des sous-scores (tolérance de forme).
+_SUB_SCORE_ALIASES: dict[str, str] = {_key_signature(key): key for key in SUB_SCORE_KEYS}
+
+
+def _normalize_sub_scores(value: Any) -> dict[str, int]:
+    """Normalise ``sub_scores`` en dict complet ``{clé: entier 1-5}``.
+
+    Les clés sont comparées **après normalisation** (casse, accents, séparateurs) :
+    un modèle qui répond ``modelingDepth``, ``modeling depth`` ou
+    ``Modeling-Depth`` est compris, sans perdre l'information. Champ manquant,
+    JSON non-dictionnaire ou valeur inexploitable ⇒ valeur neutre
+    (``DEFAULT_SUB_SCORE``) : l'interface reste stable.
+    """
+    if not isinstance(value, dict):
+        return {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}
+    provided: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        canonical = _SUB_SCORE_ALIASES.get(_key_signature(raw_key))
+        if canonical is not None and canonical not in provided:
+            provided[canonical] = raw_value
+    return {
+        key: coerce_sub_score(provided.get(key, DEFAULT_SUB_SCORE)) for key in SUB_SCORE_KEYS
+    }
 
 
 class LLMJudge:
@@ -201,7 +329,14 @@ class LLMJudge:
     # Parsing / normalisation
     # ------------------------------------------------------------------ #
     def _parse_response(self, content: str | None, job: dict[str, Any]) -> dict[str, Any]:
-        """Parse la réponse JSON du LLM en structure normalisée et fiable."""
+        """Parse la réponse JSON du LLM en structure normalisée et fiable.
+
+        Extrait, en plus du score et du verdict, la grille de sous-scores
+        qualitatifs (1-5) et le verrou bloquant éventuel. Le score global est
+        plafonné par le hard cap, puis le verdict est re-dérivé du score pour
+        garantir l'alignement (un modèle qui répondrait EXCELLENT avec un score
+        plafonné à 20 est corrigé).
+        """
         cleaned = _CODE_FENCE_RE.sub("", content or "").strip()
         try:
             data = json.loads(cleaned)
@@ -211,14 +346,23 @@ class LLMJudge:
             return self._fallback(job, reason="Réponse LLM invalide (JSON non-objet).")
 
         score = self._coerce_score(data.get("rerank_score"), job)
+
+        hard_cap = _normalize_hard_cap(data.get("hard_cap_triggered"))
+        cap = hard_cap_max(hard_cap)
+        if cap is not None:
+            score = min(score, cap)
+
         raw_verdict = str(data.get("verdict", "")).strip().upper()
         verdict = _VERDICT_ALIASES.get(raw_verdict)
-        if verdict not in VERDICTS:
+        if verdict != verdict_from_score(score):
             verdict = verdict_from_score(score)
 
         return {
             "rerank_score": score,
             "verdict": verdict,
+            "sub_scores": _normalize_sub_scores(data.get("sub_scores")),
+            "hard_cap_triggered": hard_cap,
+            "reasoning": str(data.get("reasoning") or "").strip(),
             "match_reasons": _as_str_list(data.get("match_reasons")),
             "red_flags": _as_str_list(data.get("red_flags")),
             "tech_stack": _as_str_list(data.get("tech_stack_detected")),
@@ -226,12 +370,18 @@ class LLMJudge:
 
     @staticmethod
     def _coerce_score(value: Any, job: dict[str, Any]) -> int:
-        """Convertit une valeur en entier borné 0-100, sinon retombe sur final_score."""
-        try:
-            score = int(round(float(value)))
-        except (TypeError, ValueError):
-            score = int(round(float(job.get("final_score", 0.0) or 0.0)))
-        return max(0, min(100, score))
+        """Convertit une valeur en entier borné 0-100, sinon retombe sur final_score.
+
+        Tolérant à la forme : ``85``, ``"85/100"``, ``"Score : 85"`` ou ``"85 %"``
+        sont tous lus comme 85 — un modèle qui répond ``85/100`` ne doit pas faire
+        perdre son jugement au profit du score de l'étape 1.
+        """
+        number = first_number(value)
+        if number is None:
+            number = first_number(job.get("final_score"))
+        if number is None:
+            return 0
+        return max(0, min(100, int(round(number))))
 
     def _fallback(self, job: dict[str, Any], reason: str = "") -> dict[str, Any]:
         """Fallback défensif : réutilise le score initial et signale le problème."""
@@ -239,6 +389,9 @@ class LLMJudge:
         return {
             "rerank_score": score,
             "verdict": verdict_from_score(score),
+            "sub_scores": {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS},
+            "hard_cap_triggered": None,
+            "reasoning": "",
             "match_reasons": [],
             "red_flags": [reason] if reason else [],
             "tech_stack": [],

@@ -577,6 +577,96 @@ runs=2 | mémoire de collecte=5 | offres=5
   être re-parcourue), mais si le filtre métier est assoupli plus tard, elle ne sera pas « redécouverte »
   par l'arrêt anticipé — elle sera en revanche toujours collectable si elle apparaît dans le flux.
 
+## 11. Moteur de décision LLM à sous-scores (1-5) et son affichage
+
+### 11.1 Prompt calibré pour le profil
+
+Le prompt système du juge (`src/matching/llm_judge.py`) évalue l'offre selon le
+profil réel — élève-ingénieur **Mines Saint-Étienne** + **M2 Recherche MAEA** —
+avec :
+
+1. **raisonnement préalable** (`reasoning`) exigé **avant** `rerank_score` dans le
+   JSON : le modèle motive d'abord (calendrier, réalité mathématique de la mission
+   vs buzzwords, calibre de l'encadrement), puis note ;
+2. **quatre sous-scores de 1 à 5**, chacun avec une grille explicite :
+   `modeling_depth` (requêtage/dashboarding → R&D de pointe),
+   `mentorship_team` (stagiaire isolé → PhD / Staff ML / laboratoire),
+   `career_leverage` (ESN en régie → acteur mondial de l'IA),
+   `pfe_compatibility` (incompatible → 6 mois conventionnés, mars/avril, Paris/remote) ;
+3. **quatre verrous bloquants** plafonnant le score global : alternance/contrat pro
+   ou durée < 5 mois (**15**), livrable reporting/BI (**20**), hors Île-de-France
+   sans télétravail (**25**), « IA » superficielle — prompt engineering, wrappers
+   sans modélisation ni entraînement (**40**) ;
+4. **règles d'alignement** score ↔ verdict (EXCELLENT ≥ 85, BON ≥ 65, MITIGÉ ≥ 40,
+   HORS_SUJET en deçà).
+
+Deux garde-fous indépendants du modèle : le score est **re-plafonné** dans le code
+si un verrou est signalé (`hard_cap_max`), et le verdict est **re-dérivé** du score
+(un modèle qui répondrait EXCELLENT à 20 est corrigé).
+
+### 11.2 Robustesse du parsing
+
+* **Tolérance d'écriture** : `"85/100"`, `"Score : 72"`, `"85 %"` et `"4,5"` sont
+  lus comme des nombres (`first_number` dans `src/constants.py`), au lieu de
+  retomber sur le score de l'étape 1 ;
+* **clés de sous-scores normalisées** : `modelingDepth`, `modeling depth`,
+  `Modeling-Depth` sont reconnus (signature insensible à la casse, aux accents et
+  aux séparateurs) ;
+* **repli garanti** : JSON non parsable, réponse non-objet, clé absente, clé API
+  manquante, 429 ou erreur réseau ⇒ `_fallback` (score de l'étape 1, sous-scores
+  neutres à 3, `red_flag` expliquant la cause) — `judge()` ne lève **jamais**.
+
+### 11.3 Persistance (SQLite, migration additive)
+
+`jobs` reçoit `sub_scores` (JSON), `hard_cap_triggered` et **`reasoning`** (texte).
+`update_rerank` accepte et écrit les trois, `clear_rerank` les remet à zéro (la
+ré-évaluation forcée libère réellement le Top-N), et `_migrate` ajoute la colonne
+`reasoning` sur une base existante — **sans perte de données**.
+
+### 11.4 Affichage (dashboard)
+
+1. **Mini-indicateurs sur la carte**, visibles sans ouvrir l'accordéon :
+   `📐 Modélisation : 4/5 | 👥 Équipe : 5/5 | 🚀 Carrière : 4/5 | 📅 PFE : 5/5`
+   (tonalité par niveau : 5/4 positifs-accent, ≤ 2 alerte) ;
+2. **bandeau d'alerte** en tête de carte dès qu'un **verrou bloquant** est
+   déclenché (« Verrou bloquant — <motif> : score plafonné… ») ;
+3. **raisonnement du juge** dans l'accordéon (« Analyse du juge »), à côté de la
+   grille détaillée et des scores internes ;
+4. **onglet « Télémétrie des collectes »** : état des `scrape_runs` (date, état,
+   sources, vues/retenues/nouvelles/doublons, motifs d'arrêt), alerte quand des
+   passes ont été interrompues (flux potentiellement perdu) et tableau des
+   dernières passes par (source × requête × mode) avec la raison d'arrêt en clair.
+
+### 11.5 Preuves d'exécution
+
+```
+python tests/test_reranker.py
+  [OK] parsing JSON valide (score, verdict, sous-scores, raisons, red flags, stack)
+  [OK] parsing tolérant : « 85/100 », clés camelCase/kebab et clamping
+  [OK] hard cap reporting -> score plafonné à 20, verdict aligné
+  [OK] hard cap localisation -> score plafonné à 25
+  [OK] JSON invalide -> fallback sur le score initial
+  [OK] cle API absente -> fallback defensif
+  [OK] erreur HTTP 429 -> fallback avec red flag
+  [OK] persistance : sous-scores + verrou bloquant (JSON + colonne)
+  [OK] persistance : reasoning (trace de la décision) + remise à zéro
+  [OK] prompt du juge : aucun score de l'étape 1 transmis (pas d'ancrage)
+
+python tests/test_app.py
+  Carte : mini-indicateurs (/5), verrou bloquant et raisonnement OK
+  Télémétrie : tables des runs et des raisons d'arrêt OK
+  Interface : onglets ['Offres', 'Télémétrie des collectes'] et panneau de télémétrie OK
+  Interface : 102 offre(s) en base, 50 carte(s) rendue(s) OK
+  Interface : aucun emoji décoratif dans les libellés OK (contenu des offres exclu)
+```
+
+Les icônes de la grille (📐 👥 🚀 📅) et des bandeaux (⚠️ ✓) relèvent du **contenu
+fonctionnel** demandé par le produit : le test d'interface les exclut
+explicitement du contrôle anti-emoji décoratif, tout en continuant à vérifier la
+micro-copie du dashboard (une offre contenant « 🚀 » reste rendue telle quelle).
+
+## 11. Moteur de décision LLM à sous-scores (1-5) et son affichage
+
 
 
 

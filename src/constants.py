@@ -1,5 +1,6 @@
 """Constantes métier partagées par l'ensemble du projet."""
 
+import re
 from typing import Any
 
 # Vocabulaire des décisions de collecte et motifs d'arrêt : défini par les
@@ -93,14 +94,49 @@ SUB_SCORE_LABELS = {
     "pfe_compatibility": "Calendrier PFE",
 }
 
+# Libellés compacts, pour la ligne de mini-indicateurs affichée sur la carte
+# (forme courte, alignée sur l'usage : « 📐 Modélisation : 4/5 | 👥 Équipe : 5/5 »).
+SUB_SCORE_SHORT_LABELS = {
+    "modeling_depth": "Modélisation",
+    "mentorship_team": "Équipe",
+    "career_leverage": "Carrière",
+    "pfe_compatibility": "PFE",
+}
+
+
+_NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+
+def first_number(value: Any) -> float | None:
+    """Premier nombre d'une valeur renvoyée par un LLM (``None`` si aucun).
+
+    Tolère les formes que produisent réellement les modèles malgré la consigne
+    « entier » : ``85``, ``85.0``, ``"85/100"``, ``"Score : 85"``, ``"85 %"``,
+    ``"4,5"``. Utilisé pour le score global comme pour les sous-scores.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = _NUMBER_RE.search(str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", "."))
+    except ValueError:
+        return None
+
 
 def coerce_sub_score(value: Any) -> int:
-    """Borne un sous-score dans [1, 5] (repli neutre ``DEFAULT_SUB_SCORE`` sinon)."""
-    try:
-        score = int(round(float(value)))
-    except (TypeError, ValueError):
+    """Borne un sous-score dans [1, 5] (repli neutre ``DEFAULT_SUB_SCORE`` sinon).
+
+    Tolérant à la forme (``"4/5"``, ``4.0``, ``"5"``) : un modèle qui répond
+    « 4/5 » ne doit pas faire perdre l'information.
+    """
+    number = first_number(value)
+    if number is None:
         return DEFAULT_SUB_SCORE
-    return max(1, min(5, score))
+    return max(1, min(5, int(round(number))))
 
 # --- Plateformes source des offres (colonne jobs.source) ---
 # Les scrapers unifiés écrivent "wttj" ; l'ingestion historique WTTJ
@@ -160,6 +196,22 @@ RUN_ERROR = "ERROR"
 #: Run jamais clos (processus tué, coupure) : marqué au démarrage du run suivant.
 #: C'est un signal d'observabilité à part entière : la collecte a pu être tronquée.
 RUN_INTERRUPTED = "INTERRUPTED"
+
+#: Libellés affichés pour l'état d'un run de collecte (dashboard télémétrie).
+RUN_LABELS = {
+    RUN_RUNNING: "En cours",
+    RUN_OK: "Terminé",
+    RUN_PARTIAL: "Partiel (flux tronqué)",
+    RUN_ERROR: "Erreur",
+    RUN_INTERRUPTED: "Interrompu",
+}
+
+
+def run_label(status: str | None) -> str:
+    """Libellé lisible d'un état de run (repli : valeur brute ou « Inconnu »)."""
+    if not status:
+        return "Inconnu"
+    return RUN_LABELS.get(status, status)
 
 # --- Motifs d'arrêt d'une passe (colonne ``scrape_query_stats.stop_reason``) ---
 STOP_REASON_LABELS = {

@@ -282,6 +282,7 @@ def _rerank_top(db: Database, config: dict[str, Any], top_n: int | None = None) 
             result["tech_stack"],
             sub_scores=result["sub_scores"],
             hard_cap_triggered=result["hard_cap_triggered"],
+            reasoning=result.get("reasoning", ""),
         )
         cap_note = (
             f" [verrou: {result['hard_cap_triggered']}]"

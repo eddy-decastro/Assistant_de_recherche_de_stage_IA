@@ -13,7 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
-from src.constants import VERDICT_EXCELLENT, VERDICT_MIXED
+from src.constants import (
+    DEFAULT_SUB_SCORE,
+    SUB_SCORE_KEYS,
+    VERDICT_EXCELLENT,
+    VERDICT_MIXED,
+    VERDICT_OFF_TOPIC,
+)
 from src.matching.llm_judge import LLMJudge, verdict_from_score
 from src.storage.database import Database
 
@@ -28,11 +34,19 @@ SAMPLE_JOB = {
 }
 
 VALID_PAYLOAD = {
-    "rerank_score": 88,
-    "verdict": "EXCELLENT",
+    "reasoning": "Stage de R&D pertinent, calendrier aligné, encadrement recherche.",
+    "hard_cap_triggered": None,
+    "sub_scores": {
+        "modeling_depth": 5,
+        "mentorship_team": 4,
+        "career_leverage": 4,
+        "pfe_compatibility": 5,
+    },
     "match_reasons": ["Modélisation GNN avancée", "Équipe de recherche"],
     "red_flags": ["Périmètre encore flou"],
     "tech_stack_detected": ["PyTorch", "Python", "SQL"],
+    "verdict": "EXCELLENT",
+    "rerank_score": 88,
 }
 
 
@@ -55,7 +69,10 @@ def test_parsing_valide() -> None:
     assert result["match_reasons"] == ["Modélisation GNN avancée", "Équipe de recherche"]
     assert result["red_flags"] == ["Périmètre encore flou"]
     assert result["tech_stack"] == ["PyTorch", "Python", "SQL"]
-    print("[OK] parsing JSON valide (score, verdict, raisons, red flags, stack)")
+    assert result["sub_scores"] == VALID_PAYLOAD["sub_scores"]
+    assert result["hard_cap_triggered"] is None
+    assert result["reasoning"] == VALID_PAYLOAD["reasoning"]
+    print("[OK] parsing JSON valide (score, verdict, sous-scores, raisons, red flags, stack)")
 
 
 def test_alias_verdict_et_score_borne() -> None:
@@ -63,9 +80,65 @@ def test_alias_verdict_et_score_borne() -> None:
     judge = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload))
     result = judge.judge(SAMPLE_JOB)
     assert result["rerank_score"] == 100, "Le score doit être borné à 100."
-    assert result["verdict"] == VERDICT_MIXED, result
+    # Alignement : un verdict incohérent avec le score (mitigé pour 100) est corrigé.
+    assert result["verdict"] == VERDICT_EXCELLENT, result
     assert result["match_reasons"] == ["une seule raison"], "Une string doit devenir une liste."
-    print("[OK] alias de verdict + score borné + normalisation des listes")
+    assert result["sub_scores"] == {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}, (
+        "Sous-scores absents -> valeurs neutres par défaut."
+    )
+    print("[OK] alias de verdict + score borné + alignement verdict + normalisation")
+
+
+def test_sous_scores_partiels_defauts() -> None:
+    """Champ de sous-score manquant -> valeur neutre ; hors bornes -> clampé."""
+    payload = {
+        "rerank_score": 70,
+        "verdict": "BON",
+        "sub_scores": {"modeling_depth": 4, "career_leverage": 9},
+    }
+    judge = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload))
+    sub = judge.judge(SAMPLE_JOB)["sub_scores"]
+    assert sub["modeling_depth"] == 4
+    assert sub["career_leverage"] == 5, "9 doit être clampé à 5."
+    assert sub["mentorship_team"] == DEFAULT_SUB_SCORE, "Champ manquant -> défaut 3."
+    assert sub["pfe_compatibility"] == DEFAULT_SUB_SCORE
+
+    # sub_scores non-dictionnaire -> défauts partout.
+    payload2 = {"rerank_score": 70, "sub_scores": "pas-un-dict"}
+    result2 = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload2)).judge(SAMPLE_JOB)
+    assert result2["sub_scores"] == {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}
+    print("[OK] sous-scores : valeurs manquantes / hors bornes normalisées")
+
+
+def test_hard_cap_plafonne_le_score() -> None:
+    """Un verrou bloquant plafonne le score et force un verdict aligné."""
+    payload = {
+        "rerank_score": 88,
+        "verdict": "EXCELLENT",
+        "hard_cap_triggered": "Reporting / dashboards BI",
+        "sub_scores": {"modeling_depth": 1, "mentorship_team": 3, "career_leverage": 3, "pfe_compatibility": 5},
+    }
+    result = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload)).judge(SAMPLE_JOB)
+    assert result["rerank_score"] == 20, result  # plafond reporting/BI
+    assert result["verdict"] == VERDICT_OFF_TOPIC, result
+    assert result["hard_cap_triggered"] == "Reporting / dashboards BI"
+    print("[OK] hard cap reporting -> score plafonné à 20, verdict aligné")
+
+
+def test_hard_cap_localisation() -> None:
+    payload = {"rerank_score": 80, "verdict": "BON", "hard_cap_triggered": "Localisation hors Île-de-France"}
+    result = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload)).judge(SAMPLE_JOB)
+    assert result["rerank_score"] == 25
+    assert result["verdict"] == VERDICT_OFF_TOPIC
+    print("[OK] hard cap localisation -> score plafonné à 25")
+
+
+def test_hard_cap_null_aucun_plafond() -> None:
+    payload = {"rerank_score": 88, "verdict": "EXCELLENT", "hard_cap_triggered": None}
+    result = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload)).judge(SAMPLE_JOB)
+    assert result["rerank_score"] == 88
+    assert result["hard_cap_triggered"] is None
+    print("[OK] hard_cap_triggered null -> aucun plafond")
 
 
 def test_json_invalide_fallback() -> None:
@@ -118,6 +191,8 @@ def test_persistance_rerank() -> None:
             result["match_reasons"],
             result["red_flags"],
             result["tech_stack"],
+            sub_scores=result["sub_scores"],
+            hard_cap_triggered=result["hard_cap_triggered"],
         )
 
         assert db.count_ranked() == 1
@@ -128,8 +203,92 @@ def test_persistance_rerank() -> None:
         assert row["verdict"] == VERDICT_EXCELLENT
         assert row["match_reasons"] == VALID_PAYLOAD["match_reasons"]
         assert row["tech_stack"] == VALID_PAYLOAD["tech_stack_detected"]
+        assert row["sub_scores"] == VALID_PAYLOAD["sub_scores"]
+        assert row["hard_cap_triggered"] is None
         db.engine.dispose()
     print("[OK] persistance : update_rerank + get_unranked_jobs + get_jobs (JSON decode)")
+
+
+def test_persistance_sous_scores_et_verrou() -> None:
+    """Les sous-scores (JSON) et le verrou bloquant sont persistés et relus."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "test.db")
+        db.upsert_job(SAMPLE_JOB)
+        job_id = db.get_jobs()[0]["id"]
+        sub = {"modeling_depth": 2, "mentorship_team": 4, "career_leverage": 3, "pfe_compatibility": 1}
+        assert db.update_rerank(
+            job_id, 20, VERDICT_OFF_TOPIC, [], ["reporting"], ["Power BI"],
+            sub_scores=sub, hard_cap_triggered="Reporting / dashboards BI",
+        ) is True
+        row = db.get_jobs()[0]
+        assert row["sub_scores"] == sub
+        assert row["hard_cap_triggered"] == "Reporting / dashboards BI"
+        assert row["tech_stack"] == ["Power BI"]
+        db.engine.dispose()
+    print("[OK] persistance : sous-scores + verrou bloquant (JSON + colonne)")
+
+
+def test_parsing_tolerant_et_raisonnement() -> None:
+    """Formes réelles du LLM tolérées : score « 85/100 » et clés de sous-scores variantes.
+
+    Un modèle qui répond ``85/100`` ou ``modelingDepth`` ne doit pas faire perdre
+    son jugement (repli silencieux sur le score de l'étape 1) ni un sous-score.
+    """
+    payload = {
+        "reasoning": "Calendrier aligné, mission de modélisation réelle, encadrement senior.",
+        "rerank_score": "85/100",
+        "verdict": "EXCELLENT",
+        "sub_scores": {
+            "modelingDepth": "4/5",
+            "mentorship_team": 5,
+            "career-leverage": 4.0,
+            "pfe compatibility": "5",
+        },
+    }
+    result = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload)).judge(SAMPLE_JOB)
+    assert result["rerank_score"] == 85, result
+    assert result["sub_scores"] == {
+        "modeling_depth": 4,
+        "mentorship_team": 5,
+        "career_leverage": 4,
+        "pfe_compatibility": 5,
+    }, result["sub_scores"]
+    assert result["reasoning"] == payload["reasoning"]
+
+    # « Score : 72 » (préfixe textuel) et sous-score hors bornes restent exploitables.
+    payload2 = {"rerank_score": "Score : 72", "sub_scores": {"modeling_depth": 9}}
+    result2 = LLMJudge(load_config(), api_key="test-key", client=_mock_client(payload2)).judge(SAMPLE_JOB)
+    assert result2["rerank_score"] == 72, result2
+    assert result2["sub_scores"]["modeling_depth"] == 5, "Hors bornes -> clampé."
+    print("[OK] parsing tolérant : « 85/100 », clés camelCase/kebab et clamping")
+
+
+def test_persistance_reasoning() -> None:
+    """Le raisonnement (produit AVANT le score) est persisté et relu."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "test.db")
+        db.upsert_job(SAMPLE_JOB)
+        job_id = db.get_jobs()[0]["id"]
+        assert db.update_rerank(
+            job_id,
+            88,
+            VERDICT_EXCELLENT,
+            ["Modélisation GNN avancée"],
+            [],
+            ["PyTorch"],
+            sub_scores=VALID_PAYLOAD["sub_scores"],
+            hard_cap_triggered=None,
+            reasoning=VALID_PAYLOAD["reasoning"],
+        ) is True
+        row = db.get_jobs()[0]
+        assert row["reasoning"] == VALID_PAYLOAD["reasoning"], row
+        assert row["sub_scores"] == VALID_PAYLOAD["sub_scores"]
+
+        # clear_rerank efface aussi le raisonnement (remise à zéro cohérente).
+        assert db.clear_rerank(1) == [job_id]
+        assert db.get_jobs()[0]["reasoning"] is None
+        db.engine.dispose()
+    print("[OK] persistance : reasoning (trace de la décision) + remise à zéro")
 
 
 def test_tri_par_rerank() -> None:
@@ -184,6 +343,7 @@ def test_clear_rerank_revaluation() -> None:
         candidates = db.get_unranked_jobs(limit=5)
         assert len(candidates) == 1 and candidates[0]["title"] == "Offre A", candidates
         assert candidates[0]["red_flags"] == [] and candidates[0]["tech_stack"] == []
+        assert candidates[0]["sub_scores"] == {} and candidates[0]["hard_cap_triggered"] is None
         assert db.clear_rerank(0) == []
         db.engine.dispose()
     print("[OK] ré-évaluation forcée : clear_rerank libère le Top-N pour un nouveau jugement")
@@ -207,6 +367,11 @@ def test_unranked_exclut_les_offres_ecartees() -> None:
 def main() -> None:
     test_parsing_valide()
     test_alias_verdict_et_score_borne()
+    test_sous_scores_partiels_defauts()
+    test_parsing_tolerant_et_raisonnement()
+    test_hard_cap_plafonne_le_score()
+    test_hard_cap_localisation()
+    test_hard_cap_null_aucun_plafond()
     test_json_invalide_fallback()
     test_cle_absente_fallback()
     test_erreur_http_fallback()
@@ -214,6 +379,8 @@ def main() -> None:
     test_clear_rerank_revaluation()
     test_unranked_exclut_les_offres_ecartees()
     test_persistance_rerank()
+    test_persistance_sous_scores_et_verrou()
+    test_persistance_reasoning()
     test_tri_par_rerank()
     print("\n[OK] test_reranker.py : tous les tests passent.")
 

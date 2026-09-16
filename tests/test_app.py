@@ -29,6 +29,14 @@ _OFFER_CONTENT_PATTERNS = (
     r'<p class="sc-excerpt">.*?</p>',
     r'<h3 class="sc-card-title">.*?</h3>',
     r'<div class="sc-card-meta">.*?</div>',
+    # Les badges de la grille d'évaluation portent des icônes demandées par le
+    # produit (📐 👥 🚀 📅) : ils relèvent du contenu, pas de la micro-copie.
+    r'<span class="sc-badge[^"]*sc-subscore[^"]*">.*?</span>',
+    # Idem pour la ligne de mini-indicateurs affichée sur la carte.
+    r'<div class="sc-subscore-strip">.*?</div>',
+    # Bandeaux d'alerte (verrou bloquant, état de la télémétrie) : icônes
+    # fonctionnelles demandées par le produit (⚠️ / ✓).
+    r'<div class="sc-alert[^"]*">.*?</div>',
 )
 
 
@@ -309,13 +317,150 @@ def test_palette_sombre_claire_et_repli() -> None:
     print("  Palette : détection du thème natif Streamlit OK")
 
 
+def test_grille_sous_scores() -> None:
+    """Mini-indicateurs de sous-scores, verrou bloquant et raisonnement du juge."""
+    scored = {
+        **RERANKED,
+        "sub_scores": {
+            "modeling_depth": 5,
+            "mentorship_team": 4,
+            "career_leverage": 4,
+            "pfe_compatibility": 5,
+        },
+        "hard_cap_triggered": None,
+        "reasoning": "Calendrier aligné, mission de modélisation réelle, encadrement senior.",
+    }
+    markup = app.job_card_html(scored, ())
+
+    # 1. Détail (accordéon) : libellés longs + icônes.
+    assert "📐 Modélisation 5/5" in markup
+    assert "👥 Encadrement 4/5" in markup
+    assert "🚀 Carrière 4/5" in markup
+    assert "📅 Calendrier PFE 5/5" in markup
+
+    # 2. Mini-indicateurs compacts, VISIBLES sans ouvrir l'accordéon.
+    assert "📐 Modélisation : <b>5/5</b>" in markup, markup
+    assert "👥 Équipe : <b>4/5</b>" in markup
+    assert "🚀 Carrière : <b>4/5</b>" in markup
+    assert "📅 PFE : <b>5/5</b>" in markup
+    assert markup.index("sc-subscore-strip") < markup.index("<details"), (
+        "Les mini-indicateurs doivent précéder l'accordéon (visibles d'emblée)."
+    )
+
+    # 3. Raisonnement du juge (produit AVANT le score) affiché dans l'accordéon.
+    assert "Analyse du juge (raisonnement)" in markup
+    assert scored["reasoning"] in markup
+
+    # 4. Aucun verrou : ni bandeau, ni mention.
+    assert "Verrou bloquant" not in markup
+
+    # 5. Verrou déclenché : bandeau d'alerte en tête de carte.
+    capped = {**scored, "hard_cap_triggered": "Reporting / dashboards BI"}
+    capped_markup = app.job_card_html(capped, ())
+    assert "Verrou bloquant" in capped_markup
+    assert "Reporting / dashboards BI" in capped_markup
+    assert "sc-alert" in capped_markup and "sc-tone-alert" in capped_markup
+    assert capped_markup.index("sc-alert") < capped_markup.index("<details"), (
+        "Le bandeau de verrou doit être visible en tête de carte."
+    )
+
+    # 6. Une offre non évaluée n'affiche ni grille, ni mini-indicateurs, ni bandeau.
+    plain = app.job_card_html(JOB, ())
+    assert "Grille d'évaluation" not in plain
+    assert "sc-subscore-strip" not in plain
+    assert "sc-alert" not in plain
+    print("  Carte : mini-indicateurs (/5), verrou bloquant et raisonnement OK")
+
+
+def test_telemetrie_panneau() -> None:
+    """Le panneau de télémétrie restitue les runs et les raisons d'arrêt."""
+    runs = [
+        {
+            "started_at": datetime(2026, 9, 16, 21, 21, 51),
+            "status": app.RUN_OK,
+            "sources": "linkedin,jobteaser",
+            "total_found": 30,
+            "total_validated": 24,
+            "total_inserted": 24,
+            "total_duplicates": 6,
+            "notes": None,
+        },
+        {
+            "started_at": datetime(2026, 9, 16, 20, 0, 0),
+            "status": app.RUN_PARTIAL,
+            "sources": "linkedin",
+            "total_found": 17,
+            "total_validated": 17,
+            "total_inserted": 17,
+            "total_duplicates": 0,
+            "notes": "max_pages",
+        },
+    ]
+    runs_table = app._telemetry_runs_table(runs)
+    assert "16/09 21:21" in runs_table
+    assert "Terminé" in runs_table and "Partiel (flux tronqué)" in runs_table
+    assert "max_pages" in runs_table
+
+    passes = [
+        {
+            "source": "linkedin",
+            "query": "Stage Machine Learning",
+            "mode": "freshness",
+            "started_at": datetime(2026, 9, 16, 21, 21, 20),
+            "finished_at": datetime(2026, 9, 16, 21, 21, 51),
+            "pages_fetched": 1,
+            "cards_seen": 10,
+            "jobs_kept": 0,
+            "jobs_known": 10,
+            "stop_reason": "duplicate_page",
+        },
+        {
+            "source": "linkedin",
+            "query": "Stage Data Scientist",
+            "mode": "relevance",
+            "started_at": datetime(2026, 9, 16, 21, 20, 0),
+            "finished_at": datetime(2026, 9, 16, 21, 20, 40),
+            "pages_fetched": 6,
+            "cards_seen": 60,
+            "jobs_kept": 17,
+            "jobs_known": 30,
+            "stop_reason": "max_pages",
+        },
+    ]
+    passes_table = app._telemetry_passes_table(passes)
+    assert "Fraîcheur (tri par date)" in passes_table
+    assert "Rattrapage (tri par pertinence)" in passes_table
+    assert "Page déjà vue (pagination stagnante)" in passes_table
+    assert "Plafond de pages atteint (flux potentiellement tronqué)" in passes_table
+    # Une passe tronquée est signalée comme telle (tone d'alerte).
+    assert "sc-tone-alert" in passes_table
+
+    assert app._telemetry_runs_table([]) == "" and app._telemetry_passes_table([]) == ""
+    print("  Télémétrie : tables des runs et des raisons d'arrêt OK")
+
+
+def test_onglet_telemetrie_interface() -> None:
+    """L'onglet « Télémétrie des collectes » est rendu dans l'application."""
+    at = AppTest.from_file(str(app.__file__), default_timeout=60).run()
+    assert not at.exception, at.exception
+    labels = [tab.label for tab in at.tabs]
+    assert "Télémétrie des collectes" in labels, labels
+    markup = " ".join(element.value for element in at.markdown)
+    assert "Runs de collecte" in markup, "Le tableau des runs doit être rendu."
+    assert "Dernières passes (raison d'arrêt)" in markup
+    print(f"  Interface : onglets {labels} et panneau de télémétrie OK")
+
+
 def main() -> None:
     """Exécute l'ensemble des tests du dashboard."""
     test_helpers_score_et_alignement()
     test_helpers_texte_dates_et_technos()
     test_filtres_et_repartition()
     test_carte_html()
+    test_grille_sous_scores()
+    test_telemetrie_panneau()
     test_palette_sombre_claire_et_repli()
+    test_onglet_telemetrie_interface()
     test_interface_streamlit()
     print("TOUS LES TESTS PASSENT")
 

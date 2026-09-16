@@ -170,6 +170,8 @@ class Job(Base):
     tech_stack = Column(Text, nullable=True)      # JSON : liste de chaînes
     sub_scores = Column(Text, nullable=True)      # JSON : dict des 4 sous-scores (1-5)
     hard_cap_triggered = Column(String(200), nullable=True)  # verrou bloquant déclenché
+    # Raisonnement produit AVANT le score par le juge LLM (traçabilité de la décision).
+    reasoning = Column(Text, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         data = {column.name: getattr(self, column.name) for column in self.__table__.columns}
@@ -305,6 +307,7 @@ class Database:
             "rejection_reason": "VARCHAR(300)",
             "sub_scores": "TEXT",
             "hard_cap_triggered": "VARCHAR(200)",
+            "reasoning": "TEXT",
             # Collecte hybride : identifiant plateforme, URL canonique, publication.
             "id_externe": "VARCHAR(300)",
             "canonical_url": "VARCHAR(2000)",
@@ -490,8 +493,14 @@ class Database:
         tech_stack: Iterable[str] | None = None,
         sub_scores: Mapping[str, int] | None = None,
         hard_cap_triggered: str | None = None,
+        reasoning: str | None = None,
     ) -> bool:
-        """Enregistre l'analyse fine (étape 2) d'une offre. False si introuvable."""
+        """Enregistre l'analyse fine (étape 2) d'une offre. False si introuvable.
+
+        ``reasoning`` est le raisonnement produit par le juge AVANT le score : il
+        est conservé tel quel pour la traçabilité de la décision (audit et
+        affichage dans le dashboard).
+        """
         with self.SessionLocal() as session:
             record = session.get(Job, job_id)
             if record is None:
@@ -503,6 +512,7 @@ class Database:
             record.tech_stack = _encode_json_list(tech_stack)
             record.sub_scores = _encode_sub_scores(sub_scores)
             record.hard_cap_triggered = hard_cap_triggered or None
+            record.reasoning = (reasoning or "").strip() or None
             session.commit()
             return True
 
@@ -583,6 +593,7 @@ class Database:
                 record.tech_stack = None
                 record.sub_scores = None
                 record.hard_cap_triggered = None
+                record.reasoning = None
                 ids.append(record.id)
             session.commit()
             return ids
@@ -757,6 +768,19 @@ class Database:
             stmt = select(ScrapeRun).order_by(ScrapeRun.started_at.desc()).limit(1)
             record = session.execute(stmt).scalars().first()
             return record.to_dict() if record is not None else None
+
+    def get_recent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Derniers runs de collecte, du plus récent au plus ancien.
+
+        Alimente le panneau de télémétrie du dashboard (état de santé des collectes).
+        """
+        with self.SessionLocal() as session:
+            stmt = (
+                select(ScrapeRun)
+                .order_by(ScrapeRun.started_at.desc())
+                .limit(max(0, int(limit)))
+            )
+            return [record.to_dict() for record in session.execute(stmt).scalars().all()]
 
     def count_runs(self) -> int:
         """Nombre de runs de collecte enregistrés."""

@@ -35,6 +35,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import load_config  # noqa: E402
 from src.constants import (  # noqa: E402
+    RUN_ERROR,
+    RUN_INTERRUPTED,
+    RUN_LABELS,
+    RUN_OK,
+    RUN_PARTIAL,
+    RUN_RUNNING,
     SOURCE_COLORS,
     SOURCE_FALLBACK_COLOR,
     STATUS_APPLIED,
@@ -44,6 +50,9 @@ from src.constants import (  # noqa: E402
     STATUS_OPTIONS,
     STATUS_ORDER,
     STATUS_REJECTED,
+    SUB_SCORE_KEYS,
+    SUB_SCORE_LABELS,
+    SUB_SCORE_SHORT_LABELS,
     TIER_1,
     TIER_ESN,
     TIER_LABELS,
@@ -53,8 +62,12 @@ from src.constants import (  # noqa: E402
     VERDICT_LABELS,
     VERDICT_MIXED,
     VERDICT_OFF_TOPIC,
+    coerce_sub_score,
+    is_incomplete_stop,
+    pass_label,
     source_label,
     source_rank,
+    stop_reason_label,
 )
 from src.storage.database import Database  # noqa: E402
 
@@ -422,6 +435,63 @@ div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .
   white-space: nowrap;
 }
 .sc-card-actions { margin-top: 12px; }
+
+/* ---------- Grille d'évaluation (sous-scores) & verrou bloquant ---------- */
+.sc-subscore-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--sc-border);
+  border-radius: 8px;
+  background: var(--sc-surface-strong);
+  font-size: 11.5px;
+  color: var(--sc-muted);
+  font-variant-numeric: tabular-nums;
+}
+.sc-subscore-strip .sc-subscore-item { display: inline-flex; align-items: center; gap: 4px; }
+.sc-subscore-strip .sc-subscore-item b { color: var(--sc-tone-fg, var(--sc-text)); font-weight: 650; }
+.sc-subscore-strip .sc-sep { color: var(--sc-faint); }
+.sc-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--sc-tone-bd, var(--sc-border));
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--sc-tone-bg, var(--sc-surface-strong));
+  color: var(--sc-tone-fg, var(--sc-text));
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+.sc-alert .sc-alert-icon { font-size: 13px; flex: 0 0 auto; }
+.sc-telemetry { margin-top: 14px; }
+.sc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sc-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sc-faint);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--sc-border);
+  white-space: nowrap;
+}
+.sc-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--sc-border);
+  color: var(--sc-muted);
+  vertical-align: top;
+}
+.sc-table tr:last-child td { border-bottom: none; }
+.sc-table td.sc-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-table .sc-strong { color: var(--sc-text); font-weight: 600; }
 
 /* ---------- Accordéon « Détails & évaluation » ---------- */
 .sc-details { margin-top: 12px; border-top: 1px solid var(--sc-border); }
@@ -912,6 +982,98 @@ def _verdict_block(job: dict[str, Any]) -> str:
     )
 
 
+# Icônes de la grille d'évaluation (sous-scores) — l'emoji est confiné à l'UI.
+SUB_SCORE_ICONS = {
+    "modeling_depth": "📐",
+    "mentorship_team": "👥",
+    "career_leverage": "🚀",
+    "pfe_compatibility": "📅",
+}
+
+
+def _subscore_tone(value: int) -> str:
+    """Tonalité d'un sous-score (5 = excellent → 1 = bloquant)."""
+    return {5: "positive", 4: "accent", 3: "mute", 2: "warn"}.get(value, "alert")
+
+
+def _hard_cap_banner(job: dict[str, Any]) -> str:
+    """Bandeau d'alerte bien visible lorsqu'un verrou bloquant a été déclenché.
+
+    Placé en tête de carte (juste sous l'en-tête) : le score plafonné par un hard
+    cap doit se voir immédiatement, sans ouvrir l'accordéon.
+    """
+    reason = (job.get("hard_cap_triggered") or "").strip()
+    if not reason:
+        return ""
+    return (
+        f'<div class="sc-alert {tone_class("alert")}">'
+        '<span class="sc-alert-icon">⚠️</span>'
+        f"<span><b>Verrou bloquant</b> — {_esc(reason)} : score plafonné, "
+        "candidature à écarter ou à vérifier avant tout effort.</span></div>"
+    )
+
+
+def _subscores_strip(job: dict[str, Any]) -> str:
+    """Mini-indicateurs compacts des 4 sous-scores, visibles SANS ouvrir l'accordéon.
+
+    Forme : ``📐 Modélisation : 4/5 | 👥 Équipe : 5/5 | 🚀 Carrière : 4/5 | 📅 PFE : 5/5``.
+    Rien n'est affiché tant que l'offre n'a pas été évaluée par le juge LLM.
+    """
+    if not is_reranked(job):
+        return ""
+    sub = job.get("sub_scores") or {}
+    if not sub:
+        return ""
+    separator = '<span class="sc-sep">|</span>'
+    items = [
+        f'<span class="sc-subscore-item {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
+        f"{SUB_SCORE_ICONS[key]} {_esc(SUB_SCORE_SHORT_LABELS[key])} : "
+        f"<b>{coerce_sub_score(sub.get(key))}/5</b></span>"
+        for key in SUB_SCORE_KEYS
+    ]
+    return f'<div class="sc-subscore-strip">{separator.join(items)}</div>'
+
+
+def _subscores_block(job: dict[str, Any]) -> str:
+    """Grille d'évaluation détaillée (accordéon) : sous-scores /5 + verrou bloquant."""
+    if not is_reranked(job):
+        return ""
+    sub = job.get("sub_scores") or {}
+    if not sub:
+        return ""
+    badges = "".join(
+        f'<span class="sc-badge sc-subscore {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
+        f"{SUB_SCORE_ICONS[key]} {_esc(SUB_SCORE_LABELS[key])} {coerce_sub_score(sub.get(key))}/5</span>"
+        for key in SUB_SCORE_KEYS
+    )
+    hard_cap = (job.get("hard_cap_triggered") or "").strip()
+    cap_html = (
+        f'<div class="sc-badges"><span class="sc-badge {tone_class("alert")}">'
+        f"Verrou bloquant : {_esc(hard_cap)}</span></div>"
+        if hard_cap
+        else ""
+    )
+    return (
+        '<div class="sc-block"><div class="sc-section">Grille d\'évaluation</div>'
+        f'<div class="sc-badges">{badges}</div>{cap_html}</div>'
+    )
+
+
+def _reasoning_block(job: dict[str, Any]) -> str:
+    """Raisonnement du juge, produit AVANT le score et conservé en base.
+
+    C'est la justification de la décision : elle rend le score auditable (on voit
+    ce qui a été constaté sur le calendrier, la mission réelle et l'encadrement).
+    """
+    text = clean_text(job.get("reasoning"))
+    if not is_reranked(job) or not text:
+        return ""
+    return (
+        '<div class="sc-block"><div class="sc-section">Analyse du juge (raisonnement)</div>'
+        f'<p class="sc-excerpt">{_esc(text)}</p></div>'
+    )
+
+
 def _scores_block(job: dict[str, Any]) -> str:
     """Détail des scores internes (score R&D, alignement vectoriel, typologie)."""
     origin = "rerank LLM" if is_reranked(job) else "hybride"
@@ -961,11 +1123,13 @@ def job_card_html(job: dict[str, Any], keywords: Sequence[str]) -> str:
         f'<div><h3 class="sc-card-title">{_esc(job.get("title"))}</h3>{_meta_html(job)}</div>'
         f"{score_html(job)}"
         "</div>"
+        f"{_hard_cap_banner(job)}"
         f"{_badges_html(job)}"
+        f"{_subscores_strip(job)}"
         f"{_chips_html(technologies)}"
         '<details class="sc-details">'
         '<summary><span class="sc-chev">›</span>Détails &amp; évaluation</summary>'
-        f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
+        f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_reasoning_block(job)}{_subscores_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
         "</details>"
     )
     cta = (
@@ -1266,8 +1430,146 @@ def run_pipeline() -> None:
 # --------------------------------------------------------------------------- #
 # Point d'entrée
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Panneau « Télémétrie des collectes » (tables scrape_runs / scrape_query_stats)
+# --------------------------------------------------------------------------- #
+RUN_TONES = {
+    RUN_OK: "positive",
+    RUN_PARTIAL: "warn",
+    RUN_ERROR: "alert",
+    RUN_INTERRUPTED: "alert",
+    RUN_RUNNING: "accent",
+}
+
+
+def _fmt_stamp(value: Any) -> str:
+    """Horodatage compact (``16/09 23:21``) d'une colonne de télémétrie."""
+    stamp = parse_timestamp(value)
+    return stamp.strftime("%d/%m %H:%M") if stamp else "—"
+
+
+def _telemetry_runs_table(runs: Sequence[dict[str, Any]]) -> str:
+    """Tableau des derniers runs de collecte (santé des sources)."""
+    if not runs:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td class="sc-num">{_esc(_fmt_stamp(run.get("started_at")))}</td>'
+        f'<td><span class="sc-status {tone_class(RUN_TONES.get(str(run.get("status")), "mute"))}">'
+        f'<i class="sc-dot"></i>'
+        f'{_esc(RUN_LABELS.get(str(run.get("status")), str(run.get("status") or "?")))}</span></td>'
+        f'<td>{_esc(str(run.get("sources") or "—"))}</td>'
+        f'<td class="sc-num">{int(run.get("total_found") or 0)}</td>'
+        f'<td class="sc-num sc-strong">{int(run.get("total_validated") or 0)}</td>'
+        f'<td class="sc-num">{int(run.get("total_inserted") or 0)}</td>'
+        f'<td class="sc-num">{int(run.get("total_duplicates") or 0)}</td>'
+        f'<td>{_esc(str(run.get("notes") or "—"))}</td>'
+        "</tr>"
+        for run in runs
+    )
+    return (
+        '<table class="sc-table"><thead><tr>'
+        "<th>Début</th><th>État</th><th>Sources</th><th>Vues</th>"
+        "<th>Retenues</th><th>Nouvelles</th><th>Doublons</th><th>Motifs d'arrêt</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table>"
+    )
+
+
+def _telemetry_passes_table(stats: Sequence[dict[str, Any]]) -> str:
+    """Tableau des dernières passes : une ligne par (source, requête, mode)."""
+    if not stats:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td class="sc-num">'
+        f'{_esc(_fmt_stamp(stat.get("finished_at") or stat.get("started_at")))}</td>'
+        f'<td>{_esc(str(stat.get("source") or "?"))}</td>'
+        f'<td>{_esc(str(stat.get("query") or ""))}</td>'
+        f'<td>{_esc(pass_label(stat.get("mode")))}</td>'
+        f'<td class="sc-num">{int(stat.get("pages_fetched") or 0)}</td>'
+        f'<td class="sc-num">{int(stat.get("cards_seen") or 0)}</td>'
+        f'<td class="sc-num sc-strong">{int(stat.get("jobs_kept") or 0)}</td>'
+        f'<td class="sc-num">{int(stat.get("jobs_known") or 0)}</td>'
+        f'<td><span class="sc-badge '
+        f'{tone_class("alert" if is_incomplete_stop(stat.get("stop_reason")) else "mute")}">'
+        f'{_esc(stop_reason_label(stat.get("stop_reason")))}</span></td>'
+        "</tr>"
+        for stat in stats
+    )
+    return (
+        '<table class="sc-table"><thead><tr>'
+        "<th>Fin</th><th>Source</th><th>Requête</th><th>Passe</th><th>Pages</th>"
+        "<th>Vues</th><th>Retenues</th><th>Connues</th><th>Arrêt</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table>"
+    )
+
+
+def render_telemetry(db: Database, runs_limit: int = 8, passes_limit: int = 20) -> None:
+    """Panneau d'observabilité : état de santé des collectes et raisons d'arrêt.
+
+    Répond à une question opérationnelle précise : la collecte s'est-elle arrêtée
+    parce que le vivier était épuisé (rien perdu) ou parce qu'un quota, un plafond
+    de pages ou un rate limit a tronqué le flux (donnée potentiellement manquée) ?
+    """
+    runs = db.get_recent_runs(limit=runs_limit)
+    passes = db.get_recent_query_stats(limit=passes_limit)
+    if not runs and not passes:
+        st.markdown(
+            '<div class="sc-empty">Aucune télémétrie enregistrée.<br>'
+            "Lancez une collecte (<code>python run_scrapers.py</code>) : chaque passe y "
+            "consignera sa raison d'arrêt.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    last = runs[0] if runs else {}
+    losses = [stat for stat in passes if is_incomplete_stop(stat.get("stop_reason"))]
+    st.markdown(
+        '<div class="sc-stream"><span class="sc-stream-count">'
+        f"{len(runs)} run(s) · {len(passes)} passe(s) tracée(s)</span>"
+        '<span class="sc-stream-note">'
+        f"Dernier run : {_esc(_fmt_stamp(last.get('started_at')))} · "
+        f"{_esc(RUN_LABELS.get(str(last.get('status')), 'inconnu'))} · "
+        f"mémoire de collecte : {db.count_seen_jobs()} offre(s)</span></div>",
+        unsafe_allow_html=True,
+    )
+    if losses:
+        reasons = ", ".join(
+            sorted({stop_reason_label(stat.get("stop_reason")) for stat in losses})
+        )
+        st.markdown(
+            f'<div class="sc-alert {tone_class("alert")}"><span class="sc-alert-icon">⚠️</span>'
+            f"<span><b>{len(losses)} passe(s) interrompue(s)</b> — du flux a pu être perdu "
+            f"({_esc(reasons)}). Vérifiez la source concernée avant de conclure à un "
+            "vivier épuisé.</span></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div class="sc-alert {tone_class("positive")}"><span class="sc-alert-icon">✓</span>'
+            "<span>Aucune passe interrompue : les collectes tracées se sont closes sur un "
+            "vivier épuisé ou un arrêt anticipé.</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="sc-telemetry"><div class="sc-section">Runs de collecte</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(_telemetry_runs_table(runs), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="sc-telemetry"><div class="sc-section">'
+        "Dernières passes (raison d'arrêt)</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(_telemetry_passes_table(passes), unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def main() -> None:
-    """Assemble le dashboard : styles, filtres, en-tête, KPI et flux d'offres."""
+    """Assemble le dashboard : styles, filtres, en-tête, KPI, flux et télémétrie."""
     inject_styles()
     config = load_config()
     db = get_database()
@@ -1284,7 +1586,12 @@ def main() -> None:
     render_header(jobs, config)
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
     render_kpis(selected, llm_model, len(jobs), not filters.is_default())
-    render_stream(db, selected, filters, keywords)
+
+    offers_tab, telemetry_tab = st.tabs(["Offres", "Télémétrie des collectes"])
+    with offers_tab:
+        render_stream(db, selected, filters, keywords)
+    with telemetry_tab:
+        render_telemetry(db)
 
 
 if __name__ == "__main__":

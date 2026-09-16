@@ -223,8 +223,34 @@ final = 0.60 * similarité_sémantique (all-MiniLM-L6-v2)
 Sur le **Top N** (`ranking.top_n_rerank`, défaut 20) des offres non encore
 évaluées, un LLM **DeepSeek** (`deepseek-chat`) recalcule un `rerank_score`
 (0-100) et produit une synthèse critique :
-- `verdict` : EXCELLENT | BON | MITIGÉ | HORS_SUJET
-- `match_reasons` (points forts), `red_flags` (alertes), `tech_stack`
+- `reasoning` : raisonnement produit **avant** le score (calendrier, réalité
+  mathématique de la mission, calibre de l'encadrement) — conservé en base, c'est
+  la trace auditable de la décision ;
+- `sub_scores` : grille d'évaluation **1 à 5** sur quatre dimensions —
+  `modeling_depth` (profondeur mathématique / R&D vs wrappers),
+  `mentorship_team` (PhD, chercheurs, équipe ML senior),
+  `career_leverage` (Tier 1 / labos vs ESN),
+  `pfe_compatibility` (PFE 6 mois IDF dès avril) ;
+- `verdict` : EXCELLENT (≥ 85) | BON (≥ 65) | MITIGÉ (≥ 40) | HORS_SUJET,
+  **re-dérivé du score** pour rester cohérent ;
+- `hard_cap_triggered` : verrou bloquant déclenché, le cas échéant ;
+- `match_reasons` (points forts), `red_flags` (alertes), `tech_stack`.
+
+**Verrous bloquants (hard caps)** — le prompt les impose au modèle, et le parsing
+les réapplique en filet de sécurité (le plafond tient même si le modèle l'oublie) :
+
+| Condition | Score maximal |
+|---|---|
+| Alternance stricte / contrat pro / durée < 5 mois non négociable | 15 |
+| Livrable centré reporting, dashboards BI (Power BI, Tableau, Qlik, Excel) | 20 |
+| Hors Île-de-France sans télétravail compatible explicite | 25 |
+| « IA » superficielle (prompt engineering, wrappers LLM sans modélisation) | 40 |
+
+**Robustesse du parsing** : le juge ne lève jamais d'exception. Réponse non
+parsable, clé manquante, clé API absente, 429 ou erreur réseau ⇒ repli défensif
+sur le score de l'étape 1 + `red_flag` explicatif ; sous-scores manquants ⇒
+valeur neutre (3) ; formes tolérées à l'écriture (`"85/100"`, `"Score : 72"`,
+`modelingDepth`, `"4/5"`).
 
 Le but est d'**éliminer les faux positifs** (ex. offres de reporting
 Excel/PowerBI déguisées en Data Science) que le bi-encoder seul ne détecte pas.
