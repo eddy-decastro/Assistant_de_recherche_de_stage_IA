@@ -48,6 +48,7 @@ from src.constants import (  # noqa: E402
     TIER_NEUTRAL,
     VERDICT_EXCELLENT,
     VERDICT_GOOD,
+    VERDICT_LABELS,
     VERDICT_MIXED,
     VERDICT_OFF_TOPIC,
     source_label,
@@ -94,13 +95,6 @@ STATUS_TONES = {
     STATUS_APPLIED: "positive",
     STATUS_INTERVIEW: "accent",
     STATUS_IGNORED: "warn",
-}
-
-VERDICT_LABELS = {
-    VERDICT_EXCELLENT: "Excellent",
-    VERDICT_GOOD: "Bon",
-    VERDICT_MIXED: "Mitigé",
-    VERDICT_OFF_TOPIC: "Hors sujet",
 }
 
 VERDICT_TONES = {

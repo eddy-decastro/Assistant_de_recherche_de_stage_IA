@@ -147,12 +147,56 @@ def test_tri_par_rerank() -> None:
     print("[OK] tri : rerank_score prioritaire sur final_score (COALESCE)")
 
 
+def test_prompt_sans_score_bi_encoder() -> None:
+    """Le juge ne reçoit aucun score de l'étape 1 (suppression du biais d'ancrage)."""
+    judge = LLMJudge(load_config(), api_key="test-key", client=_mock_client(VALID_PAYLOAD))
+    messages = judge._build_messages(SAMPLE_JOB, cv_text="CV de test")
+
+    assert messages[0]["role"] == "system" and messages[1]["role"] == "user"
+    user_content = messages[1]["content"]
+    assert "Score préliminaire" not in user_content, user_content
+    assert "bi-encoder" not in user_content.casefold(), "Aucune ancre numérique ne doit fuiter."
+    assert str(SAMPLE_JOB["final_score"]) not in user_content, user_content
+    assert SAMPLE_JOB["title"] in user_content, "Le titre reste indispensable au jugement."
+    assert SAMPLE_JOB["description"] in user_content, "La description complète doit être transmise."
+    assert "CV de test" in user_content, "Le CV du candidat doit être transmis."
+
+    # Une description absente est explicitement signalée (plus d'ambiguïté pour le juge).
+    empty = judge._build_messages({**SAMPLE_JOB, "description": ""})
+    assert "(description indisponible)" in empty[1]["content"], empty[1]["content"]
+    print("[OK] prompt du juge : aucun score de l'étape 1 transmis (pas d'ancrage)")
+
+
+def test_clear_rerank_revaluation() -> None:
+    """clear_rerank rend les N meilleures offres à nouveau candidates au juge LLM."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "test.db")
+        db.upsert_job({**SAMPLE_JOB, "title": "Offre A", "url": "https://x/a", "final_score": 90.0})
+        db.upsert_job({**SAMPLE_JOB, "title": "Offre B", "url": "https://x/b", "final_score": 50.0})
+        for job in db.get_jobs():
+            db.update_rerank(job["id"], 70.0, VERDICT_MIXED, ["ancien verdict"], [], ["SQL"])
+        assert db.count_ranked() == 2
+        assert db.get_unranked_jobs() == [], "Les deux offres sont déjà jugées."
+
+        reset_ids = db.clear_rerank(1)
+        assert len(reset_ids) == 1, reset_ids
+        assert db.count_ranked() == 1
+        candidates = db.get_unranked_jobs(limit=5)
+        assert len(candidates) == 1 and candidates[0]["title"] == "Offre A", candidates
+        assert candidates[0]["red_flags"] == [] and candidates[0]["tech_stack"] == []
+        assert db.clear_rerank(0) == []
+        db.engine.dispose()
+    print("[OK] ré-évaluation forcée : clear_rerank libère le Top-N pour un nouveau jugement")
+
+
 def main() -> None:
     test_parsing_valide()
     test_alias_verdict_et_score_borne()
     test_json_invalide_fallback()
     test_cle_absente_fallback()
     test_erreur_http_fallback()
+    test_prompt_sans_score_bi_encoder()
+    test_clear_rerank_revaluation()
     test_persistance_rerank()
     test_tri_par_rerank()
     print("\n[OK] test_reranker.py : tous les tests passent.")

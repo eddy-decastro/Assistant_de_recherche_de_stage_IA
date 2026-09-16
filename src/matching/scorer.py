@@ -64,13 +64,24 @@ class Scorer:
     # ------------------------------------------------------------------ #
     # Sous-scores
     # ------------------------------------------------------------------ #
+    # Nombre de mots-clés « cœur » suffisant pour saturer le sous-score. Une
+    # proportion linéaire sur toute la liste (3/19 = 15,8 %) rendait ce terme quasi
+    # constant, donc non discriminant : il ne distinguait pas une offre
+    # PyTorch+GNN d'une offre sans aucune compétence clé.
+    KEYWORDS_SATURATION = 5
+
     def keywords_score(self, text: str) -> float:
-        """Part des mots-clés d'excellence présents dans l'offre (0-100)."""
+        """Sous-score mots-clés d'excellence (0-100) à courbe saturante.
+
+        ``min(n / KEYWORDS_SATURATION, 1) × 100`` : détecter 5 mots-clés clés suffit
+        à atteindre 100. Allonger la liste dans config.yaml n'écrase donc plus
+        mécaniquement le score des offres les plus exigeantes.
+        """
         if not self.keywords:
             return 0.0
         lowered = text.casefold()
         present = sum(1 for kw in self.keywords if kw.casefold() in lowered)
-        return (present / len(self.keywords)) * 100.0
+        return min(present / self.KEYWORDS_SATURATION, 1.0) * 100.0
 
     @staticmethod
     def company_score(tier: int) -> float:

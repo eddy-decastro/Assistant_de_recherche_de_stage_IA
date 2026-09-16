@@ -22,6 +22,23 @@ BANNED_EMOJI = (
     "🔍", "📄", "🏢", "🔗", "🚀", "👉", "🤖", "🎯", "🌟", "✅", "⚠️", "🚫", "⚖️", "🎛️", "📍",
 )
 
+# Contenu provenant des plateformes : titres, métadonnées et extraits de fiche.
+# Le contrôle d'emoji porte sur la micro-copie du dashboard, pas sur les annonces
+# (15 descriptions en contiennent après le rattrapage des fiches de poste).
+_OFFER_CONTENT_PATTERNS = (
+    r'<p class="sc-excerpt">.*?</p>',
+    r'<h3 class="sc-card-title">.*?</h3>',
+    r'<div class="sc-card-meta">.*?</div>',
+)
+
+
+def ui_labels_only(markup: str) -> str:
+    """Retire le texte des offres pour ne garder que les libellés de l'interface."""
+    cleaned = markup
+    for pattern in _OFFER_CONTENT_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.DOTALL)
+    return cleaned
+
 _DESCRIPTION = "Mission de recherche : modélisation PyTorch et Graph Neural Networks. " * 12
 
 # Offre évaluée par l'étape 1 uniquement (bi-encoder).
@@ -208,11 +225,17 @@ def test_interface_streamlit() -> None:
     assert len(cards) == expected, f"{len(cards)} carte(s) rendue(s) pour {total} offre(s) en base"
     print(f"  Interface : {total} offre(s) en base, {len(cards)} carte(s) rendue(s) OK")
 
-    # 3. Aucun emoji décoratif dans les libellés rendus.
-    rendered = " ".join([markup] + [element.value for element in at.caption])
+    # 3. Aucun emoji décoratif dans les libellés d'INTERFACE (le contenu des offres
+    #    est exclu : une annonce peut légitimement en contenir).
+    rendered = ui_labels_only(" ".join([markup] + [element.value for element in at.caption]))
     for emoji in BANNED_EMOJI:
         assert emoji not in rendered, f"Emoji décoratif détecté : {emoji}"
-    print("  Interface : aucun emoji décoratif dans les libellés OK")
+
+    sample = app.job_card_html({**JOB, "description": "Annonce rédigée avec 🔍 et 🚀"}, ())
+    assert "🚀" in sample, "Le contenu d'une offre doit être rendu tel quel (aucune censure)."
+    assert "🚀" not in ui_labels_only(sample) and "🔍" not in ui_labels_only(sample)
+    assert "Détails &amp; évaluation" in ui_labels_only(sample), "Les libellés restent contrôlés."
+    print("  Interface : aucun emoji décoratif dans les libellés OK (contenu des offres exclu)")
 
     # 4. Recherche infructueuse : état vide explicite, aucune carte.
     at.sidebar.text_input[0].set_value("zz-introuvable-zz").run()

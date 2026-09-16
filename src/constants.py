@@ -35,6 +35,14 @@ VERDICT_OFF_TOPIC = "HORS_SUJET"
 
 VERDICTS = [VERDICT_EXCELLENT, VERDICT_GOOD, VERDICT_MIXED, VERDICT_OFF_TOPIC]
 
+# Libellés affichés (dashboard, rapports de validation) — source unique de vérité.
+VERDICT_LABELS = {
+    VERDICT_EXCELLENT: "Excellent",
+    VERDICT_GOOD: "Bon",
+    VERDICT_MIXED: "Mitigé",
+    VERDICT_OFF_TOPIC: "Hors sujet",
+}
+
 VERDICT_COLORS = {
     VERDICT_EXCELLENT: "#16a34a",  # vert
     VERDICT_GOOD: "#2563eb",       # bleu

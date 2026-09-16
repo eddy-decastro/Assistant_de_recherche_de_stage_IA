@@ -31,7 +31,23 @@ def test_options_actives() -> None:
     assert args.rescore_all is True
     assert args.trigger_rerank is True
     assert args.top_rerank == 5
+    assert args.reset_rerank is None, "Aucune ré-évaluation forcée par défaut."
     print("  CLI : --trigger-scoring / --rescore-all / --trigger-rerank / --top-rerank OK")
+
+
+def test_option_reset_rerank() -> None:
+    """--reset-rerank N : ré-évaluation forcée des N meilleures offres."""
+    args = parse_args(["--trigger-rerank", "--reset-rerank", "20"])
+    assert args.reset_rerank == 20, args.reset_rerank
+    print("  CLI : --reset-rerank OK (ré-évaluation forcée du Top-N)")
+
+
+def test_option_no_collect() -> None:
+    """--no-collect : rescore/rerank sans recollecter (après enrichissement)."""
+    args = parse_args(["--no-collect", "--rescore-all"])
+    assert args.no_collect is True and args.rescore_all is True
+    assert parse_args([]).no_collect is False
+    print("  CLI : --no-collect OK (travail sur la base existante)")
 
 
 def test_run_pipeline_delegue() -> None:
@@ -47,5 +63,7 @@ def test_run_pipeline_delegue() -> None:
 if __name__ == "__main__":
     test_options_par_defaut()
     test_options_actives()
+    test_option_reset_rerank()
+    test_option_no_collect()
     test_run_pipeline_delegue()
     print("TOUS LES TESTS PASSENT")

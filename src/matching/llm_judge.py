@@ -6,6 +6,10 @@ Architecture Two-Stage :
 
 La clé API est lue depuis le fichier .env (variable DEEPSEEK_API_KEY).
 Aucune exception ne remonte : en cas d'erreur, un fallback défensif est renvoyé.
+
+⚠️ Le juge ne reçoit VOLONTAIREMENT pas le score de l'étape 1 : les verdicts
+enregistrés montraient que le modèle commentait ce score au lieu d'évaluer la
+mission (biais d'ancrage). Il juge désormais sur le CV et la fiche complète.
 """
 from __future__ import annotations
 
@@ -146,14 +150,17 @@ class LLMJudge:
     def _build_messages(
         self, job: dict[str, Any], cv_text: str | None = None
     ) -> list[dict[str, str]]:
-        description = (job.get("description") or "")[:6000]
+        # Aucun score de l'étape 1 n'est transmis : constaté en pratique, le juge
+        # commentait le score bi-encoder au lieu de juger la mission (« le score
+        # préliminaire est faible, mais… »). Le juge doit statuer sur les FAITS
+        # (CV + description complète), sans ancre numérique.
+        description = (job.get("description") or "").strip()[:6000]
         user_content = (
             "OFFRE DE STAGE À ÉVALUER\n"
             f"Titre : {job.get('title', '')}\n"
             f"Entreprise : {job.get('company', '')} (typologie tier {job.get('company_tier', '?')})\n"
-            f"Localisation : {job.get('location', '')}\n"
-            f"Score préliminaire (bi-encoder) : {job.get('final_score', '')}/100\n\n"
-            f"Description :\n{description}\n"
+            f"Localisation : {job.get('location', '')}\n\n"
+            f"Description :\n{description or '(description indisponible)'}\n"
         )
         if cv_text:
             user_content += f"\nCV DU CANDIDAT (extrait) :\n{cv_text[:3000]}\n"
