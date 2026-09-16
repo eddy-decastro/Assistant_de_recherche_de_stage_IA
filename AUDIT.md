@@ -475,6 +475,108 @@ passent également : **aucune régression** (le schéma et la couche d'accès au
 - Le resserrement de l'écart entre une carte et sa barre d'actions s'appuie sur `:has()` ; si le
   navigateur ne le supporte pas, la mise en page reste correcte (espacement par défaut de Streamlit).
 
+## 10. Stratégie de collecte hybride (Fraîcheur + Pertinence)
+
+### 10.1 Problème traité
+
+Aucune des deux stratégies de collecte ne suffisait :
+
+- **tout-chronologique** : rate les offres pertinentes publiées il y a 2-3 semaines et toujours ouvertes ;
+- **tout-pertinence** : fait remonter des offres anciennes et enterre les nouveautés, sur lesquelles la
+  candidature doit partir immédiatement ;
+- **sans observabilité** : impossible de distinguer « vivier épuisé » d'« arrêt sur quota » ou de
+  « rate limit » — donc impossible de savoir si du flux a été perdu.
+
+### 10.2 Mesures préalables (sonde lecture seule, `tools/probe_sources.py`)
+
+| Observation | Résultat | Conséquence |
+|---|---|---|
+| LinkedIn `f_TPR=r604800` (7 j) | 10/10 cartes publiées dans la fenêtre (11 → 16/09) | **filtre temporel serveur exploitable** |
+| LinkedIn `f_TPR=r86400` (24 h) | 10/10 cartes du jour même | fenêtre 1 j possible sans risque |
+| LinkedIn `sortBy=DD` **sans** `f_TPR` | 5 premières cartes **identiques** au mode pertinence (dates 07/09, 07/09, 15/09, 25/08, 13/08) | le tri par date n'est **pas** garanti côté invité |
+| LinkedIn monotonie sur 2 pages (`sortBy=DD` + `f_TPR`) | **7 inversions** de date | l'arrêt anticipé aveugle serait **faux** ⇒ neutralisé par défaut |
+| JobTeaser (intranet école) | `JOBTEASER_COOKIES` **vide** (0 caractère) → source inactive | tri/pagination non vérifiables ⇒ réglages par variables d'environnement |
+| WTTJ (Algolia) | injoignable (DNS), tri de date non exposé par l'index | aligné « best-effort », `DATE_ORDER_RELIABLE=False` |
+
+### 10.3 Mise en œuvre
+
+- **Modèles** (`scrapers/models.py`) : `PassConfig` (tri, quota, fenêtre, seuil d'arrêt, pages),
+  `PassPlan` (passe **résolue**, garde-fous appliqués), `PassReport` (télémétrie), `SeenEntry`
+  (mémoire de collecte), `ScrapeResult.query_reports` / `.seen`.
+- **Moteur unique** (`scrapers/base.py`) : `BaseScraper.collect/_collect_pass` portent le quota, la
+  déduplication transverse, la fenêtre, l'arrêt anticipé et la qualification de la **raison d'arrêt** ;
+  chaque source n'implémente plus que `_iter_pages` (+ 2 capacités déclarées : ordre fiable, filtre
+  temporel serveur).
+- **Mémoire de collecte** (`seen_jobs` + `scrapers/known.py` + `src/ingestion/known_index.py`) :
+  toutes les cartes croisées y sont consignées, y compris les rejets anti-BI qui ne sont jamais
+  persistés dans `jobs`. Sans elle, l'arrêt anticipé serait neutralisé par le bruit.
+- **Schéma** : colonnes `id_externe`, `canonical_url`, `published_at` sur `jobs` (migration additive
+  + backfill des URLs canoniques et de `seen_jobs`) ; tables `scrape_runs`, `scrape_query_stats` ;
+  rétention configurable (180 j) avec purge des runs et de la mémoire de collecte.
+- **Déduplication** : URL canonique **unique** (`scrapers.models.canonical_url`, ré-exportée par
+  `src.storage.cleanup`) — corrige au passage le constat §3.7 (dédup sur chaîne brute non canonique).
+- **Pilotage** : `config.yaml → scrapers.passes.{freshness,relevance}` (quotas, fenêtres, seuil
+  d'arrêt, plafond de pages) + `scrapers.telemetry` ; CLI `--passes`, `--only-source`,
+  `--top-telemetry N`.
+
+### 10.4 Tests (aucun réseau, aucun accès disque hors temporaire)
+
+`tests/test_hybrid_collection.py` (11 cas) : arrêt anticipé sur N connues consécutives, remise à zéro
+du compteur par une inconnue, absence d'arrêt anticipé en mode pertinence, déduplication transverse
+entre passes, arrêt sur fenêtre, fenêtre sans ordre fiable (offre écartée sans arrêt), neutralisation
+documentée de l'arrêt anticipé, rate limit / erreurs HTTP / réseau, source indisponible et passe
+désactivée, décisions de la mémoire de collecte, index (identifiant plateforme + URL canonique).
+
+`tests/test_database.py` : migration (nouvelles colonnes), mémoire de collecte (backfill, upsert
+idempotent — dont la **conservation du rattachement `job_id`**), télémétrie (runs, passes, statut,
+récence, purge de rétention).
+
+### 10.5 Preuves d'exécution
+
+```
+python tests/test_hybrid_collection.py
+  arrêt anticipé : jonction détectée après 2 connues consécutives OK
+  série de connues interrompue : pas d'arrêt prématuré OK
+  passe pertinence : aucun arrêt anticipé, quota atteint OK
+  déduplication transverse : aucune offre comptée deux fois OK
+  fenêtre temporelle : arrêt sur offre trop ancienne (window_end) OK
+  fenêtre sans ordre fiable : offre écartée, flux poursuivi OK
+  ordre non fiable : arrêt anticipé neutralisé et documenté OK
+  rate limit / erreurs HTTP / réseau : motifs d'arrêt tracés OK
+  source indisponible / passe désactivée : arrêts consignés OK
+  mémoire de collecte : décisions par carte (dont rejets) OK
+  index de collecte : identifiant plateforme + URL canonique OK
+[OK] test_hybrid_collection.py : tous les tests passent.
+```
+
+Validation bout-en-bout sur la plateforme réelle (base temporaire, `tools/validate_hybrid_run.py`) :
+**run 1** = 1 page / 1 requête HTTP, 5 offres retenues, arrêt `quota` ; **run 2** (même requête, mêmes
+offres) = 1 page / 1 requête HTTP, 3 vues, 3 connues, **arrêt `early_stop`** (0 offre re-collectée,
+0 doublon) — soit 1 seule requête au lieu d'une pagination complète.
+
+```
+=== TÉLÉMÉTRIE EN BASE ===
+runs=2 | mémoire de collecte=5 | offres=5
+  freshness | vues=5 | retenues=5 | connues=0 | arrêt=quota       | quota de la passe atteint (5)
+  freshness | vues=3 | retenues=0 | connues=3 | arrêt=early_stop  | 3 offre(s) consécutive(s) déjà connue(s)
+```
+
+`test_database.py` (migration + mémoire + télémétrie), `test_scrapers.py`, `test_bridge.py`,
+`test_cli.py`, `test_cleanup.py`, `test_enrichment.py` passent : **aucune régression**.
+
+### 10.6 Limites assumées
+
+- L'arrêt anticipé est **inactif sur LinkedIn** tant que la plateforme ne garantit pas un ordre
+  chronologique : le coût de la passe Fraîcheur est borné par `window_days`, `max_offers_per_query`
+  et `max_pages_per_query`. `trust_source_order: true` permet de l'activer si LinkedIn honore un jour
+  ce tri (ou si l'on accepte le risque).
+- Le tri JobTeaser (`JOBTEASER_SORT_PARAM/_DATE/_RELEVANCE`) et sa pagination (`JOBTEASER_PAGE_*`)
+  n'ont pas pu être vérifiés faute de cookies : un tri non honoré est sans danger (le moteur détecte
+  la pagination stagnante), mais le gain de la passe Fraîcheur y sera moindre.
+- Une offre rejetée reste en mémoire de collecte (`decision`) : c'est volontaire (elle ne doit pas
+  être re-parcourue), mais si le filtre métier est assoupli plus tard, elle ne sera pas « redécouverte »
+  par l'arrêt anticipé — elle sera en revanche toujours collectable si elle apparaît dans le flux.
+
 
 
 

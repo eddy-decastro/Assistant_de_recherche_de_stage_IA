@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
 from sqlalchemy import select
 
-from scrapers.models import RawJob
+from scrapers.models import RawJob, canonical_url
 from src.config import load_config
 from src.constants import STATUS_NEW, TIER_NEUTRAL
 from src.storage.database import Database, Job, make_job_id
@@ -35,7 +36,10 @@ def raw_job_to_dict(job: RawJob) -> dict[str, Any]:
     """Convertit un ``RawJob`` en dictionnaire compatible avec la table ``jobs``.
 
     Les scores sont neutralisés (``0.0``) : ils seront calculés par l'étape de
-    scoring Bi-Encoder si elle est déclenchée.
+    scoring Bi-Encoder si elle est déclenchée. Les champs de traçabilité de la
+    collecte (``id_externe``, ``canonical_url``, ``published_at``) sont renseignés
+    pour que la déduplication, l'arrêt anticipé et la fenêtre temporelle disposent
+    des mêmes identités que le scraper au run suivant.
     """
     return {
         "title": job.title,
@@ -48,7 +52,19 @@ def raw_job_to_dict(job: RawJob) -> dict[str, Any]:
         "semantic_score": 0.0,
         "final_score": 0.0,
         "status": STATUS_NEW,
+        "id_externe": (job.id_externe or None),
+        "canonical_url": canonical_url(job.url),
+        "published_at": _naive_utc(job.published_at),
     }
+
+
+def _naive_utc(value: datetime | None) -> datetime | None:
+    """Convertit une date en UTC naïf (convention de stockage de la base)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def resolve_database(db_session_or_path: Database | str | Path | None = None) -> Database:
@@ -79,7 +95,10 @@ def _partition_new_jobs(jobs: Iterable[RawJob], db: Database) -> tuple[list[RawJ
     for job in jobs:
         record = raw_job_to_dict(job)
         job_id = make_job_id(record["title"], record["company"], record["url"])
-        url_key = record["url"].strip().casefold()
+        # Déduplication par URL CANONIQUE (schéma, ``www.``, query string, fragment
+        # et slash final neutralisés) : deux entrées de la même offre issues de
+        # chemins différents étaient auparavant considérées comme distinctes.
+        url_key = record["canonical_url"] or canonical_url(record["url"])
         if url_key and url_key in seen_urls:
             duplicates += 1
             continue
@@ -91,17 +110,20 @@ def _partition_new_jobs(jobs: Iterable[RawJob], db: Database) -> tuple[list[RawJ
         return [], duplicates
 
     ids = [job_id for _, job_id, _ in prepared]
-    urls = [record["url"] for _, _, record in prepared]
+    urls = [record["canonical_url"] for _, _, record in prepared]
     with db.SessionLocal() as session:
         existing_ids = set(session.execute(select(Job.id).where(Job.id.in_(ids))).scalars())
         existing_urls = {
-            str(value).strip().casefold()
-            for value in session.execute(select(Job.url).where(Job.url.in_(urls))).scalars()
+            str(value)
+            for value in session.execute(
+                select(Job.canonical_url).where(Job.canonical_url.in_(urls))
+            ).scalars()
+            if value
         }
 
     new_jobs: list[RawJob] = []
     for job, job_id, record in prepared:
-        url_key = record["url"].strip().casefold()
+        url_key = record["canonical_url"] or ""
         if job_id in existing_ids or (url_key and url_key in existing_urls):
             duplicates += 1
             continue

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -11,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy import create_engine
 
-from src.constants import STATUS_APPLIED, STATUS_NEW, TIER_1
+from src.constants import RUN_OK, RUN_PARTIAL, RUN_RUNNING, STATUS_APPLIED, STATUS_NEW, TIER_1
 from src.storage.database import Database, SQLITE_BUSY_TIMEOUT_MS, make_job_id
 
 
@@ -84,6 +85,8 @@ def main() -> None:
     test_migration()
     test_wal_pragmas()
     test_descriptions()
+    test_collection_memory()
+    test_telemetry()
     print("[OK] test_database.py : tous les tests passent.")
 
 
@@ -154,6 +157,141 @@ def test_descriptions() -> None:
         assert db.update_description("identifiant-inexistant", "x") is False
         db.engine.dispose()
     print("[OK] descriptions : rattrapage + selection des offres sans texte")
+
+
+def test_collection_memory() -> None:
+    """Mémoire de collecte : backfill, upsert idempotent, index et élagage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "memoire.db"
+        db = Database(path)
+        base = {
+            "company": "Doctolib",
+            "location": "Paris",
+            "company_tier": TIER_1,
+            "semantic_score": 0.0,
+            "final_score": 0.0,
+            "status": STATUS_NEW,
+        }
+        db.upsert_job(
+            {
+                **base,
+                "title": "Stage IA",
+                "url": "https://example.com/a",
+                "source": "linkedin",
+                "id_externe": "4400",
+                "canonical_url": "example.com/a",
+            }
+        )
+        db.engine.dispose()
+
+        db = Database(path)  # réouverture -> backfill de la mémoire de collecte
+        # Toute offre déjà en base devient « connue » : sans cela, l'arrêt anticipé
+        # ne pourrait pas s'enclencher au premier run hybride.
+        pairs, urls = db.load_seen_index()
+        assert ("linkedin", "4400") in pairs, pairs
+        assert "example.com/a" in urls, urls
+        assert db.count_seen_jobs() == 1, db.count_seen_jobs()
+
+        # Upsert : first_seen_at préservé, décision rafraîchie.
+        old = datetime.utcnow() - timedelta(days=10)
+        stats = db.upsert_seen_jobs(
+            [
+                {
+                    "source": "linkedin",
+                    "external_key": "4466",
+                    "canonical_url": "example.com/b",
+                    "title": "Stage Data Analyst (Power BI)",
+                    "decision": "REJECTED_BI",
+                    "rejection_reason": "orientation BI / reporting (« power bi »)",
+                    "last_seen_at": old,
+                },
+                {
+                    "source": "linkedin",
+                    "external_key": "4400",
+                    "decision": "KNOWN",
+                    "last_seen_at": old,
+                },
+            ]
+        )
+        assert stats == 2, stats
+        assert db.count_seen_jobs() == 2, db.count_seen_jobs()
+        assert db.count_seen_jobs("REJECTED_BI") == 1
+        pairs, urls = db.load_seen_index(sources=["linkedin"])
+        assert ("linkedin", "4466") in pairs and "example.com/b" in urls
+
+        # Élagage : le bruit ancien part, les clés rattachées à une fiche restent.
+        forgotten = db.prune_seen_jobs(days=1)
+        assert forgotten == 1, forgotten  # seule la ligne sans fiche est oubliée
+        assert db.count_seen_jobs() == 1, db.count_seen_jobs()
+        db.engine.dispose()
+    print("[OK] memoire de collecte : backfill, upsert, index et elagage")
+
+
+def test_telemetry() -> None:
+    """Runs et passes : écriture, lecture ordonnée, statut et purge de rétention."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "telemetrie.db")
+        run_id = db.start_run(["linkedin", "jobteaser"])
+        assert db.count_runs() == 1
+        assert db.get_run(run_id)["status"] == RUN_RUNNING
+
+        written = db.record_query_stats(
+            run_id,
+            [
+                {
+                    "source": "linkedin",
+                    "query": "Stage Machine Learning",
+                    "mode": "freshness",
+                    "pages_fetched": 1,
+                    "http_requests": 1,
+                    "cards_seen": 10,
+                    "jobs_kept": 3,
+                    "jobs_known": 7,
+                    "stop_reason": "early_stop",
+                    "stop_detail": "7 offre(s) consécutive(s) déjà connue(s)",
+                    "cle_inconnue": "ignorée",  # les colonnes inconnues sont ignorées
+                },
+                {
+                    "source": "linkedin",
+                    "query": "Stage Machine Learning",
+                    "mode": "relevance",
+                    "pages_fetched": 2,
+                    "cards_seen": 20,
+                    "jobs_kept": 20,
+                    "stop_reason": "max_pages",
+                },
+            ],
+        )
+        assert written == 2, written
+        rows = db.get_run_query_stats(run_id)
+        assert [row["mode"] for row in rows] == ["freshness", "relevance"], rows
+        assert rows[0]["stop_reason"] == "early_stop" and rows[0]["jobs_known"] == 7
+        assert rows[1]["stop_reason"] == "max_pages"
+        assert rows[0]["started_at"] is not None, "started_at est renseigné par défaut."
+        assert db.get_recent_query_stats(limit=1)[0]["mode"] == "relevance"
+
+        assert db.finish_run(
+            run_id, status=RUN_PARTIAL, total_found=30, total_validated=23, notes="max_pages"
+        )
+        run = db.get_last_run()
+        assert run["status"] == RUN_PARTIAL and run["total_validated"] == 23, run
+        assert run["finished_at"] is not None
+        assert db.finish_run("identifiant-inexistant", status=RUN_OK) is False
+
+        # Rétention : on vieillit artificiellement la télémétrie de 10 jours.
+        with db.engine.begin() as conn:
+            conn.exec_driver_sql(
+                "UPDATE scrape_runs SET started_at = ?", (datetime.utcnow() - timedelta(days=10),)
+            )
+            conn.exec_driver_sql(
+                "UPDATE scrape_query_stats SET started_at = ?",
+                (datetime.utcnow() - timedelta(days=10),),
+            )
+        removed = db.prune_telemetry(days=1)
+        assert removed["runs"] == 1 and removed["query_stats"] == 2, removed
+        assert db.count_runs() == 0 and db.get_recent_query_stats() == []
+        db.engine.dispose()
+    print("[OK] telemetrie : runs, passes (raisons d'arret) et purge")
 
 
 if __name__ == "__main__":

@@ -18,21 +18,103 @@ Assistant_recherche_de_stage/
 │   ├── cv_eddy.txt          # CV au format texte (à remplacer par le vrai CV)
 │   └── stage_copilot.db     # Base SQLite (générée)
 ├── scrapers/                # Module de scraping unifié (WTTJ, LinkedIn, JobTeaser)
-│   ├── models.py            # RawJob (Pydantic) + ScraperConfig + ScrapeResult
-│   ├── base.py              # BaseScraper + filtre anti-BI (is_valid_job)
+│   ├── models.py            # RawJob + ScraperConfig + passes (PassConfig/PassPlan) + télémétrie
+│   ├── known.py             # KnownIndex : mémoire de collecte (arrêt anticipé, dédup transverse)
+│   ├── base.py              # BaseScraper : moteur de collecte hybride + filtre anti-BI
 │   ├── wttj.py              # Welcome to the Jungle (API Algolia)
-│   ├── linkedin.py          # LinkedIn invité (BeautifulSoup)
+│   ├── linkedin.py          # LinkedIn invité (BeautifulSoup) + filtre temporel f_TPR
 │   ├── jobteaser.py         # JobTeaser intranet (curl_cffi + cookies)
-│   └── manager.py           # Orchestrateur + déduplication URL
+│   └── manager.py           # Orchestrateur + déduplication URL + fusion de la télémétrie
+├── tools/
+│   └── probe_sources.py     # Sonde lecture seule (tri/filtre temporel/pagination des sources)
 └── src/
     ├── config.py            # Chargement YAML
-    ├── constants.py         # Statuts & tiers d'entreprise
+    ├── constants.py         # Statuts, tiers, libellés, motifs d'arrêt
     ├── ingestion/
     │   ├── wttj.py          # ⚠️ OBSOLÈTE (API v1 supprimée → 404) — non utilisé
-    │   └── bridge.py        # Pont RawJob → table SQLite (idempotent)
+    │   ├── bridge.py        # Pont RawJob → table SQLite (idempotent, URL canonique)
+    │   └── known_index.py   # Implémentation SQLite de la mémoire de collecte
     ├── matching/scorer.py   # Scoring hybride 0-100
-    └── storage/database.py  # ORM SQLAlchemy (table jobs)
+    └── storage/database.py  # ORM SQLAlchemy (jobs, seen_jobs, scrape_runs, scrape_query_stats)
 ```
+
+## Collecte hybride (Fraîcheur + Pertinence)
+
+Chaque requête cible est collectée **deux fois**, avec deux intentions opposées :
+
+| Passe | Tri | Fenêtre | Arrêt | Objectif |
+|---|---|---|---|---|
+| **Fraîcheur** | date (`sortBy=DD`, `f_TPR` LinkedIn) | 7 j (ou 1 j) | **arrêt anticipé** dès N offres consécutives déjà connues | capter 100 % des nouveautés pour postuler immédiatement |
+| **Rattrapage** | pertinence (classement de la plateforme) | aucune | quota ou épuisement de la pagination, **jamais** d'arrêt anticipé | récupérer les offres à fort matching, même anciennes |
+
+Invariants garantis par le moteur (`scrapers/base.py`), identiques pour toutes les sources :
+
+1. **Déduplication transverse** : une offre collectée en « Fraîcheur » n'est ni
+   retraitée ni comptée en « Rattrapage » (ensemble de clés propre au run + mémoire de collecte) ;
+2. **Les offres connues ne consomment pas le quota** ; elles alimentent au contraire
+   le compteur d'arrêt anticipé (N connues **consécutives**, la moindre inconnue le remet à zéro) ;
+3. **Le plafond de source est appliqué pendant les passes** (`max_offers_per_source`) : il
+   borne au plus juste le nombre de requêtes HTTP ;
+4. **Garde-fou d'ordre** : l'arrêt anticipé n'est activé que si la source garantit un flux
+   trié. Mesuré par sonde le 16/09/2026 : LinkedIn ne le garantit pas (7 inversions de date
+   sur 2 pages, `sortBy=DD` sans filtre temporel renvoie le même ordre que la pertinence) →
+   le seuil est neutralisé et **consigné** ; la fraîcheur est alors garantie par le filtre
+   temporel **serveur** `f_TPR` (vérifié : 10/10 cartes publiées le jour même avec `r86400`).
+
+### Pourquoi une mémoire de collecte (`seen_jobs`) ?
+
+Une offre écartée par le filtre anti-BI n'est jamais écrite dans `jobs`. Sans mémoire, la
+passe Fraîcheur la redécouvrirait à chaque run et n'atteindrait jamais N offres
+**consécutives** connues : l'arrêt anticipé serait inopérant. `seen_jobs` enregistre donc
+**toutes** les cartes croisées (retenues, rejetées BI, hors fenêtre, déjà connues) avec leur
+décision. La colonne `decision` est **purement informative** : elle ne filtre jamais
+l'ingestion.
+
+### Observabilité : savoir si du flux a été perdu
+
+Chaque passe produit une ligne de télémétrie avec sa **raison exacte d'arrêt** :
+
+| Motif | Interprétation |
+|---|---|
+| `early_stop` | jonction avec le scrape précédent (aucune perte, requêtes économisées) |
+| `window_end` / `stream_end` | vivier épuisé (fenêtre temporelle ou fin de résultats) |
+| `quota` | quota de la passe ou plafond de source atteint (le flux continue au-delà) |
+| `duplicate_page` | page sans carte inédite (pagination stagnante) |
+| `rate_limit`, `http_error`, `network_error`, `max_pages` | **flux potentiellement perdu** → alerte explicite dans le journal |
+| `auth_missing`, `disabled`, `unsupported` | passe non exécutée (cookies absents, pass désactivée…) |
+
+Les tables `scrape_runs` (un run) et `scrape_query_stats` (une passe) conservent l'historique
+(180 j par défaut), consultable par `--top-telemetry N`.
+
+### Pilotage (`config.yaml → scrapers.passes`)
+
+```yaml
+passes:
+  freshness:
+    sort: "date"            # tri par date
+    max_offers_per_query: 40
+    window_days: 7          # 1 = 24 h ; null = aucune fenêtre
+    early_stop_after_known: 5   # N connues consécutives ⇒ arrêt
+    early_stop_min_pages: 1
+    max_pages_per_query: 12
+    use_server_window_filter: true   # LinkedIn : f_TPR=r<secondes>
+  relevance:
+    sort: "relevance"
+    max_offers_per_query: 20
+    early_stop_after_known: 0   # jamais d'arrêt anticipé
+```
+
+Une section `passes` déclarée est **explicite** : un mode absent n'est pas exécuté.
+La déclaration est entièrement pilotable par YAML (quotas, fenêtres, seuils d'arrêt).
+
+```bash
+python run_scrapers.py                          # hybride : fraîcheur puis rattrapage
+python run_scrapers.py --passes freshness        # une seule passe (diagnostic)
+python run_scrapers.py --only-source linkedin    # une seule source
+python run_scrapers.py --top-telemetry 20        # dernières raisons d'arrêt tracées
+python tools/probe_sources.py --source linkedin  # sonde lecture seule (paramètres réels)
+```
+
 
 ## Installation
 
@@ -162,8 +244,11 @@ python tests/test_scorer.py     # étape 1 (bi-encoder + tiering)
 python tests/test_reranker.py   # étape 2 (juge LLM) + persistance
 python tests/test_app.py        # dashboard : rendu, filtres, cartes, palettes (thème clair/sombre)
 python tests/test_scrapers.py   # scrapers : filtre anti-BI + parsing JobTeaser
+python tests/test_hybrid_collection.py  # collecte hybride : arrêt anticipé, passes, motifs d'arrêt
 python tests/test_bridge.py     # pont d'ingestion RawJob → SQLite (idempotence)
-python tests/test_cli.py        # options CLI du pipeline (trigger-scoring, rescore-all, rerank)
+python tests/test_cli.py        # options CLI du pipeline (trigger-scoring, rescore-all, rerank, passes)
+python tools/validate_hybrid_run.py     # validation bout-en-bout (2 runs réels, base temporaire)
+python tools/probe_sources.py --source linkedin   # sonde lecture seule (tri/filtre/pagination)
 ```
 
 Les poids, listes d'entreprises et paramètres LLM sont entièrement

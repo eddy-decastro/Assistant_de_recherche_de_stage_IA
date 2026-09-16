@@ -214,15 +214,27 @@ def test_scraper_config_depuis_yaml() -> None:
 
     # Sans section : défauts du code, quota réparti équitablement entre requêtes.
     default = ScraperConfig.from_config({})
-    assert default.max_offers_per_source == 50
-    assert default.per_query_quota == 50 // len(default.target_queries), default.per_query_quota
+    assert default.max_offers_per_source == 120
+    assert default.enabled_modes() == ["freshness", "relevance"], default.enabled_modes()
+    assert default.pass_config("freshness").early_stop_after_known == 5
+    assert default.pass_config("relevance").early_stop_after_known == 0
+    assert default.per_query_quota == 120 // len(default.target_queries), default.per_query_quota
     # Section mal typée ou invalide : repli sur les défauts, jamais d'exception.
-    assert ScraperConfig.from_config({"scrapers": "pas-un-dict"}).max_offers_per_source == 50
+    assert ScraperConfig.from_config({"scrapers": "pas-un-dict"}).max_offers_per_source == 120
     assert (
         ScraperConfig.from_config({"scrapers": {"max_offers_per_source": "beaucoup"}})
         .max_offers_per_source
-        == 50
+        == 120
     )
+    # Section `passes` : déclaration explicite (un mode absent n'est pas exécuté).
+    hybrid = ScraperConfig.from_config(
+        {"scrapers": {"passes": {"freshness": {"window_days": 1, "max_offers_per_query": 12}}}}
+    )
+    assert hybrid.enabled_modes() == ["freshness"], hybrid.enabled_modes()
+    assert hybrid.pass_config("freshness").window_days == 1
+    assert hybrid.pass_config("freshness").window_seconds == 86400
+    assert hybrid.pass_config("freshness").max_offers_per_query == 12
+    assert hybrid.pass_config("freshness").max_pages_per_query == 12, "champ non déclaré : défaut"
     print("  config.yaml vers ScraperConfig : section 'scrapers' réellement lue OK")
 
 

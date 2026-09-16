@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +71,30 @@ def test_run_pipeline_delegue() -> None:
     print("  CLI : run_pipeline délègue bien à run_scrapers (aucune duplication)")
 
 
+def test_options_collecte_hybride() -> None:
+    """--passes / --only-source / --top-telemetry : pilotage fin de la collecte."""
+    args = parse_args(["--passes", "freshness", "--only-source", "linkedin", "--top-telemetry", "10"])
+    assert args.passes == "freshness"
+    assert args.only_source == "linkedin"
+    assert args.top_telemetry == 10
+    defaults = parse_args([])
+    assert defaults.passes is None and defaults.only_source is None
+    assert defaults.top_telemetry == 0, "Aucune télémétrie affichée par défaut."
+
+    help_text = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        cwd=str(PROJECT_ROOT),
+    )
+    assert help_text.returncode == 0, help_text.stderr
+    for option in ("--passes", "--only-source", "--top-telemetry"):
+        assert option in help_text.stdout, f"{option} doit apparaître dans --help"
+    print("  CLI : options de collecte hybride OK (--passes / --only-source / --top-telemetry)")
+
+
 if __name__ == "__main__":
     test_options_par_defaut()
     test_options_actives()
@@ -76,4 +102,5 @@ if __name__ == "__main__":
     test_option_no_collect()
     test_options_hygiene()
     test_run_pipeline_delegue()
+    test_options_collecte_hybride()
     print("TOUS LES TESTS PASSENT")

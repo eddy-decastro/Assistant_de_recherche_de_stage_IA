@@ -19,7 +19,12 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import urlsplit
+
+# Normalisation d'URL : implémentation unique définie par le module de scraping
+# (``scrapers.models``), ré-exportée ici pour les besoins de la base et du
+# dashboard. La déduplication de collecte et celle d'ingestion ne peuvent donc
+# pas diverger.
+from scrapers.models import canonical_url  # noqa: F401  (ré-export volontaire)
 
 # Seuil de similarité (0-1) au-delà duquel deux offres d'une même entreprise sont
 # considérées comme la même annonce. Calibré sur la base réelle : « … Deep Learning
@@ -54,18 +59,6 @@ def normalize_text(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", (text or "").casefold())
     ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
     return _NON_WORD_RE.sub(" ", ascii_only).strip()
-
-
-def canonical_url(url: str) -> str:
-    """URL canonique : minuscules, sans ``www.``, query, fragment ni slash final.
-
-    Le résultat reste comparable telle quelle (``linkedin.com/jobs/view/123``) :
-    aucun schéma n'est ajouté, deux URLs http/https de la même offre se rejoignent
-    donc sur la même clé.
-    """
-    parts = urlsplit((url or "").strip())
-    host = parts.netloc.casefold().removeprefix("www.")
-    return f"{host}{parts.path.rstrip('/')}"
 
 
 def significant_tokens(title: str) -> frozenset[str]:

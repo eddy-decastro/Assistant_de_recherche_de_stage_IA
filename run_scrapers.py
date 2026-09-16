@@ -1,17 +1,30 @@
-"""Point d'entrée : collecte (scrapers) -> ingestion SQLite -> scoring -> reranking.
+"""Point d'entrée : collecte hybride (scrapers) -> ingestion SQLite -> scoring -> reranking.
 
 Enchaînement :
-  1. ``ScraperManager`` collecte et filtre (anti-BI) les offres des sources ;
-  2. ``ingest_raw_jobs`` persiste les offres valides dans la table SQLite ``jobs``
-     de façon idempotente (déduplication par identifiant et par URL) ;
-  3. un résumé est logué (collectées / BI rejetées / nouvelles / doublons) ;
-  4. avec ``--trigger-scoring``, l'étape 1 du ranking (Bi-Encoder
+  1. ``ScraperManager`` exécute la **stratégie hybride** — passe « Fraîcheur »
+     (tri par date, filtre temporel serveur, arrêt anticipé dès que le flux
+     rejoint le scrape précédent) puis passe « Rattrapage » (classement par
+     pertinence, sans arrêt anticipé) — et consigne, pour chaque (source × requête
+     × mode), la **raison exacte d'arrêt** (quota, early stopping, fin de flux,
+     rate limit…) ;
+  2. ``ingest_raw_jobs`` persiste les offres valides dans la table ``jobs`` de
+     façon idempotente (déduplication par identifiant et par URL canonique) ;
+  3. la **mémoire de collecte** (``seen_jobs``) est mise à jour avec TOUTES les
+     cartes croisées (y compris les rejets) : c'est elle qui rend l'arrêt anticipé
+     efficace au run suivant, et qui porte la déduplication transverse ;
+  4. la **télémétrie** de chaque passe est écrite (``scrape_runs`` /
+     ``scrape_query_stats``) puis résumée dans le journal, avec alerte explicite
+     lorsqu'une passe a été interrompue (donc que du flux a pu être perdu) ;
+  5. un résumé est logué (collectées / BI rejetées / nouvelles / doublons) ;
+  6. avec ``--trigger-scoring``, l'étape 1 du ranking (Bi-Encoder
      ``all-MiniLM-L6-v2``) est calculée sur les **seules nouvelles offres** ;
-     avec ``--rescore-all``, elle est recalculée sur **toutes** les offres en base
-     (utile après un changement de modèle/CV ou pour rattraper un historique non noté) ;
-  5. avec ``--trigger-rerank``, l'étape 2 (juge LLM DeepSeek) évalue le Top-N des
+     avec ``--rescore-all``, elle est recalculée sur **toutes** les offres en base ;
+  7. avec ``--trigger-rerank``, l'étape 2 (juge LLM DeepSeek) évalue le Top-N des
      offres non encore analysées (``ranking.top_n_rerank``, surchargeable par
      ``--top-rerank``). Sans clé ``DEEPSEEK_API_KEY``, l'étape est ignorée proprement.
+
+Options de pilotage de la collecte : ``--passes freshness,relevance``,
+``--only-source linkedin`` et ``--top-telemetry N`` (dernières raisons d'arrêt).
 """
 
 from __future__ import annotations
@@ -20,6 +33,7 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -28,11 +42,26 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scrapers.base import describe_rejection  # noqa: E402
+from scrapers.known import NullKnownIndex  # noqa: E402
 from scrapers.manager import ScraperManager  # noqa: E402
-from scrapers.models import RawJob, ScrapeResult, ScraperConfig  # noqa: E402
+from scrapers.models import (  # noqa: E402
+    PASS_MODES,
+    PassReport,
+    RawJob,
+    ScrapeResult,
+    ScraperConfig,
+)
 from src.config import load_config  # noqa: E402
-from src.constants import STATUS_REJECTED  # noqa: E402
+from src.constants import (  # noqa: E402
+    RUN_OK,
+    RUN_PARTIAL,
+    STATUS_REJECTED,
+    is_incomplete_stop,
+    pass_label,
+    stop_reason_label,
+)
 from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
+from src.ingestion.known_index import DatabaseKnownIndex, job_ids_for_jobs  # noqa: E402
 from src.storage.cleanup import choose_keeper, find_duplicate_groups  # noqa: E402
 from src.storage.database import Database  # noqa: E402
 
@@ -94,6 +123,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Nombre d'offres envoyées au juge LLM (défaut : ranking.top_n_rerank).",
+    )
+    parser.add_argument(
+        "--passes",
+        default=None,
+        metavar="MODES",
+        help=(
+            "Passes à exécuter, séparées par des virgules (freshness,relevance). "
+            "Défaut : toutes les passes activées dans config.yaml, section scrapers.passes."
+        ),
+    )
+    parser.add_argument(
+        "--only-source",
+        default=None,
+        metavar="SOURCE",
+        help="Restreint la collecte à une source (linkedin, jobteaser, wttj) — diagnostic.",
+    )
+    parser.add_argument(
+        "--top-telemetry",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Affiche les N dernières passes tracées en base (raisons d'arrêt).",
     )
     return parser.parse_args(argv)
 
@@ -229,17 +280,123 @@ def _rerank_top(db: Database, config: dict[str, Any], top_n: int | None = None) 
             result["match_reasons"],
             result["red_flags"],
             result["tech_stack"],
+            sub_scores=result["sub_scores"],
+            hard_cap_triggered=result["hard_cap_triggered"],
+        )
+        cap_note = (
+            f" [verrou: {result['hard_cap_triggered']}]"
+            if result.get("hard_cap_triggered")
+            else ""
         )
         logger.info(
-            "  %d/%d [%3d] %-10s %s",
+            "  %d/%d [%3d] %-10s %s%s",
             index,
             len(candidates),
             result["rerank_score"],
             result["verdict"],
             (job.get("title") or "")[:50],
+            cap_note,
         )
     logger.info("Reranking LLM : %d offre(s) analysée(s).", len(candidates))
     return len(candidates)
+
+
+def _selected_sources(config: ScraperConfig, only_source: str | None) -> None:
+    """Restreint la collecte à une source (diagnostic ciblé)."""
+    if not only_source:
+        return
+    if only_source not in config.enabled_sources:
+        logger.warning(
+            "Source %r absente de scrapers.enabled_sources : aucune collecte ne sera lancée.",
+            only_source,
+        )
+    config.enabled_sources = [only_source]
+
+
+def _parse_passes(value: str | None) -> list[str] | None:
+    """Découpe ``--passes freshness,relevance`` en liste de modes valides."""
+    if not value:
+        return None
+    modes = [item.strip() for item in value.split(",") if item.strip()]
+    unknown = [mode for mode in modes if mode not in PASS_MODES]
+    if unknown:
+        raise SystemExit(
+            f"Mode de passe inconnu : {', '.join(unknown)} (attendu : {', '.join(PASS_MODES)})"
+        )
+    return modes
+
+
+def _log_pass_summary(reports: Sequence[PassReport]) -> list[PassReport]:
+    """Résumé lisible d'une ligne par passe + alerte sur les pertes de flux.
+
+    C'est le cœur de l'observabilité : chaque ligne indique **pourquoi** la passe
+    s'est arrêtée — donc si le vivier était épuisé (rien perdu) ou si un quota, un
+    plafond de pages ou un rate limit a tronqué le flux (donnée potentiellement
+    manquée).
+    """
+    if not reports:
+        logger.info(" Aucune passe tracée (collecte ignorée ou télémétrie désactivée).")
+        return []
+    logger.info("")
+    logger.info(" %-9s | %-28s | %-9s | %5s | %6s | %6s | %6s | %7s | %s",
+                "SOURCE", "REQUÊTE", "PASSE", "PAGES", "VUES", "GARDÉES", "CONNUES", "ARRÊT", "DÉTAIL")
+    logger.info(" " + "-" * 124)
+    for report in reports:
+        logger.info(
+            " %-9s | %-28s | %-9s | %5d | %6d | %6d | %6d | %7s | %s",
+            report.source,
+            report.query[:28],
+            report.mode,
+            report.pages_fetched,
+            report.cards_seen,
+            report.jobs_kept,
+            report.jobs_known,
+            report.stop_reason,
+            (report.stop_detail or "—")[:60],
+        )
+    lost = [report for report in reports if is_incomplete_stop(report.stop_reason)]
+    if lost:
+        logger.warning(
+            " %d passe(s) interrompue(s) : du flux a potentiellement été perdu — %s",
+            len(lost),
+            " ; ".join(
+                f"{report.source}/{report.query}/{report.mode} ({report.stop_reason})"
+                for report in lost[:6]
+            ),
+        )
+    exhausted = [report for report in reports if report.stop_reason in ("stream_end", "window_end")]
+    if exhausted:
+        logger.info(
+            " %d passe(s) close(s) sur vivier épuisé (aucune perte) : %s",
+            len(exhausted),
+            " ; ".join(f"{report.source}/{report.mode}" for report in exhausted[:6]),
+        )
+    return lost
+
+
+def _log_recent_telemetry(db: Database, limit: int) -> None:
+    """Affiche les dernières passes tracées (raison d'arrêt en clair)."""
+    rows = db.get_recent_query_stats(limit=limit)
+    if not rows:
+        logger.info("Télémétrie : aucune passe enregistrée.")
+        return
+    logger.info("")
+    logger.info(" DERNIÈRES PASSES TRACÉES EN BASE (%d)", len(rows))
+    logger.info(" %-19s | %-9s | %-24s | %-9s | %6s | %7s | %s",
+                "DATE", "SOURCE", "REQUÊTE", "PASSE", "GARDÉES", "ARRÊT", "DÉTAIL")
+    logger.info(" " + "-" * 118)
+    for row in rows:
+        stamp = row.get("finished_at") or row.get("started_at")
+        logger.info(
+            " %-19s | %-9s | %-24s | %-9s | %6d | %7s | %s",
+            stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp else "?",
+            row.get("source") or "?",
+            (row.get("query") or "")[:24],
+            pass_label(row.get("mode")),
+            int(row.get("jobs_kept") or 0),
+            row.get("stop_reason") or "?",
+            stop_reason_label(row.get("stop_reason"))[:40],
+        )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -266,21 +423,49 @@ def main(argv: list[str] | None = None) -> None:
     if args.revalidate:
         _revalidate_jobs(db, config, dry_run=args.dry_run)
 
-    # 1. Collecte via le manager unifié (paramètres lus dans config.yaml → 'scrapers').
+    # 1. Collecte hybride (fraîcheur puis rattrapage) via le manager unifié.
+    #    Paramètres lus dans config.yaml → 'scrapers' (passes, quotas, fenêtres).
+    scraper_config = ScraperConfig.from_config(config)
+    _selected_sources(scraper_config, args.only_source)
+    modes = _parse_passes(args.passes) or scraper_config.enabled_modes()
+    telemetry = scraper_config.telemetry
+    run_id: str | None = None
+    known_index: Any = NullKnownIndex()
+
     if args.no_collect:
         logger.info(" Collecte ignorée (--no-collect) : travail sur la base existante.")
         result = ScrapeResult(jobs=[], found=0, rejected_bi=0)
+    elif not modes:
+        logger.warning(
+            " Aucune passe active (scrapers.passes) : collecte ignorée. "
+            "Déclarez au moins 'freshness' ou 'relevance' dans config.yaml."
+        )
+        result = ScrapeResult(jobs=[], found=0, rejected_bi=0)
     else:
-        scraper_config = ScraperConfig.from_config(config)
         logger.info(
-            " Paramètres scrapers          : %s | %d requête(s) | %d offre(s)/requête | plafond %d",
+            " Paramètres scrapers          : %s | %d requête(s) | passes %s | plafond %d",
             ", ".join(scraper_config.enabled_sources),
             len(scraper_config.target_queries),
-            scraper_config.per_query_quota,
+            "+".join(modes),
             scraper_config.max_offers_per_source,
         )
-        manager = ScraperManager(scraper_config)
-        result = manager.run()
+        for mode in modes:
+            pass_config = scraper_config.pass_config(mode)
+            logger.info(
+                "   - passe %-9s : tri=%-9s | quota %d/requête | fenêtre %s | arrêt anticipé %s",
+                mode,
+                pass_config.sort,
+                pass_config.clamped_quota(),
+                f"{pass_config.window_days:g} j" if pass_config.window_days else "aucune",
+                pass_config.early_stop_after_known or "désactivé",
+            )
+        if telemetry.enabled:
+            # Mémoire de collecte préchargée : elle porte l'arrêt anticipé et la
+            # déduplication transverse entre passes et entre sources.
+            known_index = DatabaseKnownIndex(db, scraper_config.enabled_sources)
+            run_id = db.start_run(scraper_config.enabled_sources)
+        manager = ScraperManager(scraper_config, known_index=known_index)
+        result = manager.run(modes=modes)
 
     # 2. Identifier les nouvelles offres AVANT insertion (pour le scoring ciblé).
     new_jobs = find_new_raw_jobs(result.jobs, db) if args.trigger_scoring else []
@@ -288,7 +473,45 @@ def main(argv: list[str] | None = None) -> None:
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
 
-    # 4. Résumé.
+    # 4. Télémétrie : mémoire de collecte (toutes les cartes vues, y compris les
+    #    rejets) puis une ligne par passe avec sa raison exacte d'arrêt.
+    lost_passes: list[PassReport] = []
+    if telemetry.enabled:
+        if isinstance(known_index, DatabaseKnownIndex):
+            written = known_index.persist(result.seen, job_ids_for_jobs(result.jobs))
+            logger.info(" Mémoire de collecte          : %d entrée(s) écrite(s)", written)
+        if run_id and result.query_reports:
+            db.record_query_stats(run_id, result.query_reports)
+        removed = db.prune_telemetry(telemetry.retention_days)
+        if telemetry.prune_seen_jobs:
+            forgotten = db.prune_seen_jobs(telemetry.retention_days)
+            if forgotten:
+                logger.info(" Mémoire de collecte purgée   : %d entrée(s) ancienne(s)", forgotten)
+        if removed["runs"] or removed["query_stats"]:
+            logger.info(
+                " Télémétrie purgée            : %d run(s), %d passe(s) (> %d j)",
+                removed["runs"],
+                removed["query_stats"],
+                telemetry.retention_days,
+            )
+    lost_passes = _log_pass_summary(result.query_reports)
+    # La consultation de la télémétrie est indépendante du run courant : elle doit
+    # fonctionner aussi avec ``--no-collect`` (aucun run ouvert).
+    if args.top_telemetry:
+        _log_recent_telemetry(db, args.top_telemetry)
+    if telemetry.enabled and run_id:
+        db.finish_run(
+            run_id,
+            status=RUN_PARTIAL if lost_passes else RUN_OK,
+            total_found=result.found,
+            total_validated=len(result.jobs),
+            total_rejected=result.rejected_bi,
+            total_inserted=stats["new_inserted"],
+            total_duplicates=stats["duplicates_skipped"],
+            notes="; ".join(sorted({report.stop_reason for report in lost_passes})) or None,
+        )
+
+    # 5. Résumé.
     logger.info("=" * 60)
     logger.info(" RÉSUMÉ")
     logger.info("=" * 60)
@@ -300,7 +523,7 @@ def main(argv: list[str] | None = None) -> None:
     for source, count in db.get_source_counts():
         logger.info("   - %-14s : %d", source or "(sans source)", count)
 
-    # 5. Étape 1 du ranking : scoring Bi-Encoder.
+    # 6. Étape 1 du ranking : scoring Bi-Encoder.
     if args.trigger_scoring or args.rescore_all:
         scorer = _load_scorer(config)
         if scorer is not None:
@@ -315,7 +538,7 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 logger.info(" Scoring : aucune offre à évaluer.")
 
-    # 6. Étape 2 du ranking : reranking LLM du Top-N non encore analysé.
+    # 7. Étape 2 du ranking : reranking LLM du Top-N non encore analysé.
     if args.reset_rerank:
         reset_ids = db.clear_rerank(args.reset_rerank)
         logger.info(
@@ -325,7 +548,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.trigger_rerank:
         logger.info(" Reranking LLM                : %d offre(s)", _rerank_top(db, config, args.top_rerank))
 
-    # 7. Top opportunités (offres fraîchement collectées).
+    # 8. Top opportunités (offres fraîchement collectées).
     if result.jobs:
         top = sorted(result.jobs, key=_sort_key, reverse=True)[:5]
         logger.info("")
@@ -344,7 +567,7 @@ def main(argv: list[str] | None = None) -> None:
         if not args.no_collect:
             logger.warning("Aucune offre valide collectée.")
 
-    # 8. Top opportunités globales (base complète, tri par score effectif).
+    # 9. Top opportunités globales (base complète, tri par score effectif).
     ranked = db.get_jobs(limit=5)
     if ranked:
         logger.info("")

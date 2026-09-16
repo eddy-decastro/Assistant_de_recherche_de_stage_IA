@@ -1,5 +1,22 @@
 """Constantes métier partagées par l'ensemble du projet."""
 
+from typing import Any
+
+# Vocabulaire des décisions de collecte et motifs d'arrêt : défini par les
+# scrapers (qui décident), ré-exporté ici pour la persistance, l'observabilité et
+# le dashboard — une seule source de vérité, donc aucune divergence possible
+# entre « qui décide » et « qui archive ».
+from scrapers.models import (  # noqa: F401  (ré-export volontaire)
+    SEEN_DECISIONS,
+    SEEN_DUPLICATE,
+    SEEN_KNOWN,
+    SEEN_OUT_OF_WINDOW,
+    SEEN_REJECTED_BI,
+    SEEN_REJECTED_CONTRACT,
+    SEEN_VALIDATED,
+    is_incomplete_stop,
+)
+
 # --- Typologie d'entreprise (company_tier) ---
 TIER_1 = 1       # Scale-up / Lab de recherche — meilleure note
 TIER_NEUTRAL = 2 # Grand groupe tech / entreprise non listée
@@ -57,6 +74,34 @@ VERDICT_COLORS = {
     VERDICT_OFF_TOPIC: "#dc2626",  # rouge
 }
 
+# --- Sous-scores du juge LLM (grille d'évaluation qualitative, échelle 1-5) ---
+# Les quatre dimensions de la grille ; l'ordre est celui d'affichage dans l'UI.
+SUB_SCORE_KEYS = (
+    "modeling_depth",
+    "mentorship_team",
+    "career_leverage",
+    "pfe_compatibility",
+)
+# Valeur neutre utilisée quand un champ de sous-score est manquant ou inexploitable
+# (repli sécurisé en cas d'erreur de parsing de la réponse du modèle).
+DEFAULT_SUB_SCORE = 3
+
+SUB_SCORE_LABELS = {
+    "modeling_depth": "Modélisation",
+    "mentorship_team": "Encadrement",
+    "career_leverage": "Carrière",
+    "pfe_compatibility": "Calendrier PFE",
+}
+
+
+def coerce_sub_score(value: Any) -> int:
+    """Borne un sous-score dans [1, 5] (repli neutre ``DEFAULT_SUB_SCORE`` sinon)."""
+    try:
+        score = int(round(float(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_SUB_SCORE
+    return max(1, min(5, score))
+
 # --- Plateformes source des offres (colonne jobs.source) ---
 # Les scrapers unifiés écrivent "wttj" ; l'ingestion historique WTTJ
 # (src/ingestion/wttj.py) écrivait "welcome_to_the_jungle" : les deux valeurs
@@ -100,3 +145,67 @@ def source_rank(source_or_label: str | None) -> int:
         if source_label(known) == label:
             return index
     return len(SOURCE_ORDER)
+
+
+# --- Décisions de la mémoire de collecte --------------------------------------
+# ``SEEN_VALIDATED``, ``SEEN_REJECTED_BI``… sont ré-exportés depuis
+# ``scrapers.models`` (voir l'import en tête de module) : les décisions sont prises
+# par le moteur de collecte, qui en est la source de vérité.
+
+# --- Cycle de vie d'un run de collecte (table ``scrape_runs``) ---
+RUN_RUNNING = "RUNNING"
+RUN_OK = "OK"
+RUN_PARTIAL = "PARTIAL"   # au moins une passe interrompue (rate limit, erreur…)
+RUN_ERROR = "ERROR"
+#: Run jamais clos (processus tué, coupure) : marqué au démarrage du run suivant.
+#: C'est un signal d'observabilité à part entière : la collecte a pu être tronquée.
+RUN_INTERRUPTED = "INTERRUPTED"
+
+# --- Motifs d'arrêt d'une passe (colonne ``scrape_query_stats.stop_reason``) ---
+STOP_REASON_LABELS = {
+    "quota": "Quota atteint",
+    "early_stop": "Arrêt anticipé (jonction avec le scrape précédent)",
+    "window_end": "Hors fenêtre temporelle (flux épuisé)",
+    "stream_end": "Fin de flux (plus de résultats)",
+    "max_pages": "Plafond de pages atteint (flux potentiellement tronqué)",
+    "duplicate_page": "Page déjà vue (pagination stagnante)",
+    "rate_limit": "Rate limit (429) — flux perdu",
+    "http_error": "Erreur HTTP — flux perdu",
+    "network_error": "Erreur réseau — flux perdu",
+    "auth_missing": "Authentification absente (cookies / jeton)",
+    "unsupported": "Tri ou pagination non supporté par la source",
+    "disabled": "Passe désactivée par configuration",
+    "error": "Erreur inattendue",
+}
+
+# Motifs signalant une perte de flux (rate limit, plafond…) : ``is_incomplete_stop``
+# est ré-exporté depuis ``scrapers.models`` (voir l'import en tête de module).
+
+
+def stop_reason_label(reason: str | None) -> str:
+    """Libellé lisible d'un motif d'arrêt (repli : valeur brute ou « Inconnu »)."""
+    if not reason:
+        return "Inconnu"
+    return STOP_REASON_LABELS.get(reason, reason)
+
+
+# --- Types de passe de la collecte hybride ------------------------------------
+# Les identifiants de mode sont définis par les scrapers (source de vérité) et
+# ré-exportés ici avec leurs libellés d'affichage.
+from scrapers.models import (  # noqa: E402  (ré-export volontaire)
+    PASS_FRESHNESS,
+    PASS_MODES,
+    PASS_RELEVANCE,
+)
+
+PASS_LABELS = {
+    PASS_FRESHNESS: "Fraîcheur (tri par date)",
+    PASS_RELEVANCE: "Rattrapage (tri par pertinence)",
+}
+
+
+def pass_label(mode: str | None) -> str:
+    """Libellé lisible d'un mode de collecte (repli : valeur brute ou « Inconnu »)."""
+    if not mode:
+        return "Inconnu"
+    return PASS_LABELS.get(mode, mode)
