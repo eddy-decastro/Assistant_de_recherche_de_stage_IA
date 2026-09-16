@@ -1,0 +1,130 @@
+# ============================================================
+# stage_copilot — Configuration centrale
+# Tous les filtres "durs", listes d'entreprises et coefficients
+# de scoring sont définis ici.
+# ============================================================
+
+scraping:
+  source: "welcome_to_the_jungle"
+  base_url: "https://www.welcometothejungle.com"
+  api_base: "https://api.welcometothejungle.com/api/v1"
+
+  # Mots-clés de recherche
+  search_keywords:
+    - "Data Science"
+    - "Machine Learning"
+    - "Data Engineer"
+
+  # Filtres "durs" : type de contrat et localisation
+  contract_filter: "internship"
+  location_filters:
+    - "Paris"
+    - "Île-de-France"
+
+  max_offers: 150
+  request_timeout_seconds: 30
+
+scoring:
+  model_name: "all-MiniLM-L6-v2"
+  cv_path: "data/cv_eddy.txt"
+
+  # Pondération du score final (la somme doit faire 1.0)
+  weights:
+    semantic: 0.60    # similarité sémantique CV vs offre
+    company: 0.25     # typologie d'entreprise
+    keywords: 0.15    # mots-clés d'excellence
+
+  # Mots-clés "d'excellence" valorisés dans les offres
+  excellence_keywords:
+    - "PyTorch"
+    - "TensorFlow"
+    - "GNN"
+    - "Graph Neural Network"
+    - "Docker"
+    - "Kubernetes"
+    - "Airflow"
+    - "MLflow"
+    - "Spark"
+    - "dbt"
+    - "Hugging Face"
+    - "LLM"
+    - "RAG"
+    - "NLP"
+    - "Computer Vision"
+    - "scikit-learn"
+    - "SQL"
+    - "PostgreSQL"
+    - "MLOps"
+
+companies:
+  # Scale-ups / Labs de recherche — bonus (tier 1)
+  tier_1:
+    - "Doctolib"
+    - "Mistral AI"
+    - "Mistral"
+    - "Datadog"
+    - "Hugging Face"
+    - "Alan"
+    - "Qonto"
+    - "Back Market"
+    - "Dataiku"
+    - "BlaBlaCar"
+    - "Veepee"
+    - "PayFit"
+    - "Ledger"
+    - "Swan"
+    - "Dust"
+    - "Poolside"
+    - "LightOn"
+    - "Photoroom"
+    - "DeepMind"
+    - "Google DeepMind"
+    - "OpenAI"
+    - "Anthropic"
+    - "Cohere"
+    - "Meta AI"
+    - "Inria"
+    - "CEA"
+    - "Institut Curie"
+    - "Institut Pasteur"
+
+  # ESN / SSII — pénalisées
+  esn:
+    - "Alten"
+    - "Capgemini"
+    - "Sopra Steria"
+    - "Accenture"
+    - "Atos"
+    - "Devoteam"
+    - "Sogeti"
+    - "Apside"
+    - "Astek"
+    - "Amaris"
+    - "Inetum"
+    - "Orange Business"
+    - "CGI"
+    - "NTT Data"
+    - "SQLI"
+    - "Extia"
+    - "Aubay"
+    - "Modis"
+    - "Capgemini Engineering"
+
+database:
+  path: "data/stage_copilot.db"
+
+# ============================================================
+# Étape 2 : reranking de haute précision (LLM-as-a-Judge)
+# ============================================================
+ranking:
+  # Nombre d'offres (meilleures au scoring étape 1) envoyées au juge LLM.
+  top_n_rerank: 20
+
+llm:
+  provider: "deepseek"
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  temperature: 0.0
+  timeout_seconds: 60
+  # La clé API est lue depuis le fichier .env (variable DEEPSEEK_API_KEY).
+  # Jamais de secret en clair dans ce fichier versionné.

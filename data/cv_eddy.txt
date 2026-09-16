@@ -1,0 +1,28 @@
+EDDY — Élève-ingénieur en dernière année, Mines Saint-Étienne
+Recherche un stage de fin d'études en Data Science / Machine Learning / Data Engineering
+
+PROFIL
+- Élève-ingénieur à l'École des Mines de Saint-Étienne (cycle ingénieur civil).
+- Spécialisation : Intelligence Artificielle, Machine Learning et Science des Données.
+- Intérêt marqué pour la modélisation prédictive, le NLP et les systèmes distribués.
+
+COMPÉTENCES TECHNIQUES
+- Langages : Python, SQL.
+- Machine Learning : scikit-learn, XGBoost, LightGBM, régression, classification, clustering.
+- Deep Learning : PyTorch, TensorFlow, réseaux de neurones, GNN (Graph Neural Networks), Computer Vision, NLP.
+- MLOps / Data Engineering : Docker, Kubernetes, Airflow, MLflow, Spark, dbt, PostgreSQL, SQLite.
+- NLP & LLM : Hugging Face, transformers, embeddings, RAG, fine-tuning de LLM.
+- Visualisation : Streamlit, matplotlib, seaborn, Plotly.
+- Outils : Git, Linux, CI/CD, cloud (AWS, GCP — notions).
+
+EXPÉRIENCES
+- Projet de recherche : détection de fraudes par réseaux de neurones sur graphes (GNN) avec PyTorch.
+- Projet : pipeline ETL Spark pour agréger des données massives puis entraînement d'un modèle de recommandation.
+- Déploiement d'un assistant RAG documentaire avec Docker et Streamlit.
+
+LANGUES
+- Français (natif), Anglais (courant, TOEIC 950).
+
+OBJECTIF
+- Stage de 6 mois en Île-de-France à partir de mars 2026.
+- Intéressé par les scale-ups, les labs de recherche et les équipes produit data.

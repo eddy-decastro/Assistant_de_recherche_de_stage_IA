@@ -1,0 +1,40 @@
+# ============================================================
+# stage_copilot — Dépendances Python
+# ============================================================
+
+# --- PyTorch (CPU) : index déclaré en premier pour privilégier les wheels CPU ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Client HTTP ---
+httpx
+
+# --- Validation de données / modèles ---
+pydantic>=2.0
+
+# --- Configuration YAML ---
+PyYAML
+
+# --- ORM / base de données SQLite ---
+SQLAlchemy
+
+# --- Tableau de bord ---
+streamlit
+
+# --- Manipulation de données ---
+pandas
+
+# --- Embeddings sémantiques (similarité CV vs offres) ---
+sentence-transformers
+
+# --- PyTorch ---
+torch
+
+# --- Chargement du fichier .env (clé API DeepSeek) ---
+python-dotenv
+
+# --- Scraping LinkedIn (parsing HTML) ---
+beautifulsoup4
+lxml
+
+# --- Impersonation TLS (contourne le challenge Cloudflare de l'intranet JobTeaser) ---
+curl_cffi

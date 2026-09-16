@@ -1,0 +1,17 @@
+# --- Environnement virtuel ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# --- Secrets ---
+.env
+
+# --- Base de données locale ---
+data/*.db
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
