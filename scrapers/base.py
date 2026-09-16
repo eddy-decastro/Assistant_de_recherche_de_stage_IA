@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import httpx
+from bs4 import BeautifulSoup
 
 from .models import RawJob, ScrapeResult, ScraperConfig, Source
 
@@ -49,6 +50,22 @@ def _contains_keyword(text: str, keyword: str) -> bool:
     if " " in kw:
         return kw in lowered
     return re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", lowered) is not None
+
+
+def markup_to_text(node: Any, separator: str = "\n") -> str:
+    """Convertit un fragment HTML (chaîne ou balise BeautifulSoup) en texte lisible.
+
+    Les ``<br>`` deviennent des sauts de ligne et les blocs (``<p>``, ``<li>``,
+    ``<div>``…) sont séparés par ``separator`` ; les lignes vides consécutives
+    sont supprimées. Indispensable en aval : la description part telle quelle
+    vers le modèle d'embedding puis vers le juge LLM, elle doit rester structurée.
+    """
+    parsed = BeautifulSoup(node, "lxml") if isinstance(node, str) else node
+    for br in parsed.find_all("br"):
+        br.replace_with("\n")
+    raw = parsed.get_text(separator, strip=True)
+    lines = [line.strip() for line in raw.splitlines()]
+    return separator.join(line for line in lines if line)
 
 
 class BaseScraper(ABC):

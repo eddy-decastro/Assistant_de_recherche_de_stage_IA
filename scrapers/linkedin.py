@@ -14,16 +14,22 @@ aucune carte n'est inédite termine la pagination (garde-fou anti-boucle).
 from __future__ import annotations
 
 import random
+import re
 import time
 from datetime import datetime, timezone
 
 import httpx
 from bs4 import BeautifulSoup
 
-from .base import BaseScraper
+from .base import BaseScraper, markup_to_text
+from .cache import DiskCache
 from .models import RawJob, ScrapeResult, ScraperConfig
 
 GUEST_ENDPOINT = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+# Page détail invitée : elle expose la description COMPLÈTE, absente des cartes de
+# résultat (vérifié : HTTP 200 et ``div.description__text`` présent).
+DETAIL_ENDPOINT = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+CACHE_NAMESPACE = "linkedin"
 LOCATION = "France"
 SLEEP_RANGE = (2.0, 4.0)
 # Garde-fou : nombre maximal d'appels HTTP par requête cible (anti-boucle infinie).
@@ -44,6 +50,49 @@ def _clean_url(value: str | None) -> str:
     if not value:
         return ""
     return value.split("?")[0].strip()
+
+
+# Identifiant numérique d'une offre : ``/jobs/view/<slug>-<id>``,
+# ``urn:li:jobPosting:<id>`` ou ``?currentJobId=<id>``.
+_JOB_ID_PATTERNS = (
+    re.compile(r"/jobs/view/(?:[^/?#]*?-)?(\d{6,})"),
+    re.compile(r"jobPosting:(\d{6,})"),
+    re.compile(r"[?&]currentJobId=(\d{6,})"),
+)
+
+# Conteneurs de la description sur la page détail invitée (repli en cascade).
+_DESCRIPTION_SELECTORS = (
+    "div.show-more-less-html__markup",
+    "div.description__text",
+    "section.description",
+)
+
+
+def extract_job_id(value: str | None) -> str:
+    """Extrait l'identifiant numérique d'une offre depuis une URL (ou un urn)."""
+    text = (value or "").strip()
+    if text.isdigit():
+        return text
+    for pattern in _JOB_ID_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def parse_description(html_text: str) -> str:
+    """Extrait le texte de la description depuis la page détail invitée."""
+    if not html_text:
+        return ""
+    soup = BeautifulSoup(html_text, "lxml")
+    for selector in _DESCRIPTION_SELECTORS:
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = markup_to_text(node)
+        if text:
+            return text
+    return ""
 
 
 class LinkedInGuestScraper(BaseScraper):
@@ -142,20 +191,47 @@ class LinkedInGuestScraper(BaseScraper):
             )
         return jobs, card_keys
 
+    def fetch_description(self, url_or_id: str, cache: DiskCache | None = None) -> str:
+        """Récupère la description complète d'une offre (page détail invitée).
+
+        Le texte n'est mis en cache que s'il est récupéré (un échec de parsing ne
+        « gèle » pas une réponse vide). Les erreurs HTTP sont propagées sous forme
+        de ``httpx.HTTPStatusError`` afin que l'appelant distingue un 429 d'une
+        description simplement absente.
+        """
+        job_id = extract_job_id(url_or_id)
+        if not job_id:
+            self._logger.warning("LinkedIn : identifiant d'offre introuvable dans %r.", url_or_id)
+            return ""
+        if cache is not None:
+            cached = cache.get(CACHE_NAMESPACE, job_id)
+            if cached is not None:
+                return cached
+
+        response = self.client.get(DETAIL_ENDPOINT.format(job_id=job_id))
+        response.raise_for_status()
+        description = parse_description(response.text)
+        if description and cache is not None:
+            cache.set(CACHE_NAMESPACE, job_id, description)
+        return description
+
     def fetch(self) -> ScrapeResult:
         jobs: list[RawJob] = []
         found = 0
         max_offers = self.config.max_offers_per_source
+        quota = self.config.per_query_quota
         seen_ids: set[str] = set()  # déduplication inter-requêtes
 
         for query in self.config.target_queries:
-            if len(jobs) >= max_offers:
-                break
+            # Quota PAR REQUÊTE : une requête qui remplit son quota ne prive plus les
+            # suivantes (l'ancien ``break`` global arrêtait la collecte dès que
+            # ``max_offers_per_source`` était atteint par la première requête).
+            collected_for_query = 0
             start = 0
             seen_page_keys: set[str] = set()  # détection de stagnation (par requête)
 
             for _page in range(MAX_PAGES_PER_QUERY):
-                if len(jobs) >= max_offers:
+                if collected_for_query >= quota or len(jobs) >= max_offers:
                     break
                 try:
                     batch, card_keys = self._fetch_page(query, start)
@@ -193,13 +269,16 @@ class LinkedInGuestScraper(BaseScraper):
                     key = job.id_externe or job.url
                     if key in seen_ids:
                         continue
+                    if collected_for_query >= quota or len(jobs) >= max_offers:
+                        break
                     seen_ids.add(key)
                     jobs.append(job)
+                    collected_for_query += 1
 
                 # Pas réel = nombre de cartes reçues (10 aujourd'hui) : plus de
                 # saut d'offres si LinkedIn change la taille de page.
                 start += len(card_keys)
-                if len(jobs) >= max_offers:
+                if collected_for_query >= quota or len(jobs) >= max_offers:
                     break
                 time.sleep(random.uniform(*SLEEP_RANGE))
 

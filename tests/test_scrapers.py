@@ -76,17 +76,47 @@ def _linkedin_page(prefix: str, count: int = 10) -> str:
     return "<ul>" + "".join(_linkedin_card(f"{prefix}{i:02d}") for i in range(count)) + "</ul>"
 
 
+class _PerQueryClient(_FakeClient):
+    """Client factice servant des pages différentes selon la REQUÊTE et l'offset.
+
+    ``_FakeClient`` ne connaît que l'offset : deux requêtes y reçoivent la même
+    page, ce qui masque l'origine des offres. Ce client-là permet de vérifier
+    que chaque requête cible apporte bien ses propres résultats.
+    """
+
+    def __init__(self, pages_by_query: dict[str, dict[int, str | int]]) -> None:
+        super().__init__({})
+        self.pages_by_query = pages_by_query
+
+    def get(self, url: str, params: dict | None = None) -> _FakeResponse:
+        params = params or {}
+        query = str(params.get("keywords", ""))
+        start = int(params.get("start", 0))
+        self.requested_starts.append(start)
+        page = self.pages_by_query.get(query, {}).get(start, "")
+        if isinstance(page, int):  # code HTTP simulé (ex. 429)
+            return _FakeResponse("", status_code=page)
+        return _FakeResponse(page)
+
+
 def _run_linkedin_fetch(
-    pages: dict[int, str | int], queries: list[str] | None = None
+    pages: dict[int, str | int] | None = None,
+    queries: list[str] | None = None,
+    *,
+    client: _FakeClient | None = None,
+    max_offers_per_source: int = 50,
+    max_offers_per_query: int | None = None,
 ) -> tuple[ScrapeResult, _FakeClient]:
     """Exécute ``fetch()`` avec un client factice, sans réseau ni pause entre pages."""
     config = ScraperConfig(
-        target_queries=queries or ["Stage Data Scientist"], max_offers_per_source=50
+        target_queries=queries or ["Stage Data Scientist"],
+        max_offers_per_source=max_offers_per_source,
+        max_offers_per_query=max_offers_per_query,
     )
     scraper = LinkedInGuestScraper(config)
     real_client = scraper.client
-    client = _FakeClient(pages)
-    scraper.client = client  # type: ignore[assignment]
+    fake = client if client is not None else _FakeClient(pages or {})
+    scraper.client = fake  # type: ignore[assignment]
     real_client.close()
     previous_range = linkedin_module.SLEEP_RANGE
     linkedin_module.SLEEP_RANGE = (0.0, 0.0)  # neutralise les pauses anti-flood
@@ -95,7 +125,7 @@ def _run_linkedin_fetch(
     finally:
         linkedin_module.SLEEP_RANGE = previous_range
         scraper.close()
-    return result, client
+    return result, fake
 
 
 def test_is_valid_job() -> None:
@@ -341,6 +371,72 @@ def test_linkedin_http_429_fallback() -> None:
     print("  LinkedIn : repli propre sur 429 OK")
 
 
+def test_linkedin_quota_par_requete() -> None:
+    """Chaque requête cible consomme son quota : la 1re ne bloque plus les suivantes.
+
+    Le client factice sert une page distincte par requête, ce qui permet de
+    vérifier *l'origine* des offres collectées (et non seulement leur nombre).
+    """
+    client = _PerQueryClient(
+        {
+            "Stage Data Scientist": {0: _linkedin_page("90"), 10: _linkedin_page("95")},
+            "Stage NLP": {0: _linkedin_page("70")},
+        }
+    )
+    result, client = _run_linkedin_fetch(
+        queries=["Stage Data Scientist", "Stage NLP"],
+        client=client,
+        max_offers_per_source=10,
+        max_offers_per_query=5,
+    )
+
+    # 1re requête : 5 offres (quota atteint) ; 2e requête : TOUJOURS interrogée (elle
+    # apporte 5 offres de sa propre page). Auparavant, le plafond global atteint par
+    # la 1re requête court-circuitait toutes les suivantes.
+    assert client.requested_starts == [0, 0], client.requested_starts
+    assert len(result.jobs) == 10, len(result.jobs)
+    assert result.found == 20, result.found
+    urns = {job.id_externe for job in result.jobs}
+    assert urns == {*(f"90{i:02d}" for i in range(5)), *(f"70{i:02d}" for i in range(5))}, urns
+    print("  LinkedIn : quota par requête OK (chaque requête contribue)")
+
+
+def test_jobteaser_quota_par_requete() -> None:
+    """Idem côté JobTeaser : le quota est appliqué par requête, pas globalement."""
+    cards = "".join(
+        '<div data-testid="jobad-card"><h3><a href="/fr/job-offers/'
+        f'9b758aca-9a81-4adb-8acb-fd096ddcae3{i}-stage-data-{i}">Stage Data {i}</a></h3></div>'
+        for i in range(8)
+    )
+    config = ScraperConfig(
+        target_queries=["q1", "q2"], max_offers_per_source=10, max_offers_per_query=3
+    )
+    scraper = JobTeaserScraper(config)
+    real_client, real_curl = scraper.client, scraper._curl
+    scraper.client = _FakeClient({})
+    scraper._curl = None
+    scraper.token = "jeton-de-test"  # satisfait _has_auth sans cookie réel
+    requested: list[str] = []
+
+    def fake_fetch_html(url: str, params: dict[str, str]) -> tuple[int, str]:
+        requested.append(params.get("q", ""))
+        return 200, cards
+
+    scraper._fetch_html = fake_fetch_html  # type: ignore[assignment]
+    try:
+        result = scraper.fetch()
+    finally:
+        real_client.close()
+        scraper.close()
+        if real_curl is not None:
+            real_curl.close()
+
+    assert requested == ["q1", "q2"], requested
+    assert len(result.jobs) == 6, len(result.jobs)
+    assert result.found == 16, result.found
+    print("  JobTeaser : quota par requête OK (les 2 requêtes contribuent)")
+
+
 if __name__ == "__main__":
     test_is_valid_job()
     test_word_boundary()
@@ -357,4 +453,6 @@ if __name__ == "__main__":
     test_linkedin_pagination_stagnation()
     test_linkedin_dedupe_across_queries()
     test_linkedin_http_429_fallback()
+    test_linkedin_quota_par_requete()
+    test_jobteaser_quota_par_requete()
     print("TOUS LES TESTS PASSENT")

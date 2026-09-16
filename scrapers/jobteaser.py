@@ -32,7 +32,8 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from .base import BaseScraper, load_env_file
+from .base import BaseScraper, load_env_file, markup_to_text
+from .cache import DiskCache
 from .models import RawJob, ScrapeResult, ScraperConfig
 
 try:  # Transport optionnel : impersonation TLS (contourne le challenge Cloudflare).
@@ -43,6 +44,7 @@ except ImportError:  # pragma: no cover - dépendance optionnelle
 DEFAULT_BASE_URL = "https://emse.jobteaser.com"
 DEFAULT_OFFERS_PATH = "/fr/job-offers"
 DEFAULT_IMPERSONATE = "chrome"
+CACHE_NAMESPACE = "jobteaser"
 NAV_ACCEPT = (
     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
     "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
@@ -74,6 +76,14 @@ _COMPANY_KEYS = (
     "recruiter",
 )
 _ID_KEYS = ("id", "uuid", "reference", "slug", "url", "weburl", "web_url", "link", "shareurl")
+
+# Conteneurs de la description sur la page détail (repli en cascade).
+# ``jobad-DetailView__Description`` est vérifié sur une page réelle (sans cookies).
+_DESCRIPTION_SELECTORS = (
+    '[data-testid="jobad-DetailView__Description"]',
+    "article[class*='Description-module']",
+    "div[class*='Description-module'][class*='content']",
+)
 
 
 def _first_str(*values: Any) -> str:
@@ -459,6 +469,63 @@ class JobTeaserScraper(BaseScraper):
         )
 
     # ------------------------------------------------------------------ #
+    # Description complète (page détail)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def parse_description(html_text: str) -> str:
+        """Extrait la description depuis une page détail JobTeaser.
+
+        Sélecteur principal : ``data-testid="jobad-DetailView__Description"``
+        (structure vérifiée sur une page réelle) ; replis sur les classes du design
+        system, puis sur les paragraphes longs si la structure évolue.
+        """
+        if not html_text:
+            return ""
+        soup = BeautifulSoup(html_text, "lxml")
+        for selector in _DESCRIPTION_SELECTORS:
+            node = soup.select_one(selector)
+            if node is None:
+                continue
+            text = markup_to_text(node)
+            if text:
+                return text
+        # Dernier repli : au moins 3 paragraphes longs ⇒ page de détail probable.
+        paragraphs = [
+            text
+            for text in (markup_to_text(node) for node in soup.find_all(["p", "li"]))
+            if len(text) > 120
+        ]
+        return "\n".join(paragraphs) if len(paragraphs) >= 3 else ""
+
+    def fetch_description(self, url: str, cache: DiskCache | None = None) -> str:
+        """Récupère la description complète d'une offre depuis sa page détail.
+
+        Fonctionne sans cookie de session (le détail est public derrière
+        Cloudflare : ``curl_cffi`` suffit), mais un 403 reste possible si
+        l'impersonation expire → l'appelant en est informé par l'exception.
+        """
+        key = (url or "").split("?")[0].rstrip("/")
+        if not key:
+            return ""
+        if cache is not None:
+            cached = cache.get(CACHE_NAMESPACE, key)
+            if cached is not None:
+                return cached
+
+        status, html_text = self._fetch_html(key, {})
+        if status >= 400:
+            request = httpx.Request("GET", key)
+            raise httpx.HTTPStatusError(
+                f"HTTP {status} sur {key}",
+                request=request,
+                response=httpx.Response(status, request=request),
+            )
+        description = self.parse_description(html_text)
+        if description and cache is not None:
+            cache.set(CACHE_NAMESPACE, key, description)
+        return description
+
+    # ------------------------------------------------------------------ #
     # Orchestration
     # ------------------------------------------------------------------ #
     def fetch(self) -> ScrapeResult:
@@ -471,6 +538,7 @@ class JobTeaserScraper(BaseScraper):
 
         jobs: list[RawJob] = []
         found = 0
+        quota = self.config.per_query_quota
         for query in self.config.target_queries:
             if len(jobs) >= self.config.max_offers_per_source:
                 break
@@ -502,10 +570,17 @@ class JobTeaserScraper(BaseScraper):
                 self._logger.warning("JobTeaser : aucune offre extraite (query=%r).", query)
                 continue
             found += len(raw_jobs)
+            # Quota PAR REQUÊTE : chaque requête cible contribue à la collecte
+            # (l'ancienne boucle s'arrêtait dès le plafond global atteint, ce qui
+            # privait les requêtes suivantes de toute chance).
+            added_for_query = 0
             for raw in raw_jobs:
+                if added_for_query >= quota or len(jobs) >= self.config.max_offers_per_source:
+                    break
                 job = self._to_raw_job(raw)
                 if job:
                     jobs.append(job)
+                    added_for_query += 1
 
         return ScrapeResult(jobs=jobs, found=found)
 

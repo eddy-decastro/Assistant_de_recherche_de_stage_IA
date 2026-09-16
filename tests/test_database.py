@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from sqlalchemy import create_engine
 
 from src.constants import STATUS_APPLIED, STATUS_NEW, TIER_1
-from src.storage.database import Database, make_job_id
+from src.storage.database import Database, SQLITE_BUSY_TIMEOUT_MS, make_job_id
 
 
 def main() -> None:
@@ -82,6 +82,8 @@ def main() -> None:
         db.engine.dispose()
 
     test_migration()
+    test_wal_pragmas()
+    test_descriptions()
     print("[OK] test_database.py : tous les tests passent.")
 
 
@@ -109,6 +111,49 @@ def test_migration() -> None:
         assert not missing, f"Colonnes manquantes après migration : {missing}"
         db.engine.dispose()
     print("[OK] migration : colonnes etape 2 ajoutees sur une base ancienne")
+
+
+def test_wal_pragmas() -> None:
+    """WAL + busy_timeout actifs : lecture du dashboard pendant l'écriture des scrapers."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "wal.db")
+        with db.engine.connect() as conn:
+            journal_mode = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
+            busy_timeout = conn.exec_driver_sql("PRAGMA busy_timeout").scalar()
+        assert str(journal_mode).casefold() == "wal", journal_mode
+        assert int(busy_timeout) == SQLITE_BUSY_TIMEOUT_MS, busy_timeout
+        db.engine.dispose()
+    print("[OK] SQLite : WAL + busy_timeout actifs (plus de 'database is locked')")
+
+
+def test_descriptions() -> None:
+    """Rattrapage des descriptions : update, sélection des offres sans texte, comptage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "descriptions.db")
+        base = {
+            "company": "Mistral AI",
+            "location": "Paris",
+            "source": "linkedin",
+            "company_tier": TIER_1,
+            "semantic_score": 10.0,
+            "final_score": 10.0,
+        }
+        db.upsert_job({**base, "title": "Stage IA", "url": "https://example.com/a", "description": ""})
+        db.upsert_job(
+            {**base, "title": "Stage ML", "url": "https://example.com/b", "description": "PyTorch"}
+        )
+
+        assert db.count_with_description() == 1
+        missing = db.get_jobs_missing_description()
+        assert len(missing) == 1 and missing[0]["title"] == "Stage IA", missing
+        assert db.get_jobs_missing_description(sources=["jobteaser"]) == []
+
+        assert db.update_description(missing[0]["id"], "Description complète") is True
+        assert db.count_with_description() == 2
+        assert db.get_jobs_missing_description() == [], "Plus aucune offre sans description."
+        assert db.update_description("identifiant-inexistant", "x") is False
+        db.engine.dispose()
+    print("[OK] descriptions : rattrapage + selection des offres sans texte")
 
 
 if __name__ == "__main__":
