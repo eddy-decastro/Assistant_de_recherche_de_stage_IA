@@ -49,7 +49,13 @@ scrapers:
   # Plafond GLOBAL (union des deux passes) pour une source. Il est appliqué
   # pendant les passes : dès qu'il est atteint, les requêtes suivantes ne sont
   # plus lancées. Borne la charge réseau et le risque de 429.
-  max_offers_per_source: 120
+  #
+  # Valeur alignée sur les objectifs réels : 40 nouvelles en Fraîcheur, puis
+  # 10 plus pertinentes en Rattrapage ⇒ 50 au total, sous ce plafond de 60. La
+  # part du Rattrapage est RÉSERVÉE : la passe Fraîcheur ne peut pas la consommer
+  # (sinon « les 10 plus pertinentes » seraient affamées par une Fraîcheur
+  # généreuse, sans trace dans la télémétrie).
+  max_offers_per_source: 60
   # DÉPRÉCIÉ (conservé pour les configurations antérieures) : quota « à plat »,
   # utilisé uniquement si la section `passes` ci-dessous est absente.
   # max_offers_per_query: 40
@@ -59,11 +65,18 @@ scrapers:
   # ------------------------------------------------------------
   # Stratégie de collecte hybride : deux passes complémentaires par requête
   # ------------------------------------------------------------
-  # « Fraîcheur »  : tri par date + filtre temporel serveur (LinkedIn : f_TPR) et
-  #                  arrêt anticipé dès que le flux rejoint le scrape précédent.
-  # « Rattrapage » : classement algorithmique de la plateforme, sans arrêt
-  #                  anticipé (le tri n'étant pas temporel), jusqu'au quota ou à
-  #                  l'épuisement de la pagination.
+  # À CHAQUE BOUCLE, pour chaque source :
+  #   1. « Fraîcheur »  : les 40 dernières offres — tri par date, filtre temporel
+  #                       serveur (LinkedIn : f_TPR) et ARRÊT ANTICIPÉ dès que
+  #                       10 offres déjà vues s'enchaînent (le flux a rejoint ce
+  #                       qui est déjà en base : on arrête de chercher) ;
+  #   2. « Rattrapage » : les 10 plus pertinentes — classement algorithmique de la
+  #                       plateforme, SANS fenêtre temporelle et SANS arrêt
+  #                       anticipé, pour ne pas manquer les offres toujours
+  #                       actives publiées il y a plus d'un mois.
+  # Chaque objectif (target_new_per_source) est fixé à la SOURCE, toutes requêtes
+  # confondues : atteint, il interrompt la passe et les requêtes restantes sont
+  # consignées en télémétrie (jamais d'arrêt silencieux).
   # La déclaration est EXPLICITE : un mode absent de cette section n'est pas
   # exécuté. Une offre collectée en « Fraîcheur » n'est jamais recomptée en
   # « Rattrapage » (déduplication transverse).
@@ -71,37 +84,53 @@ scrapers:
     freshness:
       enabled: true
       sort: "date"
-      # Quota de NOUVELLES offres par requête cible.
+      # Objectif de NOUVELLES offres pour la source : « les 40 dernières ».
+      target_new_per_source: 40
+      # Soupape par requête, en deçà de l'objectif de source.
       max_offers_per_query: 40
       # Fenêtre temporelle : 1 = 24 h, 7 = une semaine, null = aucune limite.
       window_days: 7
-      # Nombre d'offres DÉJÀ CONNUES consécutives déclenchant l'arrêt anticipé.
-      # ⚠️ Neutralisé automatiquement si la source ne garantit pas un flux trié
-      # (LinkedIn : 7 inversions de date mesurées sur 2 pages — le coût est alors
-      # borné par la fenêtre serveur, le quota et max_pages_per_query).
-      early_stop_after_known: 5
-      # Pages minimales avant d'autoriser un arrêt anticipé.
-      early_stop_min_pages: 1
+      # Arrêt anticipé : 10 offres DÉJÀ VUES consécutives ⇒ on a déjà tout vu.
+      # Le compteur est remis à zéro par toute carte inédite et il traverse les
+      # pages ; il additionne « déjà en base » et « déjà croisée dans ce run ».
+      #
+      # ⚠️ ARRÊT ARMÉ MALGRÉ UN ORDRE NON CHRONOLOGIQUE. LinkedIn n'honore pas son
+      # tri par date (7 inversions mesurées sur 2 pages, cf. tools/probe_sources.py).
+      # Cette règle se prononce néanmoins sur une SÉRIE de 10 cartes, insensible aux
+      # inversions locales : elle est donc fiable là où l'arrêt sur fenêtre (UNE
+      # carte) ne l'est pas — ce dernier reste, lui, désarmé ci-dessous.
+      early_stop_after_known: 10
+      arm_early_stop: true
+      # Pages minimales avant d'autoriser l'arrêt anticipé. Une page fait 10 cartes :
+      # sans cette garde, « 10 déjà vues » serait équivalent à la détection de
+      # pagination stagnante ; avec elle, l'arrêt tombe dès la 2e page et évite les
+      # 10 pages suivantes d'un flux déjà parcouru.
+      early_stop_min_pages: 2
       # Plafond de pages par requête : borne la charge réseau. Mesuré en réel : à
       # 6 pages, la requête « Stage Data Scientist » s'arrête sur `max_pages`
       # (17 offres retenues) ⇒ plafond relevé à 12 pages (120 cartes), la fenêtre
       # de 7 jours restant naturellement bornée.
       max_pages_per_query: 12
       # Arrêter la passe sur la première offre antérieure à la fenêtre (utile
-      # uniquement si l'ordre du flux est chronologique).
+      # uniquement si l'ordre du flux est chronologique — désarmé sur LinkedIn).
       stop_when_older_than_window: true
       # Demander le filtrage temporel à la plateforme quand elle le permet
       # (LinkedIn : f_TPR=r<secondes>).
       use_server_window_filter: true
-      # Réglage expert : forcer la confiance dans l'ordre renvoyé par la source.
+      # Réglage expert : forcer la confiance dans l'ordre renvoyé par la source
+      # (pilote l'arrêt sur fenêtre, PAS l'arrêt sur série de connues).
       trust_source_order: false
 
     relevance:
       enabled: true
       sort: "relevance"
+      # Objectif de NOUVELLES offres pour la source : « les 10 plus pertinentes ».
+      target_new_per_source: 10
       max_offers_per_query: 20
       window_days: null
-      early_stop_after_known: 0   # jamais d'arrêt anticipé (classement non temporel)
+      # Jamais d'arrêt anticipé : ce classement n'est pas temporel, et c'est lui le
+      # filet de sécurité de ce que l'arrêt anticipé de la Fraîcheur aurait sauté.
+      early_stop_after_known: 0
       max_pages_per_query: 12
       stop_when_older_than_window: false
       use_server_window_filter: false

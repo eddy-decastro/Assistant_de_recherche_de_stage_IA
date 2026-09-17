@@ -294,6 +294,11 @@ class BaseScraper(ABC):
         run_keys: set[str] = set()
         selected_modes = list(modes) if modes else self.config.enabled_modes()
         selected_queries = list(queries) if queries else list(self.config.target_queries)
+        #: Nouvelles offres déjà retenues, par passe : avancement de l'objectif de
+        #: source (« 40 dernières » en Fraîcheur, « 10 plus pertinentes » en
+        #: Rattrapage). Atteint, il interrompt la passe sans lancer les requêtes
+        #: restantes — chacune étant consignée en télémétrie.
+        kept_per_mode: dict[str, int] = {mode: 0 for mode in selected_modes}
         reason = self.unavailable_reason()
         if reason:
             self._logger.warning(
@@ -301,7 +306,7 @@ class BaseScraper(ABC):
                 self.source,
                 reason,
             )
-        for mode in selected_modes:
+        for mode_index, mode in enumerate(selected_modes):
             if not self.config.pass_config(mode).enabled:
                 result.query_reports.extend(
                     self._skipped_reports(mode, selected_queries, "disabled", "passe désactivée")
@@ -318,29 +323,72 @@ class BaseScraper(ABC):
                 server_window_filter=self.SERVER_WINDOW_FILTER,
             )
             self._logger.info(
-                "%s : passe « %s » — tri=%s, quota=%d/requête, fenêtre=%s, arrêt anticipé=%s",
+                "%s : passe « %s » — tri=%s, quota=%d/requête, objectif=%s, fenêtre=%s, "
+                "arrêt anticipé=%s",
                 self.source,
                 mode,
                 plan.sort,
                 plan.quota,
+                f"{plan.target_new} nouvelle(s)/source" if plan.target_new else "aucun",
                 f"{plan.window_days:g} j" if plan.window_days else "aucune",
                 plan.early_stop_threshold or "désactivé",
             )
             if plan.notes:
                 self._logger.info("%s : garde-fous appliqués — %s", self.source, plan.notes)
+            # Part du plafond de source RÉSERVÉE aux passes suivantes : la passe en
+            # cours ne peut pas la consommer, sinon elle affamerait silencieusement
+            # l'objectif de rattrapage (« les 10 plus pertinentes »).
+            reserve = sum(
+                self.config.pass_config(later).target_new
+                for later in selected_modes[mode_index + 1 :]
+            )
             for query in selected_queries:
-                # Budget restant de la source : le plafond global est appliqué
-                # *pendant* la passe (sinon chaque requête pourrait consommer son
-                # quota entier et le dépasser).
-                budget = self.config.max_offers_per_source - len(result.jobs)
-                if budget <= 0:
+                if plan.target_new and kept_per_mode[mode] >= plan.target_new:
+                    # Objectif de la source atteint : les requêtes restantes ne sont pas
+                    # lancées, mais elles sont CONSIGNÉES (jamais d'arrêt silencieux).
                     self._logger.info(
-                        "%s : plafond de source atteint (%d) — requête %r non lancée.",
+                        "%s : objectif de la passe « %s » atteint (%d/%d) — requête %r non lancée.",
                         self.source,
-                        self.config.max_offers_per_source,
+                        mode,
+                        kept_per_mode[mode],
+                        plan.target_new,
                         query,
                     )
-                    break
+                    result.query_reports.extend(
+                        self._skipped_reports(
+                            mode,
+                            [query],
+                            "quota",
+                            f"objectif de {plan.target_new} nouvelle(s) pour la source déjà "
+                            f"atteint ({kept_per_mode[mode]}) — requête non lancée",
+                            target_new=plan.target_new,
+                        )
+                    )
+                    continue
+                # Budget restant de la source, réserve des passes suivantes déduite :
+                # le plafond global est appliqué *pendant* la passe (sinon chaque
+                # requête pourrait consommer son quota entier et le dépasser).
+                budget = self.config.max_offers_per_source - len(result.jobs) - reserve
+                if budget <= 0:
+                    self._logger.info(
+                        "%s : plafond de source atteint (%d, dont %d réservé(s)) — requête %r "
+                        "non lancée.",
+                        self.source,
+                        self.config.max_offers_per_source,
+                        reserve,
+                        query,
+                    )
+                    result.query_reports.extend(
+                        self._skipped_reports(
+                            mode,
+                            [query],
+                            "quota",
+                            f"plafond de source ({self.config.max_offers_per_source}) atteint ou "
+                            f"réservé aux passes suivantes ({reserve}) — requête non lancée",
+                            target_new=plan.target_new,
+                        )
+                    )
+                    continue
                 report, jobs, seen = self._collect_pass(
                     query, mode, plan, index, run_keys, budget, validate=validate_jobs
                 )
@@ -349,6 +397,19 @@ class BaseScraper(ABC):
                 result.jobs.extend(jobs)
                 result.found += report.cards_seen
                 result.rejected_bi += report.jobs_rejected
+                kept_per_mode[mode] += len(jobs)
+            if plan.target_new:
+                reached = kept_per_mode[mode]
+                self._logger.info(
+                    "%s : passe « %s » — objectif de %d nouvelle(s) : %d retenue(s)%s",
+                    self.source,
+                    mode,
+                    plan.target_new,
+                    reached,
+                    ""
+                    if reached >= plan.target_new
+                    else " (objectif non atteint : voir les motifs d'arrêt ci-dessus)",
+                )
         self._log_reports(result.query_reports)
         return result
 
@@ -405,19 +466,36 @@ class BaseScraper(ABC):
         }
         kept: list[RawJob] = []
         seen: list[SeenEntry] = []
-        # Quota effectif : le plus contraignant entre le quota de la passe et le
-        # budget restant de la source.
-        limit = max(0, min(plan.quota, int(budget)))
-        limit_detail = (
-            f"quota de la passe atteint ({plan.quota})"
-            if plan.quota <= int(budget)
-            else f"plafond de la source atteint ({int(budget)} offre(s) restante(s))"
+        # Quota effectif : le plus contraignant entre le quota de la passe, l'OBJECTIF
+        # de la source (« les 40 dernières » en Fraîcheur, « les 10 plus pertinentes »
+        # en Rattrapage) et le budget restant de la source — réserve des passes
+        # suivantes déjà déduite par ``collect``.
+        effective_quota = (
+            min(plan.quota, plan.target_new) if plan.target_new else plan.quota
         )
+        budget_available = int(budget)
+        limit = max(0, min(effective_quota, budget_available))
+        if budget_available < effective_quota:
+            limit_detail = (
+                f"plafond de la source atteint ({limit} offre(s) disponible(s), "
+                "réserve des passes suivantes déduite)"
+            )
+        elif plan.target_new and effective_quota == plan.target_new:
+            limit_detail = (
+                f"objectif de la passe atteint ({plan.target_new} nouvelle(s) pour la source)"
+            )
+        else:
+            limit_detail = f"quota de la passe atteint ({plan.quota})"
         stop_reason = "stream_end"
         stop_detail = ""
         stop_page: int | None = None
         error: str | None = None
         streak = 0
+        #: Ventilation de la série courante : la télémétrie doit dire si l'arrêt
+        #: anticipe vient de la mémoire de collecte (jonction avec le scrape
+        #: précédent) ou de doublons internes au run (pagination stagnante).
+        streak_known = 0
+        streak_duplicates = 0
         newest: datetime | None = None
         oldest: datetime | None = None
         cursor: Any = None
@@ -504,8 +582,10 @@ class BaseScraper(ABC):
                 if str(key) and (index.is_known(self.source, str(key), url) or already_in_run):
                     if already_in_run:
                         counters["jobs_duplicate"] += 1
+                        streak_duplicates += 1
                     else:
                         counters["jobs_known"] += 1
+                        streak_known += 1
                         seen.append(
                             SeenEntry(
                                 source=self.source,
@@ -523,15 +603,18 @@ class BaseScraper(ABC):
                     ):
                         stop_reason = "early_stop"
                         stop_detail = (
-                            f"{streak} offre(s) consécutive(s) déjà connue(s) "
+                            f"{streak} offre(s) consécutive(s) déjà vue(s) "
+                            f"({streak_known} en mémoire de collecte, "
+                            f"{streak_duplicates} doublon(s) du run) : le flux a rejoint "
+                            f"ce qui est déjà connu "
                             f"(seuil {plan.early_stop_threshold}, page {page_number})"
                         )
                         halt = True
                         break
                     continue
 
-                # 3) Carte inédite : elle interrompt la série de connues.
-                streak = 0
+                # 3) Carte inédite : elle interrompt la série de déjà-vues.
+                streak = streak_known = streak_duplicates = 0
                 if key:
                     run_keys.add(str(key))
                     index.remember(self.source, str(key), url)
@@ -616,6 +699,7 @@ class BaseScraper(ABC):
             jobs_duplicate=counters["jobs_duplicate"],
             jobs_rejected=counters["jobs_rejected"],
             jobs_out_of_window=counters["jobs_out_of_window"],
+            target_new=plan.target_new,
             stop_reason=stop_reason,
             stop_detail=(f"{stop_detail} ; {plan.notes}" if plan.notes else stop_detail),
             stop_page=stop_page,
@@ -626,9 +710,22 @@ class BaseScraper(ABC):
         return report, kept, seen
 
     def _skipped_reports(
-        self, mode: str, queries: Sequence[str], reason: str, detail: str
+        self,
+        mode: str,
+        queries: Sequence[str],
+        reason: str,
+        detail: str,
+        *,
+        target_new: int = 0,
     ) -> list[PassReport]:
-        """Télémétrie d'une passe non exécutée (désactivée ou source indisponible)."""
+        """Télémétrie d'une passe ou d'une requête **non exécutée**.
+
+        Trois situations, toutes consignées (jamais d'arrêt silencieux) : passe
+        désactivée, source indisponible (cookies absents…), requête non lancée parce
+        que l'objectif de la source était déjà atteint ou que le plafond de source
+        était consommé/réservé. Sans cette trace, une collecte amputée serait
+        indiscernable d'un vivier épuisé.
+        """
         now = datetime.now(timezone.utc)
         return [
             PassReport(
@@ -638,6 +735,7 @@ class BaseScraper(ABC):
                 started_at=now,
                 finished_at=now,
                 duration_seconds=0.0,
+                target_new=target_new,
                 stop_reason=reason,
                 stop_detail=detail,
             )

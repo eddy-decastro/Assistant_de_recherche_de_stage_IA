@@ -269,6 +269,20 @@ class PassConfig(BaseModel):
     #: anticipé et l'arrêt sur fenêtre même si la source déclare son ordre non
     #: fiable. Réglage expert — par défaut, on s'en remet à la mesure.
     trust_source_order: bool = False
+    #: **Objectif de nouvelles offres pour la SOURCE** (toutes requêtes cibles
+    #: confondues) sur cette passe : dès qu'il est atteint, les requêtes restantes ne
+    #: sont pas lancées. C'est ce réglage qui exprime l'intention métier — « les 40
+    #: dernières offres » (Fraîcheur) puis « les 10 plus pertinentes » (Rattrapage).
+    #: ``None`` = aucun objectif de source (seul le quota par requête compte).
+    target_new_per_source: int | None = None
+    #: Armer l'arrêt anticipé (« N offres déjà connues consécutives ») **même si** la
+    #: source n'annonce pas un flux chronologique.
+    #:
+    #: Décision assumée : cette règle se prononce sur une **série** de N cartes, donc
+    #: elle résiste aux inversions locales de date (LinkedIn : 7 inversions mesurées
+    #: sur 2 pages) ; l'arrêt sur fenêtre, lui, se prononce sur **une seule** carte et
+    #: reste soumis à ``trust_source_order``. ``None`` = s'en remettre à la mesure.
+    arm_early_stop: bool | None = None
 
     @property
     def window_seconds(self) -> int | None:
@@ -280,6 +294,19 @@ class PassConfig(BaseModel):
     def clamped_quota(self) -> int:
         """Quota par requête, toujours au moins 1."""
         return max(1, int(self.max_offers_per_query))
+
+    @property
+    def target_new(self) -> int:
+        """Objectif de nouvelles offres pour la source (``0`` = aucun objectif).
+
+        Normalisé en entier positif : ``0`` sert de sentinelle « pas d'objectif » dans
+        le plan (``PassPlan.target_new``), le rapport (``PassReport.target_new``) et la
+        télémétrie (colonne ``scrape_query_stats.target_new``) — une seule convention
+        pour toute la chaîne, donc aucune ambiguïté d'affichage.
+        """
+        if self.target_new_per_source is None:
+            return 0
+        return max(1, int(self.target_new_per_source))
 
     @classmethod
     def only(cls, mode: str = PASS_RELEVANCE, **overrides: Any) -> dict[str, "PassConfig"]:
@@ -296,11 +323,17 @@ class PassConfig(BaseModel):
 def default_passes() -> dict[str, PassConfig]:
     """Jeu de passes par défaut, surchargé par ``config.yaml → scrapers.passes``.
 
-    * **Fraîcheur** : tri par date, fenêtre de 7 jours, arrêt anticipé après
-      5 offres consécutives déjà connues, quota 40 par requête.
-    * **Rattrapage** : tri par pertinence, quota 20 par requête et **aucun** arrêt
+    * **Fraîcheur** : tri par date, fenêtre de 7 jours, objectif de **40 nouvelles
+      offres pour la source** (les 40 dernières), arrêt anticipé après **10 offres
+      déjà connues consécutives**. Ce seuil est armable sur un flux non chronologique
+      (``arm_early_stop``) car il se prononce sur une série, insensible aux inversions
+      locales de date ; ``early_stop_min_pages=2`` évite qu'il fasse doublon avec la
+      détection de pagination stagnante (une page fait 10 cartes).
+    * **Rattrapage** : tri par pertinence, objectif de **10 nouvelles offres pour la
+      source** (les 10 plus pertinentes), aucune fenêtre temporelle et **aucun** arrêt
       anticipé — le classement n'étant pas temporel, offres connues et inédites
-      s'entremêlent et seule la déduplication s'applique.
+      s'entremêlent et seule la déduplication s'applique. C'est aussi le filet de
+      sécurité de ce que l'arrêt anticipé de la Fraîcheur aurait sauté.
     """
     return {
         PASS_FRESHNESS: PassConfig(
@@ -308,10 +341,12 @@ def default_passes() -> dict[str, PassConfig]:
             sort="date",
             max_offers_per_query=40,
             window_days=7.0,
-            early_stop_after_known=5,
-            early_stop_min_pages=1,
+            early_stop_after_known=10,
+            early_stop_min_pages=2,
             max_pages_per_query=12,
             stop_when_older_than_window=True,
+            target_new_per_source=40,
+            arm_early_stop=True,
         ),
         PASS_RELEVANCE: PassConfig(
             enabled=True,
@@ -321,6 +356,7 @@ def default_passes() -> dict[str, PassConfig]:
             early_stop_after_known=0,
             max_pages_per_query=12,
             stop_when_older_than_window=False,
+            target_new_per_source=10,
         ),
     }
 
@@ -351,6 +387,9 @@ class PassPlan:
     trusted_order: bool
     #: Pages minimales avant arrêt anticipé.
     early_stop_min_pages: int
+    #: Objectif de nouvelles offres pour la SOURCE sur cette passe (``0`` = aucun).
+    #: Atteint, il interrompt la passe avant de lancer les requêtes restantes.
+    target_new: int = 0
     #: Explication lisible des restrictions appliquées (reprise dans la télémétrie).
     notes: str = ""
 
@@ -374,6 +413,10 @@ class PassReport(BaseModel):
     jobs_duplicate: int = 0
     jobs_rejected: int = 0
     jobs_out_of_window: int = 0
+    #: Objectif de nouvelles offres fixé à la SOURCE pour cette passe (``0`` = aucun).
+    #: La comparaison se fait au niveau de la passe (somme des requêtes), pas de la
+    #: ligne : le dashboard regroupe par (run, source, mode).
+    target_new: int = 0
     stop_reason: str = "stream_end"
     stop_detail: str = ""
     stop_page: int | None = None
@@ -500,14 +543,18 @@ class ScraperConfig(BaseModel):
     ) -> PassPlan:
         """Résout une passe en plan d'exécution, en appliquant les garde-fous.
 
-        Deux règles de sécurité, appliquées identiquement à toutes les sources :
+        Trois règles, appliquées identiquement à toutes les sources :
 
-        1. **L'arrêt anticipé n'a de sens que sur un flux trié.** Si la source
-           déclare son ordre non chronologique (mesuré ou inconnu), le seuil est
-           ramené à 0 et le coût de la passe est borné par le filtre temporel
-           serveur (``f_TPR``) et le quota — la raison est consignée dans
-           ``notes`` pour la télémétrie ;
-        2. **Le filtre temporel serveur prime sur l'ordre du flux** : il borne le
+        1. **L'arrêt anticipé se prononce sur une SÉRIE de cartes** (« N offres déjà
+           connues consécutives ») : il résiste donc aux inversions locales de date et
+           peut être armé explicitement (``arm_early_stop``) sur une source dont
+           l'ordre n'est pas chronologique. À défaut d'armement, on s'en remet à la
+           mesure de la source et le seuil est ramené à 0, la raison étant consignée
+           dans ``notes`` pour la télémétrie ;
+        2. **L'arrêt sur fenêtre, lui, se prononce sur UNE carte** : il exige un flux
+           réellement chronologique (``trust_source_order`` / ``DATE_ORDER_RELIABLE``),
+           car une seule inversion de date suffirait à tronquer la passe à tort ;
+        3. **Le filtre temporel serveur prime sur l'ordre du flux** : il borne le
            vivier indépendamment du tri renvoyé par la plateforme.
         """
         config = self.pass_config(mode)
@@ -516,8 +563,13 @@ class ScraperConfig(BaseModel):
 
         threshold = 0
         if config.early_stop_after_known > 0:
-            if trusted:
+            if trusted or config.arm_early_stop:
                 threshold = int(config.early_stop_after_known)
+                if not trusted:
+                    notes.append(
+                        "arrêt anticipé armé explicitement (série d'offres déjà connues) "
+                        "malgré un ordre du flux non chronologique"
+                    )
             else:
                 notes.append(
                     "arrêt anticipé désactivé (ordre du flux non chronologique) : "
@@ -552,6 +604,7 @@ class ScraperConfig(BaseModel):
             stop_on_window=stop_on_window,
             trusted_order=trusted,
             early_stop_min_pages=max(1, int(config.early_stop_min_pages)),
+            target_new=config.target_new,
             notes=" ; ".join(notes),
         )
 

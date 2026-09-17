@@ -126,7 +126,13 @@ def _run_linkedin_fetch(
         target_queries=queries or ["Stage Data Scientist"],
         max_offers_per_source=max_offers_per_source,
         passes=PassConfig.only(
-            mode, max_offers_per_query=max_offers_per_query or max_offers_per_source
+            mode,
+            max_offers_per_query=max_offers_per_query or max_offers_per_source,
+            # Objectif de source neutralisé : ces tests portent sur la mécanique de
+            # pagination et de quota, pas sur les objectifs métier (« 40 dernières »
+            # / « 10 plus pertinentes ») qui sont couverts par
+            # ``tests/test_hybrid_collection.py``.
+            target_new_per_source=None,
         ),
     )
     scraper = LinkedInGuestScraper(config)
@@ -186,11 +192,16 @@ def test_word_boundary() -> None:
 def test_models() -> None:
     cfg = ScraperConfig()
     assert cfg.max_offers_per_source == 120
-    # Collecte hybride par défaut : fraîcheur (7 j, arrêt anticipé) + rattrapage
-    # (quota 20, aucun arrêt anticipé).
+    # Collecte hybride par défaut : fraîcheur (7 j, objectif de 40 nouvelles pour la
+    # source, arrêt anticipé à 10 déjà-vues, armé) + rattrapage (objectif de 10
+    # nouvelles, aucun arrêt anticipé).
     assert set(cfg.enabled_modes()) == {"freshness", "relevance"}, cfg.enabled_modes()
-    assert cfg.pass_config("freshness").early_stop_after_known == 5
+    assert cfg.pass_config("freshness").early_stop_after_known == 10
+    assert cfg.pass_config("freshness").early_stop_min_pages == 2
+    assert cfg.pass_config("freshness").arm_early_stop is True
+    assert cfg.pass_config("freshness").target_new == 40
     assert cfg.pass_config("relevance").early_stop_after_known == 0
+    assert cfg.pass_config("relevance").target_new == 10
     assert cfg.pass_config("freshness").window_days == 7.0
     assert cfg.pass_config("freshness").window_seconds == 604800
     job = RawJob(

@@ -120,8 +120,15 @@ def _config(mode: str, **overrides: Any) -> ScraperConfig:
 
 
 def test_arret_anticipe_apres_n_consecutives() -> None:
-    """La passe Fraîcheur s'arrête dès 2 offres consécutives déjà connues."""
-    config = _config("freshness", early_stop_after_known=2, window_days=None)
+    """La passe Fraîcheur s'arrête dès 2 offres consécutives déjà connues.
+
+    ``early_stop_min_pages=1`` isole ici le compteur de la garde de pagination
+    (celle-ci est testée séparément : elle interdit de conclure sur la seule
+    première page).
+    """
+    config = _config(
+        "freshness", early_stop_after_known=2, early_stop_min_pages=1, window_days=None
+    )
     known = InMemoryKnownIndex(pairs={("linkedin", "k1"), ("linkedin", "k2")})
     scraper = _ScriptedScraper(
         config,
@@ -135,6 +142,8 @@ def test_arret_anticipe_apres_n_consecutives() -> None:
     assert report.jobs_known == 2, report.jobs_known
     assert report.cards_seen == 2, report.cards_seen  # arrêt avant la 3e carte
     assert report.jobs_kept == 0, report.jobs_kept
+    # La télémétrie dit d'où vient la série : ici, la mémoire de collecte.
+    assert "en mémoire de collecte" in report.stop_detail, report.stop_detail
     # Aucun appel à la page 2 : c'est le gain principal de l'arrêt anticipé.
     assert [call[2] for call in scraper.calls] == [None], scraper.calls
     scraper.close()
@@ -261,8 +270,14 @@ def test_fenetre_sans_ordre_fiable() -> None:
 
 
 def test_arret_anticipe_desactive_si_ordre_non_fiable() -> None:
-    """Un seuil demandé est neutralisé (et expliqué) si l'ordre du flux n'est pas fiable."""
-    config = _config("freshness", early_stop_after_known=2, window_days=7)
+    """Sans armement explicite, le seuil est neutralisé (et expliqué) sur un ordre non fiable."""
+    config = _config(
+        "freshness",
+        early_stop_after_known=2,
+        early_stop_min_pages=1,
+        arm_early_stop=False,
+        window_days=7,
+    )
     known = InMemoryKnownIndex(pairs={("linkedin", f"k{i}") for i in range(6)})
     scraper = _ScriptedScraper(
         config, pages=[["k1", "k2", "new1"], ["k3", "k4", "new2"]]
@@ -273,12 +288,194 @@ def test_arret_anticipe_desactive_si_ordre_non_fiable() -> None:
 
     assert report.stop_reason == "stream_end", report.stop_reason
     # Le seuil de 2 connues consécutives est atteint deux fois, sans effet :
-    # l'ordre du flux n'est pas jugé fiable, l'arrêt anticipé est neutralisé.
+    # l'ordre du flux n'est pas jugé fiable et l'arrêt n'a pas été armé.
     assert report.pages_fetched == 2, report.pages_fetched
     assert report.jobs_kept == 2, report.jobs_kept
     assert "arrêt anticipé désactivé" in report.stop_detail, report.stop_detail
     scraper.close()
     print("  ordre non fiable : arrêt anticipé neutralisé et documenté OK")
+
+
+def test_arret_anticipe_arme_malgre_un_ordre_non_chronologique() -> None:
+    """Armé explicitement, l'arrêt sur série de connues joue même sans tri chronologique.
+
+    C'est la règle « 10 offres déjà vues d'affilée ⇒ on a déjà tout vu » : elle se
+    prononce sur une **série** (insensible aux inversions locales de date de LinkedIn),
+    traverse les pages, et reste locale à la requête en cours.
+    """
+    config = _config(
+        "freshness",
+        early_stop_after_known=10,
+        early_stop_min_pages=2,
+        arm_early_stop=True,
+        window_days=None,
+        max_pages_per_query=10,
+    )
+    known = InMemoryKnownIndex(pairs={("linkedin", f"k{i:02d}") for i in range(12)})
+    scraper = _ScriptedScraper(
+        config,
+        pages=[
+            [f"k{i:02d}" for i in range(8)] + ["bi1"],   # 8 connues + 1 rejet (série rompue)
+            ["k08", "k09", "new1"],                       # 2 connues puis 1 inédite
+            ["new2"],                                     # flux épuisé ensuite
+        ],
+    )
+    scraper.DATE_ORDER_RELIABLE = False  # LinkedIn : ordre mesuré non chronologique
+    result = scraper.run(known)
+    report = result.query_reports[0]
+
+    # Séries maximales : 8 (page 1), 2 (page 2) = jamais 10 d'affilée -> pas d'arrêt.
+    assert report.stop_reason == "stream_end", report.stop_reason
+    assert report.pages_fetched == 3, report.pages_fetched
+    assert report.jobs_known == 10, report.jobs_known
+
+    # Deuxième essai : 10 connues d'affilée à cheval sur deux pages -> arrêt.
+    # Mémoire propre : sinon les offres « inédites » du premier essai seraient déjà
+    # connues ici, et le diagnostic « page stagnante » masquerait l'arrêt anticipé.
+    known2 = InMemoryKnownIndex(pairs={("linkedin", f"k{i:02d}") for i in range(12)})
+    scraper2 = _ScriptedScraper(
+        config,
+        pages=[
+            ["new1"] + [f"k{i:02d}" for i in range(9)],  # 1 inédite puis 9 connues
+            [f"k{i:02d}" for i in range(9, 12)],          # 1re carte -> série = 10
+            ["jamais_atteint"],
+        ],
+    )
+    scraper2.DATE_ORDER_RELIABLE = False
+    result2 = scraper2.run(known2)
+    report2 = result2.query_reports[0]
+
+    assert report2.stop_reason == "early_stop", report2.stop_reason
+    assert report2.pages_fetched == 2, report2.pages_fetched  # ni page 3 ni au-delà
+    assert report2.jobs_kept == 1, report2.jobs_kept  # seule new1 est retenue
+    assert [call[2] for call in scraper2.calls] == [None, 1], scraper2.calls
+    # Le choix assumé (armement malgré un ordre non chronologique) est tracé.
+    assert "armé explicitement" in report2.stop_detail, report2.stop_detail
+    assert "10" in report2.stop_detail, report2.stop_detail
+    scraper.close()
+    scraper2.close()
+    print("  arrêt anticipé armé : série de connues détectée malgré un ordre non fiable OK")
+
+
+def test_garde_de_pagination_de_l_arret_anticipe() -> None:
+    """La garde de pagination interdit de conclure sur la seule première page.
+
+    Sans elle, « 10 offres déjà vues » sur une page de 10 cartes reviendrait au
+    diagnostic « page stagnante » ; avec elle, la passe observe au moins deux pages
+    puis s'arrête dès que la série est atteinte — sans attendre la fin du flux.
+    """
+    config = _config(
+        "freshness",
+        early_stop_after_known=2,
+        early_stop_min_pages=2,
+        arm_early_stop=True,
+        window_days=None,
+    )
+    known = InMemoryKnownIndex(pairs={("linkedin", f"k{i}") for i in range(1, 5)})
+    scraper = _ScriptedScraper(
+        config, pages=[["k1", "k2", "new1"], ["k3", "k4", "new2"], ["new3"]]
+    )
+    result = scraper.run(known)
+    report = result.query_reports[0]
+
+    assert report.stop_reason == "early_stop", report.stop_reason
+    assert report.pages_fetched == 2, report.pages_fetched
+    assert [call[2] for call in scraper.calls] == [None, 1], scraper.calls
+    assert report.jobs_kept == 1, report.jobs_kept      # new1 (page 1)
+    assert report.jobs_known == 4, report.jobs_known    # k1 → k4
+    assert [job.id_externe for job in result.jobs] == ["new1"], result.jobs
+    scraper.close()
+    print("  arrêt anticipé : garde de pagination respectée, arrêt dès la page 2 OK")
+
+
+def test_objectif_de_source_arrete_les_requetes_restantes() -> None:
+    """« Les N dernières » : objectif de source atteint, requêtes restantes non lancées.
+
+    L'intention est un objectif **par source**, pas par requête : une fois le nombre de
+    nouvelles offres atteint, la passe s'arrête. Chaque requête non lancée est
+    consignée en télémétrie — une collecte amputée ne doit jamais être indiscernable
+    d'un vivier épuisé.
+    """
+    config = ScraperConfig(
+        target_queries=["q1", "q2"],
+        max_offers_per_source=50,
+        enabled_sources=["linkedin"],
+        passes=PassConfig.only(
+            "freshness",
+            target_new_per_source=2,
+            max_offers_per_query=10,
+            max_pages_per_query=5,
+            early_stop_after_known=0,
+            window_days=None,
+        ),
+    )
+    scraper = _ScriptedScraper(config, pages=[["n1", "n2", "n3", "n4"]])
+    result = scraper.run(NullKnownIndex())
+    first, second = result.query_reports
+
+    assert [call[0] for call in scraper.calls] == ["q1"], scraper.calls
+    assert first.target_new == 2 and first.jobs_kept == 2, first
+    assert first.stop_reason == "quota", first.stop_reason
+    assert "objectif de la passe atteint" in first.stop_detail, first.stop_detail
+    assert second.jobs_kept == 0, second
+    assert second.stop_reason == "quota", second.stop_reason
+    assert "requête non lancée" in second.stop_detail, second.stop_detail
+    assert second.target_new == 2, second
+    assert [job.id_externe for job in result.jobs] == ["n1", "n2"], result.jobs
+    scraper.close()
+    print("  objectif de source : requêtes restantes non lancées mais consignées OK")
+
+
+def test_reserve_de_budget_protege_la_passe_de_rattrapage() -> None:
+    """La passe Fraîcheur ne peut pas consommer la part réservée au rattrapage.
+
+    Sans réserve, une Fraîcheur généreuse atteindrait le plafond de source et la passe
+    Pertinence — « les 10 plus pertinentes », qui rattrape les offres anciennes encore
+    actives — serait lancée avec un budget nul. Ici le plafond est volontairement serré
+    (12) pour vérifier que les deux objectifs cohabitent : 2 en Fraîcheur, 10 en
+    Pertinence.
+    """
+    config = ScraperConfig(
+        target_queries=["q1"],
+        max_offers_per_source=12,
+        enabled_sources=["linkedin"],
+        passes={
+            "freshness": PassConfig.only(
+                "freshness",
+                target_new_per_source=40,
+                early_stop_after_known=0,
+                window_days=None,
+            )["freshness"],
+            "relevance": PassConfig.only(
+                "relevance",
+                target_new_per_source=10,
+                max_offers_per_query=20,
+                max_pages_per_query=5,
+            )["relevance"],
+        },
+    )
+    scraper = _ScriptedScraper(
+        config,
+        pages=[],
+        pages_by_mode={
+            "freshness": [["f1", "f2", "f3", "f4", "f5"]],
+            "relevance": [[f"r{i}" for i in range(1, 13)]],
+        },
+    )
+    result = scraper.run(NullKnownIndex())
+    freshness, relevance = result.query_reports
+
+    # Fraîcheur : bridée par le plafond de source, réserve du rattrapage déduite.
+    assert freshness.jobs_kept == 2, freshness
+    assert "plafond de la source atteint" in freshness.stop_detail, freshness.stop_detail
+    # Pertinence : budget intact, objectif de 10 atteint.
+    assert relevance.jobs_kept == 10, relevance
+    assert relevance.target_new == 10, relevance
+    assert relevance.stop_reason == "quota", relevance.stop_reason
+    assert "objectif de la passe atteint" in relevance.stop_detail, relevance.stop_detail
+    assert len(result.jobs) == 12, result.jobs
+    scraper.close()
+    print("  réserve de budget : les deux objectifs de source cohabitent OK")
 
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
@@ -382,6 +579,10 @@ def main() -> None:
     test_fenetre_temporelle_et_arret()
     test_fenetre_sans_ordre_fiable()
     test_arret_anticipe_desactive_si_ordre_non_fiable()
+    test_arret_anticipe_arme_malgre_un_ordre_non_chronologique()
+    test_garde_de_pagination_de_l_arret_anticipe()
+    test_objectif_de_source_arrete_les_requetes_restantes()
+    test_reserve_de_budget_protege_la_passe_de_rattrapage()
     test_rate_limit_et_erreurs_traces()
     test_source_indisponible_et_passe_desactivee()
     test_decisions_memoire_de_collecte()
