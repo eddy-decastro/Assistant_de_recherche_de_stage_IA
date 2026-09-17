@@ -42,6 +42,7 @@ from src.constants import (
     TIER_ESN,
     VALID_STATUSES,
     coerce_sub_score,
+    is_incomplete_stop,
 )
 
 Base = declarative_base()
@@ -268,6 +269,10 @@ class ScrapeQueryStat(Base):
     jobs_duplicate = Column(Integer, default=0, nullable=False)
     jobs_rejected = Column(Integer, default=0, nullable=False)
     jobs_out_of_window = Column(Integer, default=0, nullable=False)
+    #: Objectif de nouvelles offres fixé à la SOURCE pour cette passe (``0`` = aucun).
+    #: Persisté pour que l'objectif affiché soit celui qui était en vigueur au moment
+    #: du run, même si la configuration a changé depuis.
+    target_new = Column(Integer, default=0, nullable=False)
     stop_reason = Column(String(30), nullable=False, index=True)
     stop_detail = Column(String(300), nullable=True)
     stop_page = Column(Integer, nullable=True)
@@ -294,30 +299,45 @@ class Database:
     def _migrate(self) -> None:
         """Migration légère : ajoute les colonnes manquantes sur une base existante.
 
-        Les nouvelles tables (``seen_jobs``, ``scrape_runs``, ``scrape_query_stats``)
-        sont créées par ``Base.metadata.create_all`` ; seules les colonnes ajoutées
-        à ``jobs`` nécessitent un ``ALTER TABLE`` explicite.
+        Les nouvelles tables sont créées par ``Base.metadata.create_all`` — mais
+        ``create_all`` ne modifie **jamais** une table déjà présente. Chaque colonne
+        ajoutée à un modèle existant exige donc un ``ALTER TABLE`` explicite, table
+        par table. Une colonne ``NOT NULL`` doit porter une valeur par défaut, sans
+        quoi SQLite refuserait l'ajout sur une table déjà peuplée.
         """
-        expected = {
-            "rerank_score": "FLOAT",
-            "verdict": "VARCHAR(30)",
-            "match_reasons": "TEXT",
-            "red_flags": "TEXT",
-            "tech_stack": "TEXT",
-            "rejection_reason": "VARCHAR(300)",
-            "sub_scores": "TEXT",
-            "hard_cap_triggered": "VARCHAR(200)",
-            "reasoning": "TEXT",
-            # Collecte hybride : identifiant plateforme, URL canonique, publication.
-            "id_externe": "VARCHAR(300)",
-            "canonical_url": "VARCHAR(2000)",
-            "published_at": "DATETIME",
+        expected: dict[str, dict[str, str]] = {
+            "jobs": {
+                "rerank_score": "FLOAT",
+                "verdict": "VARCHAR(30)",
+                "match_reasons": "TEXT",
+                "red_flags": "TEXT",
+                "tech_stack": "TEXT",
+                "rejection_reason": "VARCHAR(300)",
+                "sub_scores": "TEXT",
+                "hard_cap_triggered": "VARCHAR(200)",
+                "reasoning": "TEXT",
+                # Collecte hybride : identifiant plateforme, URL canonique, publication.
+                "id_externe": "VARCHAR(300)",
+                "canonical_url": "VARCHAR(2000)",
+                "published_at": "DATETIME",
+            },
+            "scrape_query_stats": {
+                # Objectif de nouvelles offres fixé à la source pour la passe
+                # (« 40 dernières » en Fraîcheur, « 10 plus pertinentes » en
+                # Rattrapage). ``0`` = aucun objectif.
+                "target_new": "INTEGER NOT NULL DEFAULT 0",
+            },
         }
         with self.engine.begin() as conn:
-            existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")}
-            for column, sql_type in expected.items():
-                if column not in existing:
-                    conn.exec_driver_sql(f"ALTER TABLE jobs ADD COLUMN {column} {sql_type}")
+            for table, columns in expected.items():
+                existing = {
+                    row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")
+                }
+                for column, sql_type in columns.items():
+                    if column not in existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
+                        )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_jobs_canonical_url ON jobs (canonical_url)"
             )
@@ -799,6 +819,7 @@ class Database:
         "jobs_duplicate",
         "jobs_rejected",
         "jobs_out_of_window",
+        "target_new",
     )
 
     def record_query_stats(self, run_id: str, stats: Iterable[Mapping[str, Any]]) -> int:
@@ -856,6 +877,131 @@ class Database:
                 .limit(max(0, int(limit)))
             )
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
+
+    # ------------------------------------------------------------------ #
+    # Télémétrie : compteurs de collecte (le vocabulaire de pilotage)
+    # ------------------------------------------------------------------ #
+    def get_collection_counters(self, limit: int = 8) -> list[dict[str, Any]]:
+        """Compteurs de collecte par (run, source) sur les ``limit`` derniers runs.
+
+        Traduit la télémétrie des passes dans le vocabulaire de pilotage :
+
+        * **cherchées** (``cards_seen``) : cartes de flux réellement parcourues ;
+        * **refusées** (``jobs_rejected`` + ``jobs_out_of_window``) : écartées par le
+          filtre métier (anti-BI, hors stage) ou parce qu'antérieures à la fenêtre ;
+        * **déjà vues** (``jobs_known`` + ``jobs_duplicate``) : déjà en mémoire de
+          collecte ou croisées plus tôt dans le même run — c'est le carburant de
+          l'arrêt anticipé ;
+        * **acceptées** (``jobs_kept``) : retenues, donc candidates à l'ingestion.
+        """
+        run_ids = [run["id"] for run in self.get_recent_runs(limit=limit)]
+        if not run_ids:
+            return []
+        with self.SessionLocal() as session:
+            stmt = (
+                select(
+                    ScrapeQueryStat.run_id,
+                    ScrapeQueryStat.source,
+                    func.sum(ScrapeQueryStat.pages_fetched).label("pages"),
+                    func.sum(ScrapeQueryStat.http_requests).label("http_requests"),
+                    func.sum(ScrapeQueryStat.cards_seen).label("cards_seen"),
+                    func.sum(ScrapeQueryStat.jobs_kept).label("jobs_kept"),
+                    func.sum(ScrapeQueryStat.jobs_known).label("jobs_known"),
+                    func.sum(ScrapeQueryStat.jobs_duplicate).label("jobs_duplicate"),
+                    func.sum(ScrapeQueryStat.jobs_rejected).label("jobs_rejected"),
+                    func.sum(ScrapeQueryStat.jobs_out_of_window).label("jobs_out_of_window"),
+                )
+                .where(ScrapeQueryStat.run_id.in_(run_ids))
+                .group_by(ScrapeQueryStat.run_id, ScrapeQueryStat.source)
+            )
+            rows = [dict(row._mapping) for row in session.execute(stmt)]
+        for row in rows:
+            row["already_seen"] = int(row["jobs_known"] or 0) + int(
+                row["jobs_duplicate"] or 0
+            )
+            row["refused"] = int(row["jobs_rejected"] or 0) + int(
+                row["jobs_out_of_window"] or 0
+            )
+        order = {run_id: index for index, run_id in enumerate(run_ids)}
+        rows.sort(key=lambda row: (order.get(row["run_id"], len(run_ids)), str(row["source"])))
+        return rows
+
+    def get_pass_objectives(self, limit: int = 8) -> list[dict[str, Any]]:
+        """Avancement des objectifs par (run, source, mode) sur les ``limit`` derniers runs.
+
+        ``target_new`` est l'objectif fixé à la **source** pour la passe (« les
+        40 dernières » en Fraîcheur, « les 10 plus pertinentes » en Rattrapage) et
+        ``jobs_kept`` son avancement (somme des requêtes de la passe). ``incomplete``
+        distingue un objectif manquant faute de vivier (rien à regretter) d'un objectif
+        manquant parce qu'un plafond, un rate limit ou une erreur a tronqué le flux —
+        auquel cas il faut relancer.
+        """
+        run_ids = [run["id"] for run in self.get_recent_runs(limit=limit)]
+        if not run_ids:
+            return []
+        with self.SessionLocal() as session:
+            stmt = (
+                select(
+                    ScrapeQueryStat.run_id,
+                    ScrapeQueryStat.source,
+                    ScrapeQueryStat.mode,
+                    func.sum(ScrapeQueryStat.jobs_kept).label("jobs_kept"),
+                    func.sum(ScrapeQueryStat.cards_seen).label("cards_seen"),
+                    func.sum(ScrapeQueryStat.pages_fetched).label("pages"),
+                    func.max(ScrapeQueryStat.target_new).label("target_new"),
+                    func.group_concat(ScrapeQueryStat.stop_reason, ",").label("stop_reasons"),
+                )
+                .where(ScrapeQueryStat.run_id.in_(run_ids))
+                .group_by(
+                    ScrapeQueryStat.run_id, ScrapeQueryStat.source, ScrapeQueryStat.mode
+                )
+            )
+            rows = [dict(row._mapping) for row in session.execute(stmt)]
+        for row in rows:
+            target = int(row["target_new"] or 0)
+            kept = int(row["jobs_kept"] or 0)
+            reasons = [
+                reason for reason in str(row["stop_reasons"] or "").split(",") if reason
+            ]
+            row["target_new"] = target
+            row["jobs_kept"] = kept
+            row["reached"] = bool(target) and kept >= target
+            row["incomplete"] = any(is_incomplete_stop(reason) for reason in reasons)
+            row["stop_reasons"] = reasons
+        order = {run_id: index for index, run_id in enumerate(run_ids)}
+        rows.sort(
+            key=lambda row: (
+                order.get(row["run_id"], len(run_ids)),
+                str(row["source"]),
+                str(row["mode"]),
+            )
+        )
+        return rows
+
+    def get_seen_decision_breakdown(
+        self, days: int = 30, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        """Répartition des décisions de la mémoire de collecte, sur ``days`` jours.
+
+        Répond à « qu'est-ce qui est refusé, et pourquoi ? » : la décision de
+        ``seen_jobs`` est purement informative (elle ne filtre jamais l'ingestion),
+        mais elle dit exactement ce que la collecte a croisé, retenu ou écarté — y
+        compris les rejets du filtre métier et leur motif.
+        """
+        threshold = datetime.utcnow() - timedelta(days=max(1, int(days)))
+        with self.SessionLocal() as session:
+            stmt = (
+                select(
+                    SeenJob.decision,
+                    SeenJob.rejection_reason,
+                    func.count().label("total"),
+                )
+                .where(SeenJob.last_seen_at >= threshold)
+                .group_by(SeenJob.decision, SeenJob.rejection_reason)
+                .order_by(func.count().desc())
+                .limit(max(1, int(limit)))
+            )
+            return [dict(row._mapping) for row in session.execute(stmt)]
 
     # ------------------------------------------------------------------ #
     # Rétention : la télémétrie ne doit pas croître indéfiniment

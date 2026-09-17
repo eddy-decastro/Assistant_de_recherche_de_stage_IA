@@ -1,6 +1,7 @@
 """Test de fumée de la couche de persistance (sans dépendance torch)."""
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta
@@ -87,6 +88,8 @@ def main() -> None:
     test_descriptions()
     test_collection_memory()
     test_telemetry()
+    test_collection_counters()
+    test_objectif_de_passe_et_migration()
     print("[OK] test_database.py : tous les tests passent.")
 
 
@@ -292,6 +295,151 @@ def test_telemetry() -> None:
         assert db.count_runs() == 0 and db.get_recent_query_stats() == []
         db.engine.dispose()
     print("[OK] telemetrie : runs, passes (raisons d'arret) et purge")
+
+
+def test_collection_counters() -> None:
+    """Compteurs de pilotage : cherchées / refusées / déjà vues / acceptées, par source."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "compteurs.db")
+        run_id = db.start_run(["linkedin"])
+        db.record_query_stats(
+            run_id,
+            [
+                {
+                    "source": "linkedin",
+                    "query": "Stage Data Scientist",
+                    "mode": "freshness",
+                    "pages_fetched": 6,
+                    "http_requests": 6,
+                    "cards_seen": 60,
+                    "jobs_kept": 17,
+                    "jobs_known": 9,
+                    "jobs_rejected": 34,
+                    "target_new": 40,
+                    "stop_reason": "max_pages",
+                },
+                {
+                    "source": "linkedin",
+                    "query": "Stage Machine Learning",
+                    "mode": "freshness",
+                    "pages_fetched": 1,
+                    "cards_seen": 10,
+                    "jobs_known": 2,
+                    "jobs_duplicate": 8,
+                    "target_new": 40,
+                    "stop_reason": "duplicate_page",
+                },
+                {
+                    "source": "linkedin",
+                    "query": "Stage Recherche IA",
+                    "mode": "relevance",
+                    "cards_seen": 30,
+                    "jobs_kept": 8,
+                    "jobs_known": 4,
+                    "jobs_duplicate": 2,
+                    "jobs_rejected": 16,
+                    "target_new": 10,
+                    "stop_reason": "stream_end",
+                },
+            ],
+        )
+        db.finish_run(run_id, status=RUN_OK)
+
+        counters = db.get_collection_counters(limit=5)
+        assert len(counters) == 1, counters
+        row = counters[0]
+        assert row["run_id"] == run_id and row["source"] == "linkedin", row
+        assert row["cards_seen"] == 100, row            # 60 + 10 + 30 cherchées
+        assert row["jobs_kept"] == 25, row              # 17 + 8 acceptées
+        assert row["already_seen"] == 25, row           # (9+2+4) connues + (8+2) doublons
+        assert row["refused"] == 50, row                # 34 + 16 refusées (BI / hors fenêtre)
+        assert row["pages"] == 7 and row["http_requests"] == 6, row
+        db.engine.dispose()
+    print("[OK] compteurs de collecte : cherchées / refusées / déjà vues / acceptées")
+
+
+def test_objectif_de_passe_et_migration() -> None:
+    """Objectif de source tracé (atteint ou non) et colonne ajoutée sur une base antérieure."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "objectifs.db")
+        run_id = db.start_run(["linkedin"])
+        db.record_query_stats(
+            run_id,
+            [
+                {
+                    "source": "linkedin",
+                    "query": "Stage Data Scientist",
+                    "mode": "freshness",
+                    "jobs_kept": 17,
+                    "target_new": 40,
+                    "stop_reason": "max_pages",
+                },
+                {
+                    "source": "linkedin",
+                    "query": "Stage Recherche IA",
+                    "mode": "freshness",
+                    "jobs_kept": 7,
+                    "target_new": 40,
+                    "stop_reason": "duplicate_page",
+                },
+                {
+                    "source": "linkedin",
+                    "query": "Stage Data Scientist",
+                    "mode": "relevance",
+                    "jobs_kept": 10,
+                    "target_new": 10,
+                    "stop_reason": "quota",
+                },
+            ],
+        )
+        db.finish_run(run_id, status=RUN_OK)
+
+        objectives = db.get_pass_objectives(limit=5)
+        assert [item["mode"] for item in objectives] == ["freshness", "relevance"], objectives
+        freshness, relevance = objectives
+        assert freshness["target_new"] == 40 and freshness["jobs_kept"] == 24, freshness
+        # Objectif manqué et flux tronqué (plafond de pages) -> à relancer.
+        assert freshness["reached"] is False and freshness["incomplete"] is True, freshness
+        assert relevance["target_new"] == 10 and relevance["jobs_kept"] == 10, relevance
+        assert relevance["reached"] is True and relevance["incomplete"] is False, relevance
+        db.engine.dispose()
+
+    # Base « antérieure » : la table existe sans la colonne d'objectif.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "ancienne.db"
+        legacy = sqlite3.connect(path)
+        legacy.execute(
+            "CREATE TABLE scrape_query_stats ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id VARCHAR(36) NOT NULL, "
+            "source VARCHAR(50) NOT NULL, query VARCHAR(300) NOT NULL, "
+            "mode VARCHAR(20) NOT NULL, started_at DATETIME NOT NULL, "
+            "finished_at DATETIME, duration_seconds FLOAT, pages_fetched INTEGER, "
+            "http_requests INTEGER, cards_seen INTEGER, jobs_kept INTEGER, "
+            "jobs_known INTEGER, jobs_duplicate INTEGER, jobs_rejected INTEGER, "
+            "jobs_out_of_window INTEGER, stop_reason VARCHAR(30) NOT NULL, "
+            "stop_detail VARCHAR(300), stop_page INTEGER, newest_published_at DATETIME, "
+            "oldest_published_at DATETIME, error VARCHAR(300))"
+        )
+        legacy.execute(
+            "INSERT INTO scrape_query_stats (run_id, source, query, mode, started_at, "
+            "pages_fetched, cards_seen, jobs_kept, stop_reason) VALUES "
+            "('r1', 'linkedin', 'Stage ML', 'freshness', '2026-09-16 21:21:00', 6, 60, 24, 'max_pages')"
+        )
+        legacy.commit()
+        legacy.close()
+
+        db = Database(path)  # create_all puis migration additive
+        with db.engine.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(scrape_query_stats)")
+            }
+        assert "target_new" in columns, columns
+        rows = db.get_recent_query_stats()
+        assert rows[0]["target_new"] == 0, "Valeur par défaut, données existantes préservées."
+        assert rows[0]["cards_seen"] == 60 and rows[0]["jobs_kept"] == 24, rows[0]
+        db.engine.dispose()
+    print("[OK] objectif de passe : suivi atteint/manqué et migration additive")
 
 
 if __name__ == "__main__":

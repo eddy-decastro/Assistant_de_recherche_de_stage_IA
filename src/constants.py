@@ -241,6 +241,25 @@ def stop_reason_label(reason: str | None) -> str:
     return STOP_REASON_LABELS.get(reason, reason)
 
 
+# --- Décisions de la mémoire de collecte (colonne ``seen_jobs.decision``) ------
+# Vocabulaire du pilotage : « qu'est-ce que la collecte a croisé, retenu, écarté ? »
+SEEN_DECISION_LABELS = {
+    SEEN_VALIDATED: "Retenue",
+    SEEN_REJECTED_BI: "Refusée — hors sujet",
+    SEEN_REJECTED_CONTRACT: "Refusée — contrat incompatible",
+    SEEN_OUT_OF_WINDOW: "Hors fenêtre temporelle",
+    SEEN_DUPLICATE: "Doublon du run",
+    SEEN_KNOWN: "Déjà connue",
+}
+
+
+def seen_decision_label(decision: str | None) -> str:
+    """Libellé lisible d'une décision de mémoire de collecte (repli : valeur brute)."""
+    if not decision:
+        return "Inconnue"
+    return SEEN_DECISION_LABELS.get(decision, decision)
+
+
 # --- Types de passe de la collecte hybride ------------------------------------
 # Les identifiants de mode sont définis par les scrapers (source de vérité) et
 # ré-exportés ici avec leurs libellés d'affichage.
