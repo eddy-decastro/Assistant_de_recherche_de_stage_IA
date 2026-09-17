@@ -86,26 +86,55 @@ Chaque passe produit une ligne de télémétrie avec sa **raison exacte d'arrêt
 Les tables `scrape_runs` (un run) et `scrape_query_stats` (une passe) conservent l'historique
 (180 j par défaut), consultable par `--top-telemetry N`.
 
+### Objectifs de collecte : « les 40 dernières », puis « les 10 plus pertinentes »
+
+À chaque boucle, pour chaque source, la collecte poursuit deux objectifs explicites,
+fixés à la **source** (toutes requêtes cibles confondues) :
+
+1. **Fraîcheur** — les **40 dernières offres** : tri par date, filtre temporel serveur
+   (`f_TPR`), et **arrêt anticipé dès 10 offres déjà vues consécutives** (« le flux a
+   rejoint ce qui est déjà en base ⇒ on arrête de chercher ») ;
+2. **Rattrapage** — les **10 plus pertinentes** : classement algorithmique de la
+   plateforme, **sans fenêtre temporelle** et **sans arrêt anticipé**, pour ne pas
+   manquer les offres toujours actives publiées il y a plus d'un mois.
+
+Deux garanties structurelles accompagnent ces objectifs :
+
+* **Réserve de budget** : la passe Fraîcheur ne peut pas consommer la part réservée au
+  Rattrapage — sans quoi une Fraîcheur généreuse affamerait silencieusement « les 10
+  plus pertinentes » ;
+* **Aucun arrêt silencieux** : une requête non lancée (objectif déjà atteint, plafond
+  de source consommé) produit sa propre ligne de télémétrie, avec le motif et l'objectif.
+
+L'arrêt anticipé est **armé explicitement** (`arm_early_stop: true`) alors même que
+LinkedIn n'honore pas son tri par date (7 inversions mesurées sur 2 pages) : la règle
+se prononce sur une **série** de 10 cartes, insensible aux inversions locales, là où
+l'arrêt sur fenêtre — qui décide sur **une seule** carte — reste désarmé.
+
 ### Pilotage (`config.yaml → scrapers.passes`)
 
 ```yaml
 passes:
   freshness:
     sort: "date"            # tri par date
+    target_new_per_source: 40   # « les 40 dernières » (objectif de la source)
     max_offers_per_query: 40
     window_days: 7          # 1 = 24 h ; null = aucune fenêtre
-    early_stop_after_known: 5   # N connues consécutives ⇒ arrêt
-    early_stop_min_pages: 1
+    early_stop_after_known: 10  # 10 déjà vues consécutives ⇒ arrêt
+    arm_early_stop: true        # armé malgré un ordre non chronologique (série)
+    early_stop_min_pages: 2     # jamais d'arrêt avant la 2e page
     max_pages_per_query: 12
     use_server_window_filter: true   # LinkedIn : f_TPR=r<secondes>
   relevance:
     sort: "relevance"
+    target_new_per_source: 10   # « les 10 plus pertinentes »
     max_offers_per_query: 20
     early_stop_after_known: 0   # jamais d'arrêt anticipé
 ```
 
 Une section `passes` déclarée est **explicite** : un mode absent n'est pas exécuté.
-La déclaration est entièrement pilotable par YAML (quotas, fenêtres, seuils d'arrêt).
+La déclaration est entièrement pilotable par YAML (objectifs, quotas, fenêtres, seuils
+d'arrêt, plafonds de pages).
 
 ```bash
 python run_scrapers.py                          # hybride : fraîcheur puis rattrapage

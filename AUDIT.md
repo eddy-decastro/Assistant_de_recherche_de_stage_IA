@@ -500,36 +500,53 @@ Aucune des deux stratégies de collecte ne suffisait :
 
 ### 10.3 Mise en œuvre
 
-- **Modèles** (`scrapers/models.py`) : `PassConfig` (tri, quota, fenêtre, seuil d'arrêt, pages),
-  `PassPlan` (passe **résolue**, garde-fous appliqués), `PassReport` (télémétrie), `SeenEntry`
-  (mémoire de collecte), `ScrapeResult.query_reports` / `.seen`.
-- **Moteur unique** (`scrapers/base.py`) : `BaseScraper.collect/_collect_pass` portent le quota, la
-  déduplication transverse, la fenêtre, l'arrêt anticipé et la qualification de la **raison d'arrêt** ;
-  chaque source n'implémente plus que `_iter_pages` (+ 2 capacités déclarées : ordre fiable, filtre
-  temporel serveur).
+- **Modèles** (`scrapers/models.py`) : `PassConfig` (tri, quota, **objectif de source**, fenêtre,
+  seuil d'arrêt, armement, pages), `PassPlan` (passe **résolue**, garde-fous appliqués),
+  `PassReport` (télémétrie), `SeenEntry` (mémoire de collecte), `ScrapeResult.query_reports` / `.seen`.
+- **Moteur unique** (`scrapers/base.py`) : `BaseScraper.collect/_collect_pass` portent l'objectif de
+  source (arrêt de la passe et consignation des requêtes non lancées), la **réserve de budget** entre
+  passes, le quota, la déduplication transverse, la fenêtre, l'arrêt anticipé et la qualification de
+  la **raison d'arrêt** ; chaque source n'implémente plus que `_iter_pages` (+ 2 capacités déclarées :
+  ordre fiable, filtre temporel serveur).
+- **Arrêt anticipé découplé** (décision mesurée) : la règle « N offres déjà vues consécutives »
+  se prononce sur une **série** de cartes (insensible aux 7 inversions de date mesurées sur LinkedIn,
+  cf. §10.2) et peut donc être **armée explicitement** (`arm_early_stop`), tandis que l'arrêt sur
+  fenêtre — qui décide sur **une seule** carte — reste soumis à `trust_source_order`. Garde de
+  pagination `early_stop_min_pages: 2` : sans elle, « 10 déjà vues » sur une page de 10 cartes ferait
+  doublon avec la détection de pagination stagnante.
+- **Objectifs métier** : `freshness.target_new_per_source: 40` (« les 40 dernières ») puis
+  `relevance.target_new_per_source: 10` (« les 10 plus pertinentes », sans fenêtre temporelle). Atteint,
+  un objectif interrompt la passe : les requêtes suivantes sont **consignées** en télémétrie
+  (`stop_reason=quota`, détail « objectif … déjà atteint ») — plus aucun arrêt silencieux.
 - **Mémoire de collecte** (`seen_jobs` + `scrapers/known.py` + `src/ingestion/known_index.py`) :
   toutes les cartes croisées y sont consignées, y compris les rejets anti-BI qui ne sont jamais
   persistés dans `jobs`. Sans elle, l'arrêt anticipé serait neutralisé par le bruit.
-- **Schéma** : colonnes `id_externe`, `canonical_url`, `published_at` sur `jobs` (migration additive
-  + backfill des URLs canoniques et de `seen_jobs`) ; tables `scrape_runs`, `scrape_query_stats` ;
-  rétention configurable (180 j) avec purge des runs et de la mémoire de collecte.
+- **Schéma** : colonnes `id_externe`, `canonical_url`, `published_at` sur `jobs` et `target_new` sur
+  `scrape_query_stats` (migration additive table par table + backfill des URLs canoniques et de
+  `seen_jobs`) ; tables `scrape_runs`, `scrape_query_stats` ; rétention configurable (180 j) avec purge
+  des runs et de la mémoire de collecte.
 - **Déduplication** : URL canonique **unique** (`scrapers.models.canonical_url`, ré-exportée par
   `src.storage.cleanup`) — corrige au passage le constat §3.7 (dédup sur chaîne brute non canonique).
-- **Pilotage** : `config.yaml → scrapers.passes.{freshness,relevance}` (quotas, fenêtres, seuil
-  d'arrêt, plafond de pages) + `scrapers.telemetry` ; CLI `--passes`, `--only-source`,
-  `--top-telemetry N`.
+- **Pilotage** : `config.yaml → scrapers.passes.{freshness,relevance}` (objectifs de source, quotas,
+  fenêtres, seuils et armement de l'arrêt anticipé, plafond de pages) + `scrapers.telemetry` ;
+  CLI `--passes`, `--only-source`, `--top-telemetry N`.
 
 ### 10.4 Tests (aucun réseau, aucun accès disque hors temporaire)
 
-`tests/test_hybrid_collection.py` (11 cas) : arrêt anticipé sur N connues consécutives, remise à zéro
+`tests/test_hybrid_collection.py` (16 cas) : arrêt anticipé sur N connues consécutives, remise à zéro
 du compteur par une inconnue, absence d'arrêt anticipé en mode pertinence, déduplication transverse
 entre passes, arrêt sur fenêtre, fenêtre sans ordre fiable (offre écartée sans arrêt), neutralisation
-documentée de l'arrêt anticipé, rate limit / erreurs HTTP / réseau, source indisponible et passe
-désactivée, décisions de la mémoire de collecte, index (identifiant plateforme + URL canonique).
+documentée de l'arrêt anticipé (non armé), **arrêt armé malgré un ordre non chronologique** (série de
+10 à cheval sur deux pages), **garde de pagination** (`early_stop_min_pages`), **objectif de source**
+qui arrête les requêtes restantes en les consignant, **réserve de budget** protégeant l'objectif de
+rattrapage, rate limit / erreurs HTTP / réseau, source indisponible et passe désactivée, décisions de
+la mémoire de collecte, index (identifiant plateforme + URL canonique).
 
-`tests/test_database.py` : migration (nouvelles colonnes), mémoire de collecte (backfill, upsert
-idempotent — dont la **conservation du rattachement `job_id`**), télémétrie (runs, passes, statut,
-récence, purge de rétention).
+`tests/test_database.py` : migration (nouvelles colonnes, dont `target_new` sur une base antérieure),
+mémoire de collecte (backfill, upsert idempotent — dont la **conservation du rattachement `job_id`**),
+télémétrie (runs, passes, statut, récence, purge de rétention), **compteurs de collecte** (cherchées /
+refusées / déjà vues / acceptées par run et par source) et **suivi des objectifs** (atteint, vivier
+épuisé, flux tronqué).
 
 ### 10.5 Preuves d'exécution
 
@@ -561,15 +578,44 @@ runs=2 | mémoire de collecte=5 | offres=5
   freshness | vues=3 | retenues=0 | connues=3 | arrêt=early_stop  | 3 offre(s) consécutive(s) déjà connue(s)
 ```
 
+Validation en conditions réelles des **objectifs de collecte** — `python run_scrapers.py
+--only-source linkedin --top-telemetry 12` (17/09, 42 s, base réelle) :
+
+```
+linkedin : passe « freshness » — objectif de 40 nouvelle(s) : 4 retenue(s) (objectif non atteint)
+  Stage Data Scientist | freshness | 4 pages | 38 vues | 4 gardée(s) | 29 connues | arrêt=early_stop
+    10 offre(s) consécutive(s) déjà vue(s) (10 en mémoire de collecte, 0 doublon(s) du run), page 4
+  Stage Machine Learning | freshness | 2 pages | 13 vues | 0 gardée(s) | 10 connues | arrêt=early_stop
+    10 déjà vue(s) (8 en mémoire, 2 doublons du run), page 2
+  Stage Recherche IA | freshness | 1 page | 10 vues | 0 gardée(s) | 7 connues | arrêt=duplicate_page
+
+linkedin : objectif de la passe « relevance » atteint (11/10) — requête 'Stage Recherche IA' NON lancée
+  Stage Machine Learning | relevance | 6 pages | 53 vues | 10 gardée(s) | 30 connues | arrêt=quota
+  Stage Recherche IA | relevance | 0 page | arrêt=quota (objectif de 10 déjà atteint (11) — requête non lancée)
+
+compteurs du run  : 134 cherchées | 18 refusées (12 hors sujet · 6 hors fenêtre) | 101 déjà vues
+                    (92 en base · 9 doublons du run) | 15 acceptées
+objectifs         : freshness 4/40 « vivier épuisé » (non tronqué) · relevance 11/10 « objectif atteint »
+15 nouvelles offres persistées · base 117 (linkedin 89 · jobteaser 28) · 15 requêtes HTTP au total
+```
+
+Trois garanties y sont **observées**, pas seulement décrites : l'arrêt anticipé armé (série de 10
+déjà-vues détectée à cheval sur les pages 3-4 malgré un tri LinkedIn non chronologique), la réserve de
+budget (l'objectif de 10 en Rattrapage est atteint alors que la Fraîcheur a tourné avant lui) et
+l'absence d'arrêt silencieux (la requête non lancée porte sa propre ligne de télémétrie).
+
 `test_database.py` (migration + mémoire + télémétrie), `test_scrapers.py`, `test_bridge.py`,
 `test_cli.py`, `test_cleanup.py`, `test_enrichment.py` passent : **aucune régression**.
 
 ### 10.6 Limites assumées
 
-- L'arrêt anticipé est **inactif sur LinkedIn** tant que la plateforme ne garantit pas un ordre
-  chronologique : le coût de la passe Fraîcheur est borné par `window_days`, `max_offers_per_query`
-  et `max_pages_per_query`. `trust_source_order: true` permet de l'activer si LinkedIn honore un jour
-  ce tri (ou si l'on accepte le risque).
+- L'arrêt anticipé **sur fenêtre** est inactif sur LinkedIn tant que la plateforme ne garantit pas un
+  ordre chronologique (une seule carte ancienne suffirait à tronquer la passe à tort). L'arrêt
+  anticipé **sur série de déjà-vues** est, lui, armé (`arm_early_stop: true`) : il se prononce sur
+  10 cartes consécutives, ce que les inversions locales de date ne peuvent pas produire. Le coût
+  restant de la passe Fraîcheur est borné par `window_days`, `target_new_per_source` et
+  `max_pages_per_query`. `trust_source_order: true` armerait en plus l'arrêt sur fenêtre si LinkedIn
+  honore un jour ce tri (ou si l'on accepte le risque).
 - Le tri JobTeaser (`JOBTEASER_SORT_PARAM/_DATE/_RELEVANCE`) et sa pagination (`JOBTEASER_PAGE_*`)
   n'ont pas pu être vérifiés faute de cookies : un tri non honoré est sans danger (le moteur détecte
   la pagination stagnante), mais le gain de la passe Fraîcheur y sera moindre.
@@ -632,10 +678,19 @@ ré-évaluation forcée libère réellement le Top-N), et `_migrate` ajoute la c
    déclenché (« Verrou bloquant — <motif> : score plafonné… ») ;
 3. **raisonnement du juge** dans l'accordéon (« Analyse du juge »), à côté de la
    grille détaillée et des scores internes ;
-4. **onglet « Télémétrie des collectes »** : état des `scrape_runs` (date, état,
-   sources, vues/retenues/nouvelles/doublons, motifs d'arrêt), alerte quand des
-   passes ont été interrompues (flux potentiellement perdu) et tableau des
-   dernières passes par (source × requête × mode) avec la raison d'arrêt en clair.
+4. **onglet « Télémétrie des collectes »** :
+   - **bandeau des quatre compteurs du dernier run** — *cherchées / refusées / déjà vues /
+     acceptées* — avec la définition de chacun (ce que la collecte parcourt, écarte, reconnaît,
+     retient) ;
+   - **compteurs par source**, décomposés dans leur motif (« N hors sujet · M hors fenêtre »,
+     « N en base · M doublons du run ») ;
+   - **état des objectifs de collecte** par (run × source × passe) : « objectif atteint (40/40) »,
+     « 6/10 — vivier épuisé » (rien à regretter) ou « 6/10 — flux tronqué (à relancer) » ;
+   - **ce qui est refusé** : répartition des décisions de la mémoire de collecte sur 30 jours
+     (hors sujet, contrat, hors fenêtre, déjà connue) avec leur motif ;
+   - état des `scrape_runs` (date, état, sources, vues/retenues/nouvelles/doublons, motifs d'arrêt),
+     alerte quand des passes ont été interrompues (flux potentiellement perdu) et tableau des
+     dernières passes par (source × requête × mode) avec la raison d'arrêt et l'objectif en clair.
 
 ### 11.5 Preuves d'exécution
 
