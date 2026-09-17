@@ -213,10 +213,23 @@ def test_interface_streamlit() -> None:
         "Exclure les ESN",
     ]
     assert [widget.label for widget in at.sidebar.selectbox] == ["Mode de flux", "Offres affichées"]
+    # Les actions de maintenance : mise à jour de la base, collecte et juge LLM.
     assert [widget.label for widget in at.sidebar.button] == [
         "Actualiser la vue",
-        "Relancer collecte & scoring",
+        "Collecter & mettre à jour la base",
+        "Collecter + scoring + juge LLM",
+        "Juge LLM seul (Top 20)",
+        "Enrichir les fiches de poste",
     ]
+    # Chaque action porte son script et ses arguments (aucun lancement ici : le clic
+    # déclencherait un vrai sous-processus réseau).
+    scripts = {action.key: action.script for action in app.PIPELINE_ACTIONS}
+    assert scripts["collect"] == "run_scrapers.py"
+    assert scripts["descriptions"] == "backfill_descriptions.py"
+    collect = next(a for a in app.PIPELINE_ACTIONS if a.key == "collect")
+    assert "--trigger-scoring" in collect.args and "--trigger-rerank" not in collect.args, collect
+    rerank = next(a for a in app.PIPELINE_ACTIONS if a.key == "rerank")
+    assert "--no-collect" in rerank.args and "--trigger-rerank" in rerank.args, rerank
 
     # 2. Bandeau KPI, en-tête et cartes d'offres rendus.
     markup = " ".join(element.value for element in at.markdown)

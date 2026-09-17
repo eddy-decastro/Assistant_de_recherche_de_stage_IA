@@ -1382,27 +1382,96 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
             help="Relit la base SQLite et invalide le cache de lecture du dashboard.",
             on_click=bump_data_version,
         )
-        if st.button(
-            "Relancer collecte & scoring",
-            width="stretch",
-            help="Exécute run_scrapers.py --trigger-scoring --trigger-rerank et affiche le journal.",
-        ):
-            run_pipeline()
-        st.caption("Sans clé DEEPSEEK_API_KEY, l'étape de reranking est ignorée proprement.")
+        for action in PIPELINE_ACTIONS:
+            if st.button(
+                action.label,
+                width="stretch",
+                help=action.help,
+                key=f"pipeline-{action.key}",
+            ):
+                run_pipeline(action)
+        st.caption(
+            "Chaque action diffuse son journal en direct ; la vue se rafraîchit toute seule "
+            "à la fin. Sans clé DEEPSEEK_API_KEY, l'étape de juge LLM est ignorée proprement."
+        )
 
 
 # --------------------------------------------------------------------------- #
 # Exécution du pipeline depuis le dashboard
 # --------------------------------------------------------------------------- #
-PIPELINE_ARGS: tuple[str, ...] = ("--trigger-scoring", "--trigger-rerank")
+@dataclass(frozen=True)
+class PipelineAction:
+    """Une action de maintenance lançable depuis le dashboard (script + arguments).
+
+    Chaque action est un « nœud » de la chaîne : elle dit quel script exécuter,
+    avec quels arguments, et ce que l'utilisateur doit comprendre du travail lancé.
+    """
+
+    key: str
+    label: str
+    script: str
+    args: tuple[str, ...]
+    help: str
+    status: str
 
 
-def run_pipeline() -> None:
-    """Exécute collecte + scoring + reranking et diffuse le journal en continu."""
-    command = [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), *PIPELINE_ARGS]
+#: Actions proposées dans « Base & pipeline », de la plus légère à la plus coûteuse.
+PIPELINE_ACTIONS: tuple[PipelineAction, ...] = (
+    PipelineAction(
+        key="collect",
+        label="Collecter & mettre à jour la base",
+        script="run_scrapers.py",
+        args=("--trigger-scoring",),
+        help=(
+            "Collecte hybride (passe Fraîcheur puis Rattrapage), ingestion SQLite, mémoire "
+            "de collecte et télémétrie, puis scoring Bi-Encoder des nouvelles offres. "
+            "Le rattrapage s'arrête de lui-même quand il rejoint le scrape précédent."
+        ),
+        status="Collecte en cours (fraîcheur → rattrapage → ingestion → scoring)…",
+    ),
+    PipelineAction(
+        key="collect-rerank",
+        label="Collecter + scoring + juge LLM",
+        script="run_scrapers.py",
+        args=("--trigger-scoring", "--trigger-rerank"),
+        help=(
+            "Chaîne complète : collecte et ingestion, scoring Bi-Encoder, puis juge LLM "
+            "(DeepSeek) du Top-N des offres non encore analysées."
+        ),
+        status="Pipeline en cours (collecte → scoring → juge LLM)…",
+    ),
+    PipelineAction(
+        key="rerank",
+        label="Juge LLM seul (Top 20)",
+        script="run_scrapers.py",
+        args=("--no-collect", "--trigger-rerank", "--top-rerank", "20"),
+        help=(
+            "Sans nouvelle collecte : analyse par le juge LLM des 20 meilleures offres non "
+            "encore évaluées (sous-scores 1-5, verrous bloquants, raisonnement)."
+        ),
+        status="Juge LLM en cours (Top 20 non analysé)…",
+    ),
+    PipelineAction(
+        key="descriptions",
+        label="Enrichir les fiches de poste",
+        script="backfill_descriptions.py",
+        args=(),
+        help=(
+            "Récupère les descriptions manquantes depuis les pages détail (LinkedIn / "
+            "JobTeaser). Sans description, le filtre métier et le juge LLM ne voient qu'un "
+            "titre : c'est ce qui débloque le scoring sémantique."
+        ),
+        status="Enrichissement des fiches en cours (pages détail)…",
+    ),
+)
+
+
+def run_pipeline(action: PipelineAction) -> None:
+    """Exécute une action du pipeline et diffuse son journal en continu."""
+    command = [sys.executable, str(PROJECT_ROOT / action.script), *action.args]
     environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     lines: list[str] = []
-    with st.status("Pipeline en cours (collecte → scoring → reranking)…", expanded=True) as state:
+    with st.status(action.status, expanded=True) as state:
         output = st.empty()
         process = subprocess.Popen(
             command,
@@ -1421,15 +1490,12 @@ def run_pipeline() -> None:
                 output.code("\n".join(lines[-400:]), language="text")
         return_code = process.wait()
         if return_code == 0:
-            state.update(label=f"Pipeline terminé · {len(lines)} lignes de journal", state="complete")
+            state.update(label=f"{action.label} — terminé · {len(lines)} lignes de journal", state="complete")
         else:
-            state.update(label=f"Pipeline interrompu (code {return_code})", state="error")
+            state.update(label=f"{action.label} — interrompu (code {return_code})", state="error")
     bump_data_version()
 
 
-# --------------------------------------------------------------------------- #
-# Point d'entrée
-# --------------------------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
 # Panneau « Télémétrie des collectes » (tables scrape_runs / scrape_query_stats)
 # --------------------------------------------------------------------------- #

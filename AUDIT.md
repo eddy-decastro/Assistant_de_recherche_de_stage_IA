@@ -416,7 +416,7 @@ outil d'ingénierie dense et sobre (références : Linear / Vercel / GitHub).
 | Accordéon | 2 expanders (« Analyse du copilote », « Description ») | 1 `<details>` : verdict du juge LLM (points forts / points d'attention), scores internes, extrait de fiche + lecture complète |
 | Actions | `selectbox` de statut | « Consulter l'offre ↗ » (lien direct dans la carte) + « Marquer postulé » / « Archiver » (`on_click`, persistance SQLite immédiate) |
 | Filtres | score, statut, ESN, typologie, plateforme, mode | recherche plein texte, plateformes, score R&D minimal, verdict LLM uniquement, masquer les offres traitées (+ critères avancés : statut, typologie, ESN ; affichage : mode, limite) |
-| Base | — | panneau « Base & pipeline » : répartition, « Actualiser la vue », « Relancer collecte & scoring » (journal diffusé en continu) → **P3.M réalisé** |
+| Base | — | panneau « Base & pipeline » : répartition, « Actualiser la vue » et **quatre actions de maintenance** (collecter & mettre à jour la base · collecter + scoring + juge LLM · juge LLM seul Top 20 · enrichir les fiches), journal diffusé en continu → **P3.M réalisé** |
 
 ## 9.3 Décisions techniques
 

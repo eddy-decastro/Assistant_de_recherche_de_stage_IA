@@ -188,8 +188,12 @@ Le dashboard exploite la colonne `jobs.source` :
 - **Filtres latéraux** : recherche plein texte, plateformes, score R&D minimal, verdict LLM uniquement,
   masquer les offres traitées, critères avancés (statut, typologie d'entreprise, ESN), mode de flux et
   limite d'offres affichées.
-- **Base & pipeline** : « Actualiser la vue » et « Relancer collecte & scoring » (le journal du pipeline
-  est diffusé en continu dans la sidebar).
+- **Base & pipeline** : « Actualiser la vue » puis quatre actions de maintenance, chacune diffusant
+  son journal en continu dans la sidebar et rafraîchissant la vue à la fin :
+  « Collecter & mettre à jour la base » (collecte hybride + ingestion + scoring),
+  « Collecter + scoring + juge LLM » (chaîne complète),
+  « Juge LLM seul (Top 20) » (sans nouvelle collecte) et
+  « Enrichir les fiches de poste » (rattrapage des descriptions).
 - **Thème** : l'interface suit automatiquement le mode clair ou sombre natif de Streamlit
   (`st.context.theme`), et n'utilise **aucun emoji décoratif**.
 
