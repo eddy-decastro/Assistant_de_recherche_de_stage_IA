@@ -461,7 +461,110 @@ def test_onglet_telemetrie_interface() -> None:
     markup = " ".join(element.value for element in at.markdown)
     assert "Runs de collecte" in markup, "Le tableau des runs doit être rendu."
     assert "Dernières passes (raison d'arrêt)" in markup
+    # Les blocs de pilotage n'apparaissent que si la base porte de la télémétrie.
+    db = _open_database()
+    has_runs, has_seen = db.count_runs() > 0, db.count_seen_jobs() > 0
+    db.engine.dispose()
+    if has_runs:
+        assert "Compteurs par source" in markup, "Les compteurs par source doivent être rendus."
+        assert "Objectifs de collecte" in markup, "L'état des objectifs doit être rendu."
+    if has_seen:
+        assert "Ce qui est refusé" in markup, "La répartition des refus doit être rendue."
     print(f"  Interface : onglets {labels} et panneau de télémétrie OK")
+
+
+def test_compteurs_de_collecte_et_refus() -> None:
+    """Le panneau expose cherchées / refusées / déjà vues / acceptées et l'état des objectifs."""
+    counters = [
+        {
+            "run_id": "run-1",
+            "source": "linkedin",
+            "pages": 7,
+            "http_requests": 6,
+            "cards_seen": 100,
+            "jobs_kept": 25,
+            "jobs_known": 15,
+            "jobs_duplicate": 10,
+            "jobs_rejected": 50,
+            "jobs_out_of_window": 0,
+            "already_seen": 25,
+            "refused": 50,
+        },
+        {
+            "run_id": "run-1",
+            "source": "jobteaser",
+            "cards_seen": 0,
+            "jobs_kept": 0,
+            "jobs_known": 0,
+            "jobs_duplicate": 0,
+            "jobs_rejected": 0,
+            "jobs_out_of_window": 0,
+            "already_seen": 0,
+            "refused": 0,
+        },
+    ]
+    stamps = {"run-1": "16/09 23:21"}
+
+    strip = app._counters_strip(
+        {"cards_seen": 100, "refused": 50, "already_seen": 25, "jobs_kept": 25}
+    )
+    assert 'class="sc-kpis"' in strip, strip
+    for label in ("Cherchées", "Refusées", "Déjà vues", "Acceptées"):
+        assert label in strip, label
+    assert "100" in strip and "25" in strip
+
+    table = app._collection_counters_table(counters, stamps)
+    assert "16/09 23:21" in table and "linkedin" in table and "jobteaser" in table
+    # Les colonnes sont décomposées dans leur motif (lisible sans journal).
+    assert "50 hors sujet" in table, table
+    assert "15 en base" in table and "10 doublons du run" in table, table
+    assert app._collection_counters_table([], stamps) == ""
+
+    objectives = [
+        {
+            "run_id": "run-1",
+            "source": "linkedin",
+            "mode": "freshness",
+            "pages": 12,
+            "cards_seen": 120,
+            "jobs_kept": 40,
+            "target_new": 40,
+            "reached": True,
+            "incomplete": False,
+        },
+        {
+            "run_id": "run-1",
+            "source": "linkedin",
+            "mode": "relevance",
+            "pages": 3,
+            "cards_seen": 30,
+            "jobs_kept": 6,
+            "target_new": 10,
+            "reached": False,
+            "incomplete": False,
+        },
+    ]
+    objectives_table = app._objectives_table(objectives, stamps)
+    assert "objectif atteint (40/40)" in objectives_table, objectives_table
+    assert "6/10 — vivier épuisé" in objectives_table, objectives_table
+    assert app.tone_class("positive") in objectives_table
+
+    truncated = app._objectives_table(
+        [{**objectives[1], "incomplete": True}], stamps
+    )
+    assert "6/10 — flux tronqué (à relancer)" in truncated, truncated
+    assert app.tone_class("alert") in truncated
+
+    refusals = app._refusals_table(
+        [
+            {"decision": "REJECTED_BI", "rejection_reason": "« power bi »", "total": 22},
+            {"decision": "KNOWN", "rejection_reason": None, "total": 9},
+        ]
+    )
+    assert "Refusée — hors sujet" in refusals, refusals
+    assert "Déjà connue" in refusals and "« power bi »" in refusals
+    assert app._refusals_table([]) == ""
+    print("  Télémétrie : compteurs (cherchées/refusées/déjà vues/acceptées) et objectifs OK")
 
 
 def main() -> None:
@@ -472,6 +575,7 @@ def main() -> None:
     test_carte_html()
     test_grille_sous_scores()
     test_telemetrie_panneau()
+    test_compteurs_de_collecte_et_refus()
     test_palette_sombre_claire_et_repli()
     test_onglet_telemetrie_interface()
     test_interface_streamlit()

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import streamlit as st
 
@@ -65,6 +65,7 @@ from src.constants import (  # noqa: E402
     coerce_sub_score,
     is_incomplete_stop,
     pass_label,
+    seen_decision_label,
     source_label,
     source_rank,
     stop_reason_label,
@@ -1541,6 +1542,144 @@ def _telemetry_runs_table(runs: Sequence[dict[str, Any]]) -> str:
     )
 
 
+def _objective_cell(kept: Any, target: Any) -> str:
+    """Cellule « objectif » d'une passe : ``retenues/objectif`` avec la tonalité qui va bien."""
+    target_value = int(target or 0)
+    if not target_value:
+        return '<td class="sc-num">—</td>'
+    kept_value = int(kept or 0)
+    tone = "positive" if kept_value >= target_value else "warn"
+    return (
+        f'<td><span class="sc-badge {tone_class(tone)}">'
+        f"{kept_value}/{target_value}</span></td>"
+    )
+
+
+def _counters_strip(totals: Mapping[str, int]) -> str:
+    """Bandeau des quatre compteurs du dernier run : cherchées, refusées, déjà vues, acceptées.
+
+    C'est la réponse chiffrée à « que fait la collecte ? » : le volume parcouru, ce
+    qu'elle écarte, ce qu'elle reconnaît et ce qu'elle retient.
+    """
+    cards = (
+        ("Cherchées", int(totals.get("cards_seen") or 0), "cartes de flux parcourues"),
+        ("Refusées", int(totals.get("refused") or 0), "hors sujet + hors fenêtre"),
+        ("Déjà vues", int(totals.get("already_seen") or 0), "en base ou déjà croisées"),
+        ("Acceptées", int(totals.get("jobs_kept") or 0), "retenues pour la base"),
+    )
+    cells = "".join(
+        '<div class="sc-kpi">'
+        f'<div class="sc-kpi-label">{_esc(label)}</div>'
+        f'<div class="sc-kpi-value">{value}</div>'
+        f'<div class="sc-kpi-label">{_esc(note)}</div>'
+        "</div>"
+        for label, value, note in cards
+    )
+    return f'<div class="sc-kpis">{cells}</div>'
+
+
+def _run_stamp(stamps: Mapping[str, str], run_id: Any) -> str:
+    """Horodatage compact du run, ou son identifiant court en repli."""
+    return stamps.get(str(run_id)) or f"run {str(run_id)[:8]}"
+
+
+def _collection_counters_table(
+    counters: Sequence[dict[str, Any]], stamps: Mapping[str, str]
+) -> str:
+    """Compteurs de collecte par (run, source) : cherchées, refusées, déjà vues, acceptées.
+
+    Chaque colonne est décomposée dans son motif : « refusées » distingue le filtre
+    métier (hors sujet) du hors-fenêtre, « déjà vues » distingue la mémoire de
+    collecte des doublons internes au run. C'est ce qui permet de dire, sans lire un
+    journal, si une collecte maigre vient du bruit ou d'un flux déjà parcouru.
+    """
+    if not counters:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td class="sc-num">{_esc(_run_stamp(stamps, row.get("run_id")))}</td>'
+        f'<td>{_esc(str(row.get("source") or "?"))}</td>'
+        f'<td class="sc-num">{int(row.get("cards_seen") or 0)}</td>'
+        f'<td class="sc-num">{int(row.get("refused") or 0)}'
+        f'<br><span class="sc-kpi-label">{int(row.get("jobs_rejected") or 0)} hors sujet · '
+        f'{int(row.get("jobs_out_of_window") or 0)} hors fenêtre</span></td>'
+        f'<td class="sc-num">{int(row.get("already_seen") or 0)}'
+        f'<br><span class="sc-kpi-label">{int(row.get("jobs_known") or 0)} en base · '
+        f'{int(row.get("jobs_duplicate") or 0)} doublons du run</span></td>'
+        f'<td class="sc-num sc-strong">{int(row.get("jobs_kept") or 0)}</td>'
+        "</tr>"
+        for row in counters
+    )
+    return (
+        '<table class="sc-table"><thead><tr>'
+        "<th>Run</th><th>Source</th><th>Cherchées</th><th>Refusées</th>"
+        "<th>Déjà vues</th><th>Acceptées</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table>"
+    )
+
+
+def _objectives_table(
+    objectives: Sequence[dict[str, Any]], stamps: Mapping[str, str]
+) -> str:
+    """Objectifs de collecte par (run, source, passe) et leur état.
+
+    « Objectif atteint », « vivier épuisé » (rien à regretter) et « flux tronqué »
+    (à relancer) sont trois situations distinctes : les confondre reviendrait à
+    croire une collecte complète alors qu'un plafond l'a coupée.
+    """
+    if not objectives:
+        return ""
+    rows: list[str] = []
+    for item in objectives:
+        target = int(item.get("target_new") or 0)
+        kept = int(item.get("jobs_kept") or 0)
+        if not target:
+            state, tone = "aucun objectif", "mute"
+        elif kept >= target:
+            state, tone = f"objectif atteint ({kept}/{target})", "positive"
+        elif item.get("incomplete"):
+            state, tone = f"{kept}/{target} — flux tronqué (à relancer)", "alert"
+        else:
+            state, tone = f"{kept}/{target} — vivier épuisé", "warn"
+        rows.append(
+            "<tr>"
+            f'<td class="sc-num">{_esc(_run_stamp(stamps, item.get("run_id")))}</td>'
+            f'<td>{_esc(str(item.get("source") or "?"))}</td>'
+            f'<td>{_esc(pass_label(item.get("mode")))}</td>'
+            f'<td class="sc-num">{int(item.get("pages") or 0)}</td>'
+            f'<td class="sc-num">{int(item.get("cards_seen") or 0)}</td>'
+            f'<td class="sc-num sc-strong">{kept}</td>'
+            f'<td class="sc-num">{target or "—"}</td>'
+            f'<td><span class="sc-badge {tone_class(tone)}">{_esc(state)}</span></td>'
+            "</tr>"
+        )
+    return (
+        '<table class="sc-table"><thead><tr>'
+        "<th>Run</th><th>Source</th><th>Passe</th><th>Pages</th><th>Vues</th>"
+        "<th>Retenues</th><th>Objectif</th><th>État</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _refusals_table(breakdown: Sequence[dict[str, Any]]) -> str:
+    """Répartition des décisions de la mémoire de collecte : ce qui est refusé, et pourquoi."""
+    if not breakdown:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td>{_esc(seen_decision_label(row.get("decision")))}</td>'
+        f'<td>{_esc(row.get("rejection_reason") or "—")}</td>'
+        f'<td class="sc-num sc-strong">{int(row.get("total") or 0)}</td>'
+        "</tr>"
+        for row in breakdown
+    )
+    return (
+        '<table class="sc-table"><thead><tr>'
+        "<th>Décision</th><th>Motif</th><th>Offres</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table>"
+    )
+
+
 def _telemetry_passes_table(stats: Sequence[dict[str, Any]]) -> str:
     """Tableau des dernières passes : une ligne par (source, requête, mode)."""
     if not stats:
@@ -1556,6 +1695,7 @@ def _telemetry_passes_table(stats: Sequence[dict[str, Any]]) -> str:
         f'<td class="sc-num">{int(stat.get("cards_seen") or 0)}</td>'
         f'<td class="sc-num sc-strong">{int(stat.get("jobs_kept") or 0)}</td>'
         f'<td class="sc-num">{int(stat.get("jobs_known") or 0)}</td>'
+        f'{_objective_cell(stat.get("jobs_kept"), stat.get("target_new"))}'
         f'<td><span class="sc-badge '
         f'{tone_class("alert" if is_incomplete_stop(stat.get("stop_reason")) else "mute")}">'
         f'{_esc(stop_reason_label(stat.get("stop_reason")))}</span></td>'
@@ -1565,7 +1705,7 @@ def _telemetry_passes_table(stats: Sequence[dict[str, Any]]) -> str:
     return (
         '<table class="sc-table"><thead><tr>'
         "<th>Fin</th><th>Source</th><th>Requête</th><th>Passe</th><th>Pages</th>"
-        "<th>Vues</th><th>Retenues</th><th>Connues</th><th>Arrêt</th>"
+        "<th>Vues</th><th>Retenues</th><th>Connues</th><th>Objectif</th><th>Arrêt</th>"
         "</tr></thead><tbody>" + rows + "</tbody></table>"
     )
 
@@ -1579,6 +1719,9 @@ def render_telemetry(db: Database, runs_limit: int = 8, passes_limit: int = 20) 
     """
     runs = db.get_recent_runs(limit=runs_limit)
     passes = db.get_recent_query_stats(limit=passes_limit)
+    counters = db.get_collection_counters(limit=runs_limit)
+    objectives = db.get_pass_objectives(limit=runs_limit)
+    refusals = db.get_seen_decision_breakdown()
     if not runs and not passes:
         st.markdown(
             '<div class="sc-empty">Aucune télémétrie enregistrée.<br>'
@@ -1618,6 +1761,41 @@ def render_telemetry(db: Database, runs_limit: int = 8, passes_limit: int = 20) 
             unsafe_allow_html=True,
         )
 
+    # --- Compteurs du dernier run : cherchées / refusées / déjà vues / acceptées ---
+    stamps = {str(run.get("id")): _fmt_stamp(run.get("started_at")) for run in runs}
+    last_run_id = str(runs[0].get("id")) if runs else ""
+    last_counters = [
+        row for row in counters if str(row.get("run_id")) == last_run_id
+    ]
+    if last_counters:
+        totals = {
+            key: sum(int(row.get(key) or 0) for row in last_counters)
+            for key in ("cards_seen", "refused", "already_seen", "jobs_kept")
+        }
+        st.markdown(_counters_strip(totals), unsafe_allow_html=True)
+        st.caption(
+            "Dernier run — cherchées : cartes de flux réellement parcourues · refusées : "
+            "écartées par le filtre métier (hors sujet) ou parce qu'antérieures à la fenêtre "
+            "· déjà vues : déjà en base ou croisées dans ce run · acceptées : retenues, donc "
+            "candidates à l'ingestion."
+        )
+    if counters:
+        st.markdown(
+            '<div class="sc-telemetry"><div class="sc-section">'
+            "Compteurs par source — cherchées / refusées / déjà vues / acceptées</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(_collection_counters_table(counters, stamps), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+    if objectives:
+        st.markdown(
+            '<div class="sc-telemetry"><div class="sc-section">'
+            "Objectifs de collecte — 40 dernières, puis 10 plus pertinentes</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(_objectives_table(objectives, stamps), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
     st.markdown(
         '<div class="sc-telemetry"><div class="sc-section">Runs de collecte</div>',
         unsafe_allow_html=True,
@@ -1632,6 +1810,15 @@ def render_telemetry(db: Database, runs_limit: int = 8, passes_limit: int = 20) 
     )
     st.markdown(_telemetry_passes_table(passes), unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
+
+    if refusals:
+        st.markdown(
+            '<div class="sc-telemetry"><div class="sc-section">'
+            "Ce qui est refusé — mémoire de collecte, 30 derniers jours</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(_refusals_table(refusals), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def main() -> None:
