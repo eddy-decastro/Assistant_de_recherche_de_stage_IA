@@ -13,7 +13,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from sqlalchemy import create_engine
 
-from src.constants import RUN_OK, RUN_PARTIAL, RUN_RUNNING, STATUS_APPLIED, STATUS_NEW, TIER_1
+from src.constants import (
+    RUN_OK,
+    RUN_PARTIAL,
+    RUN_RUNNING,
+    STATUS_APPLIED,
+    STATUS_INTERVIEW,
+    STATUS_NEW,
+    STATUS_REJECTED,
+    TIER_1,
+)
 from src.storage.database import Database, SQLITE_BUSY_TIMEOUT_MS, make_job_id
 
 
@@ -440,6 +449,117 @@ def test_objectif_de_passe_et_migration() -> None:
         assert rows[0]["cards_seen"] == 60 and rows[0]["jobs_kept"] == 24, rows[0]
         db.engine.dispose()
     print("[OK] objectif de passe : suivi atteint/manqué et migration additive")
+
+
+def test_unranked_jobs_and_stats() -> None:
+    """Sélection des offres non notées : gestion des erreurs API, tri par description et stats."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "test_unranked.db"
+        db = Database(path)
+        try:
+            base = {
+                "company": "TestCorp",
+                "location": "Paris",
+                "company_tier": TIER_1,
+                "semantic_score": 0.0,
+                "final_score": 0.0,
+                "status": STATUS_NEW,
+            }
+
+            # 1. Offre déjà notée avec succès
+            db.upsert_job({**base, "title": "Offre Notée", "url": "http://test.com/1", "rerank_score": 85.0})
+            # 2. Offre non notée SANS description
+            db.upsert_job({**base, "title": "Offre Sans Desc", "url": "http://test.com/2", "description": ""})
+            # 3. Offre non notée AVEC description complète
+            db.upsert_job({**base, "title": "Offre Avec Desc", "url": "http://test.com/3", "description": "Longue description de mission ML"})
+            # 4. Offre ayant échoué avec erreur API (doit être considérée comme non notée)
+            db.upsert_job({
+                **base,
+                "title": "Offre Erreur API",
+                "url": "http://test.com/4",
+                "rerank_score": 0.0,
+                "red_flags": ["Erreur API Gemini (429 - Quota)"],
+                "description": "Description ML suite",
+            })
+            # 5. Offre rejetée (ne doit pas être éligible)
+            db.upsert_job({**base, "title": "Offre Rejetée", "url": "http://test.com/5", "status": STATUS_REJECTED})
+
+            stats = db.get_scoring_stats()
+            assert stats["total"] == 5
+            assert stats["active"] == 4
+            assert stats["rejected"] == 1
+            assert stats["rated"] == 1
+            assert stats["unrated"] == 3  # Sans desc + Avec desc + Erreur API
+            assert stats["unrated_with_desc"] == 2  # Avec desc + Erreur API
+
+            unranked = db.get_unranked_jobs(limit=10)
+            assert len(unranked) == 3
+            # Les offres avec description doivent arriver en premier
+            titles = [u["title"] for u in unranked]
+            assert titles[0] in ("Offre Avec Desc", "Offre Erreur API")
+            assert titles[1] in ("Offre Avec Desc", "Offre Erreur API")
+            assert titles[2] == "Offre Sans Desc"
+        finally:
+            db.engine.dispose()
+    print("[OK] unranked jobs et stats : tri intelligent et reprise après erreur API")
+
+
+def test_applied_at_tracking_and_regions() -> None:
+    """Vérifie l'horodatage automatique de applied_at et la normalisation géographique."""
+    from pages.statistiques import normalize_region
+
+    # 1. Normalisation régionale
+    assert normalize_region("Paris (75)") == "Paris & Île-de-France"
+    assert normalize_region("Vélizy-Villacoublay") == "Paris & Île-de-France"
+    assert normalize_region("Sophia Antipolis") == "PACA & Côte d'Azur"
+    assert normalize_region("Lyon, Auvergne-Rhône-Alpes") == "Auvergne-Rhône-Alpes"
+    assert normalize_region("Toulouse") == "Occitanie"
+    assert normalize_region("Bordeaux") == "Nouvelle-Aquitaine"
+    assert normalize_region("Rennes") == "Bretagne & Pays de la Loire"
+    assert normalize_region("Lille") == "Hauts-de-France & Grand Est"
+    assert normalize_region("") == "Autres / Non précisé"
+    assert normalize_region(None) == "Autres / Non précisé"
+
+    # 2. Persistance et horodatage applied_at
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "test_applied.db"
+        db = Database(db_path)
+        try:
+            job_payload = {
+                "id": "app_test_1",
+                "title": "Stage Deep Learning",
+                "company": "Inria",
+                "location": "Sophia Antipolis",
+                "url": "http://test.com/app1",
+                "status": STATUS_NEW,
+                "company_tier": TIER_1,
+                "semantic_score": 85.0,
+                "final_score": 85.0,
+            }
+            db.upsert_job(job_payload)
+            jobs = db.get_jobs()
+            j = next((x for x in jobs if x["id"] == "app_test_1"), None)
+            assert j is not None
+            assert j["applied_at"] is None
+
+            # Transition vers POSTULÉ
+            db.update_status("app_test_1", STATUS_APPLIED)
+            jobs_after = db.get_jobs()
+            j_after = next((x for x in jobs_after if x["id"] == "app_test_1"), None)
+            assert j_after is not None
+            assert j_after["status"] == STATUS_APPLIED
+            assert j_after["applied_at"] is not None
+
+            applied_time = j_after["applied_at"]
+            # Transition vers ENTRETIEN : conserve la date de candidature
+            db.update_status("app_test_1", STATUS_INTERVIEW)
+            jobs_interview = db.get_jobs()
+            j_interview = next((x for x in jobs_interview if x["id"] == "app_test_1"), None)
+            assert j_interview["status"] == STATUS_INTERVIEW
+            assert j_interview["applied_at"] == applied_time
+        finally:
+            db.engine.dispose()
+    print("[OK] applied_at tracking et normalisation régionale")
 
 
 if __name__ == "__main__":

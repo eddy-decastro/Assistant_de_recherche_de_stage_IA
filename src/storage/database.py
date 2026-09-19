@@ -24,6 +24,7 @@ from sqlalchemy import (
     event,
 
     func,
+    or_,
     select,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -36,6 +37,8 @@ from src.constants import (
     RUN_INTERRUPTED,
     RUN_RUNNING,
     SEEN_VALIDATED,
+    STATUS_APPLIED,
+    STATUS_INTERVIEW,
     STATUS_NEW,
     STATUS_REJECTED,
     SUB_SCORE_KEYS,
@@ -141,7 +144,7 @@ class Job(Base):
     location = Column(String(300), nullable=True)
     url = Column(String(2000), nullable=False)
     description = Column(Text, nullable=True)
-    source = Column(String(100), nullable=True)
+    source = Column(String(100), nullable=True, index=True)
     company_tier = Column(Integer, default=2, nullable=False)
     semantic_score = Column(Float, default=0.0, nullable=False)
     final_score = Column(Float, default=0.0, nullable=False, index=True)
@@ -162,9 +165,10 @@ class Job(Base):
     # « Fraîcheur » et l'affichage de la récence dans le dashboard.
     published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    applied_at = Column(DateTime, nullable=True)
 
     # --- Étape 2 : reranking par juge LLM (NULL tant que non évalué) ---
-    rerank_score = Column(Float, nullable=True)
+    rerank_score = Column(Float, nullable=True, index=True)
     verdict = Column(String(30), nullable=True)
     match_reasons = Column(Text, nullable=True)   # JSON : liste de chaînes
     red_flags = Column(Text, nullable=True)       # JSON : liste de chaînes
@@ -320,6 +324,7 @@ class Database:
                 "id_externe": "VARCHAR(300)",
                 "canonical_url": "VARCHAR(2000)",
                 "published_at": "DATETIME",
+                "applied_at": "DATETIME",
             },
             "scrape_query_stats": {
                 # Objectif de nouvelles offres fixé à la source pour la passe
@@ -368,6 +373,27 @@ class Database:
                     "UPDATE jobs SET canonical_url = ? WHERE id = ?",
                     [(canonical_url(str(url or "")), job_id) for job_id, url in missing],
                 )
+            
+            # Création manuelle d'index pour les tables existantes
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_rerank_score ON jobs (rerank_score)")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_source ON jobs (source)")
+
+            # Guérison des offres corrompues par un échec technique API (ex: 429 quota Gemini)
+            conn.exec_driver_sql(
+                """
+                UPDATE jobs
+                SET rerank_score = NULL,
+                    verdict = NULL,
+                    match_reasons = NULL,
+                    red_flags = NULL,
+                    tech_stack = NULL,
+                    sub_scores = NULL,
+                    hard_cap_triggered = NULL,
+                    reasoning = NULL
+                WHERE red_flags LIKE '%Erreur API%'
+                """
+            )
+
             # Mémoire de collecte : une entrée par offre déjà connue (idempotent :
             # les lignes existantes ne sont jamais écrasées).
             conn.exec_driver_sql(
@@ -393,7 +419,7 @@ class Database:
     def upsert_job(self, job: dict[str, Any]) -> Job:
         """Insère une offre sans doublon (clé = id) ou met à jour ses scores."""
         job_id = job.get("id") or make_job_id(job["title"], job["company"], job["url"])
-        fields: dict[str, Any] = {}
+        fields: dict[str, Any] = {"id": job_id}
         for key, value in job.items():
             if key == "id" or not hasattr(Job, key):
                 continue
@@ -403,16 +429,22 @@ class Database:
                 fields[key] = _encode_sub_scores(value)
             else:
                 fields[key] = value
+                
         with self.SessionLocal() as session:
-            record = session.get(Job, job_id)
-            if record is None:
-                record = Job(id=job_id, **fields)
-                session.add(record)
+            stmt = sqlite_insert(Job).values(**fields)
+            update_dict = {k: v for k, v in fields.items() if k != "id"}
+            
+            if update_dict:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_=update_dict
+                )
             else:
-                for key, value in fields.items():
-                    setattr(record, key, value)
+                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+                
+            session.execute(stmt)
             session.commit()
-            return record
+            return session.get(Job, job_id)
 
     def reject_job(self, job_id: str, reason: str) -> bool:
         """Écarte une offre (statut REJETÉ) et conserve le motif d'exclusion."""
@@ -431,11 +463,9 @@ class Database:
         if not ids:
             return 0
         with self.SessionLocal() as session:
-            records = session.execute(select(Job).where(Job.id.in_(ids))).scalars().all()
-            for record in records:
-                session.delete(record)
+            result = session.execute(delete(Job).where(Job.id.in_(ids)))
             session.commit()
-            return len(records)
+            return result.rowcount
 
     def update_status(self, job_id: str, status: str) -> bool:
         """Met à jour le statut d'une offre. Retourne False si l'offre n'existe pas."""
@@ -446,6 +476,8 @@ class Database:
             if record is None:
                 return False
             record.status = status
+            if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
+                record.applied_at = datetime.utcnow()
             session.commit()
             return True
 
@@ -526,6 +558,7 @@ class Database:
             if record is None:
                 return False
             record.rerank_score = float(rerank_score)
+            
             record.verdict = verdict
             record.match_reasons = _encode_json_list(match_reasons)
             record.red_flags = _encode_json_list(red_flags)
@@ -537,19 +570,66 @@ class Database:
             return True
 
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Top des offres NON encore évaluées par le juge LLM (tri par score initial).
+        """Top des offres NON encore évaluées par le juge LLM.
 
-        Les offres écartées par la re-validation métier sont exclues : inutile de
-        dépenser des tokens du juge sur une offre déjà disqualifiée.
+        Les offres ayant échoué lors d'un appel API précédent (ex: quota 429) sont
+        également éligibles. Les offres avec description complète sont priorisées
+        afin d'alimenter au mieux le juge LLM.
+        Les offres écartées par la re-validation métier sont exclues.
         """
         with self.SessionLocal() as session:
             stmt = (
                 select(Job)
-                .where(Job.rerank_score.is_(None), Job.status != STATUS_REJECTED)
-                .order_by(Job.final_score.desc())
+                .where(
+                    or_(Job.rerank_score.is_(None), Job.red_flags.like("%Erreur API%")),
+                    Job.status != STATUS_REJECTED,
+                )
+                .order_by(
+                    func.length(func.coalesce(Job.description, "")).desc(),
+                    Job.final_score.desc(),
+                    Job.created_at.desc(),
+                )
                 .limit(limit)
             )
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
+
+    def get_scoring_stats(self) -> dict[str, int]:
+        """Statistiques de notation des offres en base (pour le dashboard)."""
+        with self.SessionLocal() as session:
+            total = session.scalar(select(func.count(Job.id))) or 0
+            rejected = session.scalar(
+                select(func.count(Job.id)).where(Job.status == STATUS_REJECTED)
+            ) or 0
+            active = total - rejected
+            rated = session.scalar(
+                select(func.count(Job.id)).where(
+                    Job.rerank_score.is_not(None),
+                    or_(Job.red_flags.is_(None), ~Job.red_flags.like("%Erreur API%")),
+                    Job.status != STATUS_REJECTED,
+                )
+            ) or 0
+            unrated = session.scalar(
+                select(func.count(Job.id)).where(
+                    or_(Job.rerank_score.is_(None), Job.red_flags.like("%Erreur API%")),
+                    Job.status != STATUS_REJECTED,
+                )
+            ) or 0
+            unrated_with_desc = session.scalar(
+                select(func.count(Job.id)).where(
+                    or_(Job.rerank_score.is_(None), Job.red_flags.like("%Erreur API%")),
+                    Job.status != STATUS_REJECTED,
+                    func.coalesce(func.trim(Job.description), "") != "",
+                )
+            ) or 0
+
+            return {
+                "total": total,
+                "active": active,
+                "rejected": rejected,
+                "rated": rated,
+                "unrated": unrated,
+                "unrated_with_desc": unrated_with_desc,
+            }
 
     def update_description(self, job_id: str, description: str) -> bool:
         """Enregistre la description complète d'une offre. False si introuvable."""
@@ -1003,6 +1083,35 @@ class Database:
             )
             return [dict(row._mapping) for row in session.execute(stmt)]
 
+    def get_rejected_seen_jobs(
+        self,
+        limit: int = 100,
+        source: Optional[str] = None,
+        reason: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Retourne la liste des offres rejetées ou écartées de la mémoire de collecte.
+
+        Permet d'auditer ce qui a été refusé (filtre BI, hors fenêtre, etc.),
+        avec motif précis, date de détection et lien vers l'annonce.
+        """
+        with self.SessionLocal() as session:
+            stmt = select(SeenJob).where(SeenJob.decision.startswith("REJECTED"))
+            if source:
+                stmt = stmt.where(SeenJob.source == source)
+            if reason:
+                stmt = stmt.where(SeenJob.rejection_reason == reason)
+            if query:
+                pattern = f"%{query.strip()}%"
+                stmt = stmt.where(
+                    (SeenJob.title.ilike(pattern))
+                    | (SeenJob.canonical_url.ilike(pattern))
+                    | (SeenJob.rejection_reason.ilike(pattern))
+                )
+            stmt = stmt.order_by(SeenJob.last_seen_at.desc()).limit(max(1, int(limit)))
+            records = session.execute(stmt).scalars().all()
+            return [record.to_dict() for record in records]
+
     # ------------------------------------------------------------------ #
     # Rétention : la télémétrie ne doit pas croître indéfiniment
     # ------------------------------------------------------------------ #
@@ -1029,20 +1138,14 @@ class Database:
         """
         threshold = datetime.utcnow() - timedelta(days=max(1, int(days)))
         with self.SessionLocal() as session:
-            known_ids = set(session.execute(select(Job.id)).scalars())
-            stale = (
-                session.execute(select(SeenJob).where(SeenJob.last_seen_at < threshold))
-                .scalars()
-                .all()
+            result = session.execute(
+                delete(SeenJob).where(
+                    SeenJob.last_seen_at < threshold,
+                    (SeenJob.job_id.is_(None)) | (~SeenJob.job_id.in_(select(Job.id)))
+                )
             )
-            removed = 0
-            for record in stale:
-                if record.job_id and record.job_id in known_ids:
-                    continue
-                session.delete(record)
-                removed += 1
             session.commit()
-            return removed
+            return result.rowcount or 0
 
 
 
