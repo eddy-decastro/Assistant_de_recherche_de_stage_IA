@@ -45,3 +45,6 @@ lxml
 
 # --- Impersonation TLS (contourne le challenge Cloudflare de l'intranet JobTeaser) ---
 curl_cffi
+pytest
+google-genai
+pypdf

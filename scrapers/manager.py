@@ -28,6 +28,7 @@ from .models import (
     ScraperConfig,
     SeenEntry,
     Source,
+    canonical_url,
 )
 from .wttj import WelcomeToTheJungleScraper
 
@@ -68,14 +69,13 @@ class ScraperManager:
 
     @staticmethod
     def _normalize_url(url: str) -> str:
-        """URL d'affichage normalisée (minuscules, sans query/fragment ni slash final).
+        """URL normalisée pour la déduplication intra-run.
 
-        Distincte de ``models.canonical_url``, qui **retire le schéma** et sert
-        d'identité de déduplication : ici le schéma est conservé car le résultat est
-        comparé à des URLs utilisateur.
+        Alignée sur ``models.canonical_url`` (sans schéma, sans ``www.``, sans
+        query/fragment ni slash final) pour éviter que ``http://`` et ``https://``
+        soient traitées comme des URLs distinctes lors du merge.
         """
-        cleaned = (url or "").strip().casefold()
-        return cleaned.split("?")[0].split("#")[0].rstrip("/")
+        return canonical_url(url)
 
     @staticmethod
     def _merge_seen(entries: Sequence[SeenEntry]) -> list[SeenEntry]:
@@ -120,6 +120,12 @@ class ScraperManager:
             scraper = scraper_cls(self.config)
             try:
                 result = scraper.run(self.known_index, modes=modes)
+            except Exception:  # noqa: BLE001 — un scraper en erreur ne doit pas tuer le run
+                logger.exception(
+                    "Source %s : erreur inattendue — les sources suivantes seront quand même exécutées.",
+                    source,
+                )
+                continue
             finally:
                 scraper.close()
 

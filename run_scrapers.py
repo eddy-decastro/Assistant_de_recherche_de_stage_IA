@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -82,6 +83,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rescore-all",
         action="store_true",
         help="Recalcule le score Bi-Encoder de TOUTES les offres en base.",
+    )
+    parser.add_argument(
+        "--no-scoring",
+        action="store_true",
+        help="Désactive le calcul du score (inactif par défaut, conservé pour compatibilité).",
     )
     parser.add_argument(
         "--no-collect",
@@ -140,13 +146,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Restreint la collecte à une source (linkedin, jobteaser, wttj) — diagnostic.",
     )
     parser.add_argument(
+        "--queries",
+        type=str,
+        default=None,
+        help="Requêtes de recherche cibles séparées par des virgules ou points-virgules",
+    )
+    parser.add_argument(
+        "--max-offers",
+        type=int,
+        default=None,
+        help="Plafond d'offres par source pour ce run",
+    )
+    parser.add_argument(
+        "--sources",
+        type=str,
+        default=None,
+        help="Sources activées séparées par des virgules (ex: linkedin,jobteaser)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Nombre d'appels LLM simultanés pour le reranking (défaut : llm.concurrency ou 5).",
+    )
+    parser.add_argument(
         "--top-telemetry",
         type=int,
         default=0,
         metavar="N",
         help="Affiche les N dernières passes tracées en base (raisons d'arrêt).",
     )
+    parser.add_argument(
+        "--backfill-missing",
+        action="store_true",
+        help="Enrichit automatiquement les descriptions manquantes des candidats avant le reranking LLM.",
+    )
     return parser.parse_args(argv)
+
+
+_parse_args = parse_args
 
 
 def _sort_key(job: RawJob) -> float:
@@ -242,7 +281,13 @@ def _score_jobs(db: Database, jobs: list[dict[str, Any]], scorer: Any) -> int:
     return len(jobs)
 
 
-def _rerank_top(db: Database, config: dict[str, Any], top_n: int | None = None) -> int:
+def _rerank_top(
+    db: Database,
+    config: ScraperConfig | dict[str, Any],
+    top_n: int | None,
+    concurrency: int | None = None,
+    backfill_missing: bool = False,
+) -> int:
     """Étape 2 : évalue le Top-N des offres non analysées avec le juge LLM.
 
     Retourne le nombre d'offres analysées (0 si la clé API est absente : l'étape
@@ -257,49 +302,174 @@ def _rerank_top(db: Database, config: dict[str, Any], top_n: int | None = None) 
     judge = LLMJudge(config)
     if not judge.available:
         logger.warning(
-            "Reranking ignoré : DEEPSEEK_API_KEY absente (.env). "
-            "Copiez .env.example en .env puis renseignez votre clé DeepSeek."
+            "Reranking ignoré : GEMINI_API_KEY absente (.env). "
+            "Renseignez votre clé Gemini dans le fichier .env."
         )
         return 0
 
     limit = top_n or int(config.get("ranking", {}).get("top_n_rerank", 20))
     candidates = db.get_unranked_jobs(limit=limit)
     if not candidates:
-        logger.info("Reranking : aucune offre non analysée (Top déjà évalué).")
+        logger.info("Reranking : aucune offre non analysée (toutes les offres actives sont déjà évaluées).")
         return 0
+
+    if backfill_missing:
+        missing = [c for c in candidates if not (c.get("description") or "").strip()]
+        if missing:
+            logger.info(" Enrichissement préalable : récupération des descriptions de %d offre(s)...", len(missing))
+            try:
+                from backfill_descriptions import DescriptionBackfill
+                backfiller = DescriptionBackfill(dict(config) if isinstance(config, ScraperConfig) else config, db)
+                for c in missing:
+                    source = str(c.get("source") or "")
+                    scraper = backfiller.scrapers.get(source)
+                    if scraper and hasattr(scraper, "fetch_description"):
+                        target = str(c.get("id_externe") or c.get("url") or "")
+                        try:
+                            desc = scraper.fetch_description(target, cache=backfiller.cache)
+                            if desc:
+                                db.update_description(c["id"], desc)
+                                c["description"] = desc
+                        except Exception as exc:
+                            logger.debug("Échec enrichissement pour %s : %s", c["id"], exc)
+            except Exception as exc:
+                logger.warning("Erreur lors de l'enrichissement préalable : %s", exc)
 
     cv_path = Path(config.get("scoring", {}).get("cv_path", "data/cv_eddy.txt"))
     cv_text = cv_path.read_text(encoding="utf-8") if cv_path.exists() else ""
 
-    for index, job in enumerate(candidates, start=1):
-        result = judge.judge(job, cv_text=cv_text)
-        db.update_rerank(
-            job["id"],
-            result["rerank_score"],
-            result["verdict"],
-            result["match_reasons"],
-            result["red_flags"],
-            result["tech_stack"],
-            sub_scores=result["sub_scores"],
-            hard_cap_triggered=result["hard_cap_triggered"],
-            reasoning=result.get("reasoning", ""),
-        )
-        cap_note = (
-            f" [verrou: {result['hard_cap_triggered']}]"
-            if result.get("hard_cap_triggered")
-            else ""
-        )
+    llm_cfg = config.get("llm", {}) if isinstance(config, dict) else getattr(config, "llm", {})
+    tier = str(llm_cfg.get("tier", "free")).casefold()
+    rpm = int(getattr(judge, "rpm", 14))
+    default_concurrency = 1 if tier == "free" else 5
+    workers = max(1, concurrency or int(llm_cfg.get("concurrency", default_concurrency)))
+    evaluated_count = 0
+
+    tier_label = f"Free Tier ({rpm} req/min max)" if tier == "free" else f"Paid Tier ({rpm} req/min)"
+    logger.info(" Cadence Gemini : %s | %d worker(s)", tier_label, workers)
+
+    if workers > 1 and len(candidates) > 1:
+        import concurrent.futures
+
         logger.info(
-            "  %d/%d [%3d] %-10s %s%s",
-            index,
+            " Reranking LLM parallélisé : %d workers pour %d offre(s) à évaluer",
+            workers,
             len(candidates),
-            result["rerank_score"],
-            result["verdict"],
-            (job.get("title") or "")[:50],
-            cap_note,
         )
-    logger.info("Reranking LLM : %d offre(s) analysée(s).", len(candidates))
-    return len(candidates)
+
+        def _eval_job(candidate: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            return candidate, judge.judge(candidate, cv_text=cv_text)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_job = {executor.submit(_eval_job, j): j for j in candidates}
+            consecutive_errs = 0
+            for index, future in enumerate(concurrent.futures.as_completed(future_to_job), start=1):
+                job, result = future.result()
+                if result.get("api_error") or result.get("rerank_score") is None:
+                    err_msg = (result.get("red_flags") or ["Erreur API Gemini"])[0]
+                    logger.warning(
+                        "  %d/%d [ERR] Échec LLM pour %s : %s",
+                        index,
+                        len(candidates),
+                        (job.get("title") or "")[:40],
+                        err_msg,
+                    )
+                    consecutive_errs += 1
+                    if consecutive_errs >= 3 and ("quota" in err_msg.lower() or "429" in err_msg):
+                        logger.error(
+                            "🛑 Interruption du reranking : le quota de l'API Gemini est épuisé (3 échecs consécutifs). "
+                            "Les offres restantes sont conservées intactes en base."
+                        )
+                        break
+                    continue
+                consecutive_errs = 0
+
+                db.update_rerank(
+                    job["id"],
+                    result["rerank_score"],
+                    result["verdict"],
+                    result["match_reasons"],
+                    result["red_flags"],
+                    result["tech_stack"],
+                    sub_scores=result["sub_scores"],
+                    hard_cap_triggered=result["hard_cap_triggered"],
+                    reasoning=result.get("reasoning", ""),
+                )
+                evaluated_count += 1
+                cap_note = (
+                    f" [verrou: {result['hard_cap_triggered']}]"
+                    if result.get("hard_cap_triggered")
+                    else ""
+                )
+                remaining = len(candidates) - index
+                eta_sec = int(remaining * (60.0 / max(1, rpm)))
+                eta_str = f" [restant: ~{eta_sec // 60}m{eta_sec % 60:02d}s]" if eta_sec >= 15 else ""
+                logger.info(
+                    "  %d/%d [%3d] %-10s %s%s%s",
+                    index,
+                    len(candidates),
+                    int(result["rerank_score"]),
+                    result["verdict"],
+                    (job.get("title") or "")[:50],
+                    cap_note,
+                    eta_str,
+                )
+    else:
+        consecutive_api_errors = 0
+        for index, job in enumerate(candidates, start=1):
+            result = judge.judge(job, cv_text=cv_text)
+            if result.get("api_error") or result.get("rerank_score") is None:
+                err_msg = (result.get("red_flags") or ["Erreur API Gemini"])[0]
+                logger.warning(
+                    "  %d/%d [ERR] Échec LLM pour %s : %s",
+                    index,
+                    len(candidates),
+                    (job.get("title") or "")[:40],
+                    err_msg,
+                )
+                consecutive_api_errors += 1
+                if consecutive_api_errors >= 3 and ("quota" in err_msg.lower() or "429" in err_msg):
+                    logger.error(
+                        "🛑 Interruption du reranking : le quota de l'API Gemini est épuisé (3 échecs consécutifs). "
+                        "Les offres restantes sont conservées intactes en base pour la prochaine session."
+                    )
+                    break
+                continue
+
+            consecutive_api_errors = 0
+
+            db.update_rerank(
+                job["id"],
+                result["rerank_score"],
+                result["verdict"],
+                result["match_reasons"],
+                result["red_flags"],
+                result["tech_stack"],
+                sub_scores=result["sub_scores"],
+                hard_cap_triggered=result["hard_cap_triggered"],
+                reasoning=result.get("reasoning", ""),
+            )
+            evaluated_count += 1
+            cap_note = (
+                f" [verrou: {result['hard_cap_triggered']}]"
+                if result.get("hard_cap_triggered")
+                else ""
+            )
+            remaining = len(candidates) - index
+            eta_sec = int(remaining * (60.0 / max(1, rpm)))
+            eta_str = f" [restant: ~{eta_sec // 60}m{eta_sec % 60:02d}s]" if eta_sec >= 15 else ""
+            logger.info(
+                "  %d/%d [%3d] %-10s %s%s%s",
+                index,
+                len(candidates),
+                int(result["rerank_score"]),
+                result["verdict"],
+                (job.get("title") or "")[:50],
+                cap_note,
+                eta_str,
+            )
+    logger.info("Reranking LLM : %d offre(s) analysée(s) avec succès.", evaluated_count)
+    return evaluated_count
 
 
 def _selected_sources(config: ScraperConfig, only_source: str | None) -> None:
@@ -427,6 +597,12 @@ def main(argv: list[str] | None = None) -> None:
     # 1. Collecte hybride (fraîcheur puis rattrapage) via le manager unifié.
     #    Paramètres lus dans config.yaml → 'scrapers' (passes, quotas, fenêtres).
     scraper_config = ScraperConfig.from_config(config)
+    if args.queries:
+        scraper_config.target_queries = [q.strip() for q in re.split(r'[,;]', args.queries) if q.strip()]
+    if args.max_offers is not None:
+        scraper_config.max_offers_per_source = args.max_offers
+    if args.sources:
+        scraper_config.enabled_sources = [s.strip() for s in args.sources.split(',') if s.strip()]
     _selected_sources(scraper_config, args.only_source)
     modes = _parse_passes(args.passes) or scraper_config.enabled_modes()
     telemetry = scraper_config.telemetry
@@ -524,20 +700,9 @@ def main(argv: list[str] | None = None) -> None:
     for source, count in db.get_source_counts():
         logger.info("   - %-14s : %d", source or "(sans source)", count)
 
-    # 6. Étape 1 du ranking : scoring Bi-Encoder.
+    # 6. Étape 1 du ranking : scoring Bi-Encoder (Désactivé au profit de l'étape LLM 100%)
     if args.trigger_scoring or args.rescore_all:
-        scorer = _load_scorer(config)
-        if scorer is not None:
-            if args.rescore_all:
-                targets = db.get_jobs()  # toutes les offres (y compris l'historique)
-                logger.info(" Scoring Bi-Encoder (global) sur %d offre(s)…", len(targets))
-            else:
-                targets = [raw_job_to_dict(job) for job in new_jobs]
-                logger.info(" Scoring Bi-Encoder sur %d nouvelle(s) offre(s)…", len(targets))
-            if targets:
-                logger.info(" Offres scorées               : %d", _score_jobs(db, targets, scorer))
-            else:
-                logger.info(" Scoring : aucune offre à évaluer.")
+        logger.info(" Scoring Bi-Encoder (global) ignoré : le système est désormais 100% LLM.")
 
     # 7. Étape 2 du ranking : reranking LLM du Top-N non encore analysé.
     if args.reset_rerank:
@@ -546,8 +711,19 @@ def main(argv: list[str] | None = None) -> None:
             " Ré-évaluation forcée         : %d analyse(s) LLM remise(s) à zéro",
             len(reset_ids),
         )
+    rerank_count = 0
     if args.trigger_rerank:
-        logger.info(" Reranking LLM                : %d offre(s)", _rerank_top(db, config, args.top_rerank))
+        rerank_count = _rerank_top(
+            db,
+            config,
+            args.top_rerank,
+            concurrency=args.concurrency,
+            backfill_missing=args.backfill_missing,
+        )
+        logger.info(
+            " Reranking LLM                : %d offre(s)",
+            rerank_count,
+        )
 
     # 8. Top opportunités (offres fraîchement collectées).
     if result.jobs:
@@ -569,19 +745,23 @@ def main(argv: list[str] | None = None) -> None:
             logger.warning("Aucune offre valide collectée.")
 
     # 9. Top opportunités globales (base complète, tri par score effectif).
-    ranked = db.get_jobs(limit=5)
-    if ranked:
+    if result.jobs or rerank_count > 0:
+        ranked = db.get_jobs(limit=5)
+        if ranked:
+            logger.info("")
+            logger.info(" Top 5 en base (score effectif) :")
+            for rank, job in enumerate(ranked, start=1):
+                score = job["rerank_score"] if job["rerank_score"] is not None else job["final_score"]
+                logger.info(
+                    "   %d. [%5.1f] %-45s %s",
+                    rank,
+                    score,
+                    (job["title"] or "")[:45],
+                    job.get("source") or "",
+                )
+    elif args.no_collect:
         logger.info("")
-        logger.info(" Top 5 en base (score effectif) :")
-        for rank, job in enumerate(ranked, start=1):
-            score = job["rerank_score"] if job["rerank_score"] is not None else job["final_score"]
-            logger.info(
-                "   %d. [%5.1f] %-45s %s",
-                rank,
-                score,
-                (job["title"] or "")[:45],
-                job.get("source") or "",
-            )
+        logger.info(" Aucune nouvelle offre notée (base inchangée).")
 
     db.engine.dispose()
 

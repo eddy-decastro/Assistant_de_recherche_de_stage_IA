@@ -46,10 +46,27 @@ class DiskCache:
         return None
 
     def set(self, namespace: str, key: str, value: str) -> Path:
-        """Écrit une entrée de cache et retourne le chemin créé."""
+        """Écrit une entrée de cache et retourne le chemin créé.
+
+        L'écriture est atomique (fichier temporaire + rename) pour éviter la
+        corruption en cas d'accès concurrent ou de crash.
+        """
+        import os
+        import tempfile
+
         path = self.path_for(namespace, key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(value, encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(value)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return path
 
     def count(self, namespace: str | None = None) -> int:

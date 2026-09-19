@@ -1,266 +1,279 @@
-# ============================================================
-# stage_copilot — Configuration centrale
-# Tous les filtres "durs", listes d'entreprises et coefficients
-# de scoring sont définis ici.
-# ============================================================
-
-# ⚠️ HISTORIQUE : section non lue par le code (décrit l'ancienne API WTTJ v1,
-# retirée par l'éditeur fin 2024). La collecte est pilotée par `scrapers:` ci-dessous.
-scraping:
-  source: "welcome_to_the_jungle"
-  base_url: "https://www.welcometothejungle.com"
-  api_base: "https://api.welcometothejungle.com/api/v1"
-
-  # Mots-clés de recherche
-  search_keywords:
-    - "Data Science"
-    - "Machine Learning"
-    - "Data Engineer"
-
-  # Filtres "durs" : type de contrat et localisation
-  contract_filter: "internship"
-  location_filters:
-    - "Paris"
-    - "Île-de-France"
-
-  max_offers: 150
-  request_timeout_seconds: 30
-
-# ============================================================
-# Collecte : paramètres RÉELLEMENT lus par les scrapers
-# (ScraperConfig / scrapers/models.py — plus de valeurs codées en dur)
-# ============================================================
 scrapers:
-  # Sources activées. wttj : retiré car injoignable dans cet environnement
-  # (DNS `v3splegsrc-dsn.algolia.net`) — le scraper reste implémenté et aligné sur
-  # la collecte hybride, il suffit de le remettre ici pour le réactiver.
-  # jobteaser : inactif tant que .env ne contient pas JOBTEASER_COOKIES.
   enabled_sources:
-    - "linkedin"
-    - "jobteaser"
-
-  # Requêtes cibles envoyées aux plateformes. Les moteurs indexent la requête
-  # telle quelle : conserver le préfixe « Stage » pour ne remonter que des stages.
+  - linkedin
+  - jobteaser
   target_queries:
-    - "Stage Data Scientist"
-    - "Stage Machine Learning"
-    - "Stage Recherche IA"
-
-  # Plafond GLOBAL (union des deux passes) pour une source. Il est appliqué
-  # pendant les passes : dès qu'il est atteint, les requêtes suivantes ne sont
-  # plus lancées. Borne la charge réseau et le risque de 429.
-  #
-  # Valeur alignée sur les objectifs réels : 40 nouvelles en Fraîcheur, puis
-  # 10 plus pertinentes en Rattrapage ⇒ 50 au total, sous ce plafond de 60. La
-  # part du Rattrapage est RÉSERVÉE : la passe Fraîcheur ne peut pas la consommer
-  # (sinon « les 10 plus pertinentes » seraient affamées par une Fraîcheur
-  # généreuse, sans trace dans la télémétrie).
-  max_offers_per_source: 60
-  # DÉPRÉCIÉ (conservé pour les configurations antérieures) : quota « à plat »,
-  # utilisé uniquement si la section `passes` ci-dessous est absente.
-  # max_offers_per_query: 40
-
+  - Stage Data Scientist
+  - Stage Machine Learning
+  - Stage Recherche IA
+  max_offers_per_source: 200
   request_timeout_seconds: 30
-
-  # ------------------------------------------------------------
-  # Stratégie de collecte hybride : deux passes complémentaires par requête
-  # ------------------------------------------------------------
-  # À CHAQUE BOUCLE, pour chaque source :
-  #   1. « Fraîcheur »  : les 40 dernières offres — tri par date, filtre temporel
-  #                       serveur (LinkedIn : f_TPR) et ARRÊT ANTICIPÉ dès que
-  #                       10 offres déjà vues s'enchaînent (le flux a rejoint ce
-  #                       qui est déjà en base : on arrête de chercher) ;
-  #   2. « Rattrapage » : les 10 plus pertinentes — classement algorithmique de la
-  #                       plateforme, SANS fenêtre temporelle et SANS arrêt
-  #                       anticipé, pour ne pas manquer les offres toujours
-  #                       actives publiées il y a plus d'un mois.
-  # Chaque objectif (target_new_per_source) est fixé à la SOURCE, toutes requêtes
-  # confondues : atteint, il interrompt la passe et les requêtes restantes sont
-  # consignées en télémétrie (jamais d'arrêt silencieux).
-  # La déclaration est EXPLICITE : un mode absent de cette section n'est pas
-  # exécuté. Une offre collectée en « Fraîcheur » n'est jamais recomptée en
-  # « Rattrapage » (déduplication transverse).
   passes:
     freshness:
       enabled: true
-      sort: "date"
-      # Objectif de NOUVELLES offres pour la source : « les 40 dernières ».
-      target_new_per_source: 40
-      # Soupape par requête, en deçà de l'objectif de source.
-      max_offers_per_query: 40
-      # Fenêtre temporelle : 1 = 24 h, 7 = une semaine, null = aucune limite.
+      sort: date
+      target_new_per_source: 150
+      max_offers_per_query: 150
       window_days: 7
-      # Arrêt anticipé : 10 offres DÉJÀ VUES consécutives ⇒ on a déjà tout vu.
-      # Le compteur est remis à zéro par toute carte inédite et il traverse les
-      # pages ; il additionne « déjà en base » et « déjà croisée dans ce run ».
-      #
-      # ⚠️ ARRÊT ARMÉ MALGRÉ UN ORDRE NON CHRONOLOGIQUE. LinkedIn n'honore pas son
-      # tri par date (7 inversions mesurées sur 2 pages, cf. tools/probe_sources.py).
-      # Cette règle se prononce néanmoins sur une SÉRIE de 10 cartes, insensible aux
-      # inversions locales : elle est donc fiable là où l'arrêt sur fenêtre (UNE
-      # carte) ne l'est pas — ce dernier reste, lui, désarmé ci-dessous.
       early_stop_after_known: 10
       arm_early_stop: true
-      # Pages minimales avant d'autoriser l'arrêt anticipé. Une page fait 10 cartes :
-      # sans cette garde, « 10 déjà vues » serait équivalent à la détection de
-      # pagination stagnante ; avec elle, l'arrêt tombe dès la 2e page et évite les
-      # 10 pages suivantes d'un flux déjà parcouru.
       early_stop_min_pages: 2
-      # Plafond de pages par requête : borne la charge réseau. Mesuré en réel : à
-      # 6 pages, la requête « Stage Data Scientist » s'arrête sur `max_pages`
-      # (17 offres retenues) ⇒ plafond relevé à 12 pages (120 cartes), la fenêtre
-      # de 7 jours restant naturellement bornée.
-      max_pages_per_query: 12
-      # Arrêter la passe sur la première offre antérieure à la fenêtre (utile
-      # uniquement si l'ordre du flux est chronologique — désarmé sur LinkedIn).
+      max_pages_per_query: 20
       stop_when_older_than_window: true
-      # Demander le filtrage temporel à la plateforme quand elle le permet
-      # (LinkedIn : f_TPR=r<secondes>).
       use_server_window_filter: true
-      # Réglage expert : forcer la confiance dans l'ordre renvoyé par la source
-      # (pilote l'arrêt sur fenêtre, PAS l'arrêt sur série de connues).
       trust_source_order: false
-
     relevance:
       enabled: true
-      sort: "relevance"
-      # Objectif de NOUVELLES offres pour la source : « les 10 plus pertinentes ».
-      target_new_per_source: 10
-      max_offers_per_query: 20
+      sort: relevance
+      target_new_per_source: 50
+      max_offers_per_query: 50
       window_days: null
-      # Jamais d'arrêt anticipé : ce classement n'est pas temporel, et c'est lui le
-      # filet de sécurité de ce que l'arrêt anticipé de la Fraîcheur aurait sauté.
       early_stop_after_known: 0
-      max_pages_per_query: 12
+      max_pages_per_query: 20
       stop_when_older_than_window: false
       use_server_window_filter: false
-
-  # ------------------------------------------------------------
-  # Observabilité : télémétrie des passes + mémoire de collecte
-  # ------------------------------------------------------------
   telemetry:
     enabled: true
-    # Rétention des runs et des passes tracés (jours).
     retention_days: 180
-    # Élaguer aussi la mémoire de collecte (offres vues mais jamais retenues).
     prune_seen_jobs: true
-
-  # Les listes de mots-clés (exclusion BI / signaux DS-ML) restent aux valeurs du
-  # code ; décommenter pour les surcharger depuis le YAML :
-  # exclusion_keywords: ["power bi", "tableau", "qlik", "vba", "data analyst"]
-  # positive_ds_ml_keywords: ["data scientist", "machine learning", "pytorch", "llm"]
-
+  exclusion_keywords:
+  - power bi
+  - tableau
+  - qlik
+  - vba
+  - excel reporting
+  - data analyst
+  - business intelligence
+  - bi analyst
+  - chargé de reporting
+  - stage bi
+  - juriste
+  - avocat
+  - droit social
+  - droit des affaires
+  - ressources humaines
+  - chef de projet rh
+  - chargé de communication
+  - stage marketing
+  - business developer
+  - commercial b2b
+  - ingénieur commercial
+  - assistant commercial
+  - support it
+  - technicien support
+  - helpdesk
+  - community manager
+  positive_ds_ml_keywords:
+  - data scientist
+  - data science
+  - machine learning
+  - deep learning
+  - ml engineer
+  - mlops
+  - ml ops
+  - intelligence artificielle
+  - artificial intelligence
+  - ia
+  - ai
+  - genai
+  - generative ai
+  - ia générative
+  - reinforcement learning
+  - apprentissage par renforcement
+  - nlp
+  - computer vision
+  - vision par ordinateur
+  - pytorch
+  - tensorflow
+  - scikit-learn
+  - neural network
+  - réseau de neurones
+  - llm
+  - rag
+  - vlm
+  - recherche
+  - research
+  - r&d
+  - r & d
+  - data engineer
+  - data engineering
+  - moteur de recommandation
+  - agentique
+  - agentic
+  - agents ia
+  - statistiques
+  - statistique
+  - optimisation
+  - recherche opérationnelle
+  - modélisation
+  - modèle
+  - modèles
+  - traitement du signal
+  - traitement d'image
+  - traitement d'images
+  - vision artificielle
+  - deep tech
+  - robotics
+  - analyse de données
+  - biostatistique
+  - biostatistics
+  - quantitative
+  - ds
+  - séries temporelles
+  - reconstruction 3d
+  - vision 3d
+  - imagerie médicale
+  - biomédical
+  - diffusion
+  - fine-tuning
+  - finetuning
+  - foundation models
+  - nerf
+  - gaussian splatting
 scoring:
-  # Modèle d'embedding. Mesures sur la base réelle (68 fiches, verdicts du juge LLM
-  # comme vérité terrain) : all-MiniLM-L6-v2 corrèle faiblement mais POSITIVEMENT au
-  # classement du juge (rho +0,09 à n=30), tandis que
-  # paraphrase-multilingual-MiniLM-L12-v2 (FR/EN) est franchement CONTRE-productif
-  # (rho -0,59) : le vocabulaire discriminant du corpus est technique et anglophone
-  # (PyTorch, GNN, RAG, MLOps). Décision : conserver le modèle anglais.
-  model_name: "all-MiniLM-L6-v2"
-  # Fenêtre de contexte en tokens (None = fenêtre native du modèle). À n=30, l'écart
-  # 128 / 256 tokens (rho +0,01 contre +0,09) est DANS LE BRUIT (erreur type ~0,19) :
-  # la fenêtre native est conservée, le levier est pilotable mais sans gain démontré.
+  model_name: all-MiniLM-L6-v2
   max_seq_length: 256
-  cv_path: "data/cv_eddy.txt"
-
-  # Pondération du score final (la somme doit faire 1.0)
+  cv_path: data/cv_eddy.txt
   weights:
-    semantic: 0.60    # similarité sémantique CV vs offre
-    company: 0.25     # typologie d'entreprise
-    keywords: 0.15    # mots-clés d'excellence
-
-  # Mots-clés "d'excellence" valorisés dans les offres
+    semantic: 0.6
+    company: 0.25
+    keywords: 0.15
+  hard_caps:
+  - keywords:
+    - alternance
+    - contrat pro
+    - apprentissage
+    - durée
+    - 5 mois
+    - césure
+    - cesure
+    - cursus
+    max_score: 15
+  - keywords:
+    - reporting
+    - dashboard
+    - dashboards
+    - power bi
+    - qlik
+    - business intelligence
+    - analyst
+    - support
+    - excel
+    - tableau
+    max_score: 20
+  - keywords:
+    - superficiel
+    - superficielle
+    - prompt engineering
+    - wrapper
+    - langchain
+    - sans modélisation
+    - sans modelisation
+    - automatisation
+    max_score: 40
+  keywords_saturation: 5
+  tier_company_score:
+    tier_1: 100.0
+    neutral: 60.0
+    esn: 20.0
+  ui:
+    max_tech_chips: 6
+    qualified_score: 65.0
+    excerpt_length: 280
   excellence_keywords:
-    - "PyTorch"
-    - "TensorFlow"
-    - "GNN"
-    - "Graph Neural Network"
-    - "Docker"
-    - "Kubernetes"
-    - "Airflow"
-    - "MLflow"
-    - "Spark"
-    - "dbt"
-    - "Hugging Face"
-    - "LLM"
-    - "RAG"
-    - "NLP"
-    - "Computer Vision"
-    - "scikit-learn"
-    - "SQL"
-    - "PostgreSQL"
-    - "MLOps"
-
+  - PyTorch
+  - TensorFlow
+  - GNN
+  - Graph Neural Network
+  - Docker
+  - Kubernetes
+  - Airflow
+  - MLflow
+  - Spark
+  - dbt
+  - Hugging Face
+  - LLM
+  - RAG
+  - NLP
+  - Computer Vision
+  - scikit-learn
+  - SQL
+  - PostgreSQL
+  - MLOps
 companies:
-  # Scale-ups / Labs de recherche — bonus (tier 1)
   tier_1:
-    - "Doctolib"
-    - "Mistral AI"
-    - "Mistral"
-    - "Datadog"
-    - "Hugging Face"
-    - "Alan"
-    - "Qonto"
-    - "Back Market"
-    - "Dataiku"
-    - "BlaBlaCar"
-    - "Veepee"
-    - "PayFit"
-    - "Ledger"
-    - "Swan"
-    - "Dust"
-    - "Poolside"
-    - "LightOn"
-    - "Photoroom"
-    - "DeepMind"
-    - "Google DeepMind"
-    - "OpenAI"
-    - "Anthropic"
-    - "Cohere"
-    - "Meta AI"
-    - "Inria"
-    - "CEA"
-    - "Institut Curie"
-    - "Institut Pasteur"
-
-  # ESN / SSII — pénalisées
+  - Doctolib
+  - Mistral AI
+  - Mistral
+  - Datadog
+  - Hugging Face
+  - Alan
+  - Qonto
+  - Back Market
+  - Dataiku
+  - BlaBlaCar
+  - Veepee
+  - PayFit
+  - Ledger
+  - Swan
+  - Dust
+  - Poolside
+  - LightOn
+  - Photoroom
+  - DeepMind
+  - Google DeepMind
+  - OpenAI
+  - Anthropic
+  - Cohere
+  - Meta AI
+  - FAIR
+  - Kyutai
+  - Owkin
+  - Bioptimus
+  - Therapanacea
+  - Guerbet
+  - Inria
+  - CEA
+  - CNRS
+  - Inserm
+  - Institut Curie
+  - Institut Pasteur
+  - IRT SystemX
+  - Valeo.ai
+  - Safran Tech
+  - Thales Research & Technology
+  - EDF R&D
+  - TotalEnergies OneTech
   esn:
-    - "Alten"
-    - "Capgemini"
-    - "Sopra Steria"
-    - "Accenture"
-    - "Atos"
-    - "Devoteam"
-    - "Sogeti"
-    - "Apside"
-    - "Astek"
-    - "Amaris"
-    - "Inetum"
-    - "Orange Business"
-    - "CGI"
-    - "NTT Data"
-    - "SQLI"
-    - "Extia"
-    - "Aubay"
-    - "Modis"
-    - "Capgemini Engineering"
-
+  - Alten
+  - Capgemini
+  - Sopra Steria
+  - Accenture
+  - Atos
+  - Devoteam
+  - Sogeti
+  - Apside
+  - Astek
+  - Amaris
+  - Inetum
+  - Orange Business
+  - CGI
+  - NTT Data
+  - SQLI
+  - Extia
+  - Aubay
+  - Modis
+  - Capgemini Engineering
 database:
-  path: "data/stage_copilot.db"
-
-# ============================================================
-# Étape 2 : reranking de haute précision (LLM-as-a-Judge)
-# ============================================================
+  path: data/stage_copilot.db
 ranking:
-  # Nombre d'offres (meilleures au scoring étape 1) envoyées au juge LLM.
   top_n_rerank: 20
-
 llm:
-  provider: "deepseek"
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-chat"
+  provider: google
+  base_url: ''
+  model: gemini-flash-lite-latest
   temperature: 0.0
   timeout_seconds: 60
-  # La clé API est lue depuis le fichier .env (variable DEEPSEEK_API_KEY).
-  # Jamais de secret en clair dans ce fichier versionné.
+  tier: free
+  rate_limit_rpm: 14
+  concurrency: 1

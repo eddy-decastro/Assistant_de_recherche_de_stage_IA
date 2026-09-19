@@ -189,6 +189,34 @@ def test_passe_pertinence_sans_arret_anticipe() -> None:
     print("  passe pertinence : aucun arrêt anticipé, quota atteint OK")
 
 
+def test_passe_pertinence_page_toutes_connues_continue_pagination() -> None:
+    """La passe pertinence franchit une page 100% connue et poursuit en page 2.
+
+    Contrairement à la passe fraîcheur qui s'arrête sur duplicate_page si une
+    page ne contient aucune carte inédite, la passe pertinence doit ignorer la page
+    statistiquement doublonnée (ex: page 1 LinkedIn) et paginer jusqu'à trouver
+    des offres inédites en page 2.
+    """
+    config = _config("relevance", max_offers_per_query=2, window_days=None)
+    known = InMemoryKnownIndex(pairs={("linkedin", f"k{i}") for i in range(1, 6)})
+    # Page 1 : 100 % d'offres connues (k1, k2, k3)
+    # Page 2 : contient 2 nouvelles offres inédites (new1, new2)
+    scraper = _ScriptedScraper(
+        config,
+        pages=[["k1", "k2", "k3"], ["k4", "new1", "new2"]],
+    )
+    result = scraper.run(known)
+    report = result.query_reports[0]
+
+    assert report.stop_reason == "quota", report.stop_reason
+    assert report.jobs_kept == 2, report.jobs_kept
+    assert report.jobs_known == 4, report.jobs_known
+    assert report.pages_fetched == 2, report.pages_fetched
+    assert [job.id_externe for job in result.jobs] == ["new1", "new2"], result.jobs
+    scraper.close()
+    print("  passe pertinence : franchissement des pages 100% connues OK")
+
+
 def test_deduplication_transverse_entre_passes() -> None:
     """Une offre retenue en Fraîcheur n'est ni recomptée ni reprise en Pertinence."""
     config = ScraperConfig(
@@ -575,6 +603,7 @@ def main() -> None:
     test_arret_anticipe_apres_n_consecutives()
     test_serie_de_connues_interrompue()
     test_passe_pertinence_sans_arret_anticipe()
+    test_passe_pertinence_page_toutes_connues_continue_pagination()
     test_deduplication_transverse_entre_passes()
     test_fenetre_temporelle_et_arret()
     test_fenetre_sans_ordre_fiable()

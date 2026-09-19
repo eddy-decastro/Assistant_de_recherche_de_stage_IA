@@ -39,6 +39,22 @@ EXCLUSION_KEYWORDS: list[str] = [
     "bi analyst",
     "chargé de reporting",
     "stage bi",
+    "juriste",
+    "avocat",
+    "droit social",
+    "droit des affaires",
+    "ressources humaines",
+    "chef de projet rh",
+    "chargé de communication",
+    "stage marketing",
+    "business developer",
+    "commercial b2b",
+    "ingénieur commercial",
+    "assistant commercial",
+    "support it",
+    "technicien support",
+    "helpdesk",
+    "community manager",
 ]
 
 # Requêtes principales envoyées aux sources.
@@ -59,6 +75,13 @@ POSITIVE_DS_ML_KEYWORDS: list[str] = [
     "ml ops",
     "intelligence artificielle",
     "artificial intelligence",
+    "ia",
+    "ai",
+    "genai",
+    "generative ai",
+    "ia générative",
+    "reinforcement learning",
+    "apprentissage par renforcement",
     "nlp",
     "computer vision",
     "vision par ordinateur",
@@ -69,11 +92,38 @@ POSITIVE_DS_ML_KEYWORDS: list[str] = [
     "réseau de neurones",
     "llm",
     "rag",
+    "vlm",
     "recherche",
     "research",
     "r&d",
+    "r & d",
     "data engineer",
+    "data engineering",
     "moteur de recommandation",
+    "agentique",
+    "agentic",
+    "agents ia",
+    "statistiques",
+    "statistique",
+    "optimisation",
+    "recherche opérationnelle",
+    "modélisation",
+    "modèle",
+    "modèles",
+    "traitement du signal",
+    "traitement d'image",
+    "traitement d'images",
+    "vision artificielle",
+    "deep tech",
+    "robotics",
+    "analyse de données",
+    "biostatistique",
+    "biostatistics",
+    "quantitative",
+    "ds",
+    "séries temporelles",
+    "time series",
+    "reconstruction 3d",
 ]
 
 # User-Agent moderne partagé par tous les scrapers.
@@ -332,8 +382,9 @@ def default_passes() -> dict[str, PassConfig]:
     * **Rattrapage** : tri par pertinence, objectif de **10 nouvelles offres pour la
       source** (les 10 plus pertinentes), aucune fenêtre temporelle et **aucun** arrêt
       anticipé — le classement n'étant pas temporel, offres connues et inédites
-      s'entremêlent et seule la déduplication s'applique. C'est aussi le filet de
-      sécurité de ce que l'arrêt anticipé de la Fraîcheur aurait sauté.
+      s'entremêlent, la déduplication s'applique et l'arrêt `duplicate_page` est désactivé
+      (pour franchir les premières pages statiques et atteindre les offres inédites).
+      C'est aussi le filet de sécurité de ce que l'arrêt anticipé de la Fraîcheur aurait sauté.
     """
     return {
         PASS_FRESHNESS: PassConfig(

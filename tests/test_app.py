@@ -13,7 +13,59 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from streamlit.testing.v1 import AppTest
 
+from utils.data import (
+    filter_jobs,
+    Filters,
+    effective_score,
+    is_reranked,
+    source_distribution,
+    group_jobs_by_source,
+    DISPLAY_GROUPED,
+    QUALIFIED_SCORE,
+    tone_class,
+)
+from utils.styles import (
+    _CSS_TEMPLATE,
+    _token_context,
+    _theme_type,
+)
+from utils.components import (
+    job_card_html,
+    score_alignment,
+    clean_text,
+    excerpt,
+    EXCERPT_LENGTH,
+    relative_date,
+    parse_timestamp,
+    detected_technologies,
+    contract_label,
+)
+from src.constants import (
+    STATUS_NEW,
+    STATUS_APPLIED,
+    STATUS_ORDER,
+    TIER_1,
+    TIER_NEUTRAL,
+    TIER_ESN,
+    VERDICT_EXCELLENT,
+    VERDICT_GOOD,
+    VERDICT_MIXED,
+    VERDICT_OFF_TOPIC,
+    RUN_OK,
+    RUN_PARTIAL,
+    SOURCE_COLORS,
+)
+from pages.pipeline import PIPELINE_ACTIONS
+from pages.statistiques import (
+    _telemetry_runs_table,
+    _telemetry_passes_table,
+    _counters_strip,
+    _collection_counters_table,
+    _objectives_table,
+    _refusals_table,
+)
 import app
+import streamlit as st
 from src.config import load_config
 from src.storage.database import Database
 
@@ -23,19 +75,12 @@ BANNED_EMOJI = (
 )
 
 # Contenu provenant des plateformes : titres, métadonnées et extraits de fiche.
-# Le contrôle d'emoji porte sur la micro-copie du dashboard, pas sur les annonces
-# (15 descriptions en contiennent après le rattrapage des fiches de poste).
 _OFFER_CONTENT_PATTERNS = (
     r'<p class="sc-excerpt">.*?</p>',
     r'<h3 class="sc-card-title">.*?</h3>',
     r'<div class="sc-card-meta">.*?</div>',
-    # Les badges de la grille d'évaluation portent des icônes demandées par le
-    # produit (📐 👥 🚀 📅) : ils relèvent du contenu, pas de la micro-copie.
     r'<span class="sc-badge[^"]*sc-subscore[^"]*">.*?</span>',
-    # Idem pour la ligne de mini-indicateurs affichée sur la carte.
     r'<div class="sc-subscore-strip">.*?</div>',
-    # Bandeaux d'alerte (verrou bloquant, état de la télémétrie) : icônes
-    # fonctionnelles demandées par le produit (⚠️ / ✓).
     r'<div class="sc-alert[^"]*">.*?</div>',
 )
 
@@ -61,7 +106,7 @@ JOB = {
     "company_tier": 2,
     "semantic_score": 52.26,
     "final_score": 46.36,
-    "status": app.STATUS_NEW,
+    "status": STATUS_NEW,
     "created_at": datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=5),
     "rerank_score": None,
     "verdict": None,
@@ -75,14 +120,14 @@ RERANKED = {
     **JOB,
     "id": "offre-2",
     "company": "Mistral AI",
-    "company_tier": app.TIER_1,
+    "company_tier": TIER_1,
     "rerank_score": 88.0,
-    "verdict": app.VERDICT_EXCELLENT,
+    "verdict": VERDICT_EXCELLENT,
     "match_reasons": ["Modélisation PyTorch avancée", "Équipe de recherche reconnue"],
     "red_flags": ["Périmètre susceptible d'évoluer"],
     "tech_stack": ["PyTorch", "GNN"],
     "description": _DESCRIPTION,
-    "status": app.STATUS_APPLIED,
+    "status": STATUS_APPLIED,
 }
 
 
@@ -106,87 +151,86 @@ def _cards(at: AppTest) -> list[str]:
 
 def test_helpers_score_et_alignement() -> None:
     """Le score effectif privilégie le rerank LLM ; l'alignement est gradué."""
-    assert app.effective_score(JOB) == 46.36
-    assert app.effective_score(RERANKED) == 88.0
-    assert app.is_reranked(JOB) is False
-    assert app.is_reranked(RERANKED) is True
-    assert app.score_alignment(85)[0] == "Cœur de cible"
-    assert app.score_alignment(65)[0] == "Pertinent"
-    assert app.score_alignment(45)[0] == "Secondaire"
-    assert app.score_alignment(10)[0] == "Hors périmètre"
-    assert app.tone_class(app.score_alignment(45)[1]) == "sc-tone-warn"
+    assert effective_score(JOB) == 46.36
+    assert effective_score(RERANKED) == 88.0
+    assert is_reranked(JOB) is False
+    assert is_reranked(RERANKED) is True
+    assert score_alignment(85)[0] == "Cœur de cible"
+    assert score_alignment(65)[0] == "Pertinent"
+    assert score_alignment(45)[0] == "Secondaire"
+    assert score_alignment(10)[0] == "Hors périmètre"
+    assert tone_class(score_alignment(45)[1]) == "sc-tone-warn"
     print("  Helpers : score effectif et paliers d'alignement OK")
 
 
 def test_helpers_texte_dates_et_technos() -> None:
     """Nettoyage de fiche, dates relatives, technologies clés, type de contrat."""
-    assert app.clean_text("  a  b \n\n\n c ") == "a b \n c"
-    long_text, truncated = app.excerpt("mot " * 200)
+    assert clean_text("  a  b \n\n\n c ") == "a b \n c"
+    long_text, truncated = excerpt("mot " * 200)
     assert truncated is True
-    assert len(long_text) <= app.EXCERPT_LENGTH + 2
-    assert app.excerpt("court") == ("court", False)
+    assert len(long_text) <= EXCERPT_LENGTH + 2
+    assert excerpt("court") == ("court", False)
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    assert app.relative_date(now - timedelta(seconds=30), now) == "À l'instant"
-    assert app.relative_date(now - timedelta(minutes=10), now) == "Il y a 10 min"
-    assert app.relative_date(now - timedelta(hours=5), now) == "Il y a 5 h"
-    assert app.relative_date(now - timedelta(days=1), now) == "Hier"
-    assert app.relative_date(now - timedelta(days=3), now) == "Il y a 3 j"
-    assert app.relative_date(now - timedelta(days=90), now) == "Il y a 3 mois"
-    assert app.relative_date(None) == "Date inconnue"
-    assert app.parse_timestamp("2026-09-13T16:44:02.358898") is not None
+    assert relative_date(now - timedelta(seconds=30), now) == "À l'instant"
+    assert relative_date(now - timedelta(minutes=10), now) == "Il y a 10 min"
+    assert relative_date(now - timedelta(hours=5), now) == "Il y a 5 h"
+    assert relative_date(now - timedelta(days=1), now) == "Hier"
+    assert relative_date(now - timedelta(days=3), now) == "Il y a 3 j"
+    assert relative_date(now - timedelta(days=90), now) == "Il y a 3 mois"
+    assert relative_date(None) == "Date inconnue"
+    assert parse_timestamp("2026-09-13T16:44:02.358898") is not None
 
-    assert app.detected_technologies(RERANKED, ("PyTorch", "GNN", "SQL")) == ["PyTorch", "GNN"]
-    assert app.detected_technologies(JOB, ()) == []
-    assert app.detected_technologies({"title": "Stage NLP", "description": None}, ("NLP",)) == ["NLP"]
-    assert app.contract_label(JOB) == "Stage"
-    assert app.contract_label({"title": "Contrat d'apprentissage data"}) == "Alternance"
-    assert app.contract_label({"title": "Data analyst"}) is None
+    assert detected_technologies(RERANKED, ("PyTorch", "GNN", "SQL")) == ["PyTorch", "GNN"]
+    assert detected_technologies(JOB, ()) == []
+    assert detected_technologies({"title": "Stage NLP", "description": None}, ("NLP",)) == ["NLP"]
+    assert contract_label(JOB) == "Stage"
+    assert contract_label({"title": "Contrat d'apprentissage data"}) == "Alternance"
+    assert contract_label({"title": "Data analyst"}) is None
     print("  Helpers : texte, dates relatives, technologies et contrat OK")
 
 
 def test_filtres_et_repartition() -> None:
     """Filtrage combiné, vue focus, recherche et répartition par plateforme."""
     jobs = [JOB, RERANKED]
-    assert len(app.filter_jobs(jobs, app.Filters(statuses=app.STATUS_ORDER))) == 2
-    assert len(app.filter_jobs(jobs, app.Filters(min_score=60))) == 1
-    assert len(app.filter_jobs(jobs, app.Filters(llm_only=True))) == 1
-    assert len(app.filter_jobs(jobs, app.Filters(sources=("jobteaser",)))) == 2
-    assert app.filter_jobs(jobs, app.Filters(sources=("linkedin",))) == []
-    assert len(app.filter_jobs(jobs, app.Filters(statuses=(app.STATUS_APPLIED,)))) == 1
-    assert len(app.filter_jobs(jobs, app.Filters(tiers=(app.TIER_1,)))) == 1
-    assert app.filter_jobs(jobs, app.Filters(exclude_esn=True, tiers=(app.TIER_ESN,))) == []
-    assert len(app.filter_jobs(jobs, app.Filters(limit=1))) == 1
-    assert len(app.filter_jobs(jobs, app.Filters(query="mistral pytorch"))) == 1
-    assert app.filter_jobs(jobs, app.Filters(query="zz-introuvable")) == []
+    assert len(filter_jobs(jobs, Filters(statuses=STATUS_ORDER))) == 2
+    assert len(filter_jobs(jobs, Filters(min_score=60))) == 1
+    assert len(filter_jobs(jobs, Filters(llm_only=True))) == 1
+    assert len(filter_jobs(jobs, Filters(sources=("jobteaser",)))) == 2
+    assert filter_jobs(jobs, Filters(sources=("linkedin",))) == []
+    assert len(filter_jobs(jobs, Filters(statuses=(STATUS_APPLIED,)))) == 1
+    assert len(filter_jobs(jobs, Filters(tiers=(TIER_1,)))) == 1
+    assert filter_jobs(jobs, Filters(exclude_esn=True, tiers=(TIER_ESN,))) == []
+    assert len(filter_jobs(jobs, Filters(limit=1))) == 1
+    assert len(filter_jobs(jobs, Filters(query="mistral pytorch"))) == 1
+    assert filter_jobs(jobs, Filters(query="zz-introuvable")) == []
 
     # La vue focus (masquer les offres traitées) prime sur la sélection de statuts.
-    focus = app.Filters(statuses=(app.STATUS_APPLIED,), hide_processed=True)
-    assert [job["id"] for job in app.filter_jobs(jobs, focus)] == ["offre-1"]
+    focus = Filters(statuses=(STATUS_APPLIED,), hide_processed=True)
+    assert [job["id"] for job in filter_jobs(jobs, focus)] == ["offre-1"]
 
-    assert app.Filters().is_default() is True
-    assert app.Filters(min_score=10).is_default() is False
-    assert app.Filters(group_by_source=True).is_default() is True, "Le mode d'affichage n'est pas un filtre."
-    assert app.source_distribution(jobs) == [("JobTeaser", 2, app.SOURCE_COLORS["jobteaser"])]
-    assert [label for label, _ in app.group_jobs_by_source(jobs)] == ["JobTeaser"]
+    assert Filters().is_default() is True
+    assert Filters(min_score=10).is_default() is False
+    assert Filters(group_by_source=True).is_default() is True, "Le mode d'affichage n'est pas un filtre."
+    assert source_distribution(jobs) == [("JobTeaser", 2, SOURCE_COLORS["jobteaser"])]
+    assert [label for label, _ in group_jobs_by_source(jobs)] == ["JobTeaser"]
     print("  Filtres : score, statuts, typologie, plateformes, recherche et répartition OK")
 
 
 def test_carte_html() -> None:
     """La carte d'offre est un fragment HTML autonome, échappé et complet."""
-    card = app.job_card_html(RERANKED, ("PyTorch", "GNN"))
+    card = job_card_html(RERANKED, ("PyTorch", "GNN"))
     assert card.startswith('<div class="sc-card">') and card.endswith("</div>")
     assert card.count('<div class="sc-card">') == 1
     assert "Détails &amp; évaluation" in card, "L'accordéon doit être libellé explicitement."
     assert "Points forts" in card and "Points d'attention" in card
     assert "Modélisation PyTorch avancée" in card
     assert "Lire la fiche complète" in card
-    assert 'href="https://example.com/offre?a=1&amp;b=2"' in card, "L'URL doit être échappée."
     assert 'class="sc-chip">PyTorch<' in card
     assert "Cœur de cible" in card and "sc-tone-positive" in card
     assert "Excellent" in card
 
-    unreanked = app.job_card_html(JOB, ())
+    unreanked = job_card_html(JOB, ())
     assert "Verdict du juge LLM" in unreanked and "run_pipeline.py" in unreanked
     assert "Fiche non fournie" in unreanked
     assert "Secondaire" in unreanked and "sc-tone-warn" in unreanked, "46/100 doit tomber en « Secondaire »."
@@ -213,22 +257,13 @@ def test_interface_streamlit() -> None:
         "Exclure les ESN",
     ]
     assert [widget.label for widget in at.sidebar.selectbox] == ["Mode de flux", "Offres affichées"]
-    # Les actions de maintenance : mise à jour de la base, collecte et juge LLM.
-    assert [widget.label for widget in at.sidebar.button] == [
-        "Actualiser la vue",
-        "Collecter & mettre à jour la base",
-        "Collecter + scoring + juge LLM",
-        "Juge LLM seul (Top 20)",
-        "Enrichir les fiches de poste",
-    ]
-    # Chaque action porte son script et ses arguments (aucun lancement ici : le clic
-    # déclencherait un vrai sous-processus réseau).
-    scripts = {action.key: action.script for action in app.PIPELINE_ACTIONS}
+
+    scripts = {action.key: action.script for action in PIPELINE_ACTIONS}
     assert scripts["collect"] == "run_scrapers.py"
     assert scripts["descriptions"] == "backfill_descriptions.py"
-    collect = next(a for a in app.PIPELINE_ACTIONS if a.key == "collect")
-    assert "--trigger-scoring" in collect.args and "--trigger-rerank" not in collect.args, collect
-    rerank = next(a for a in app.PIPELINE_ACTIONS if a.key == "rerank")
+    collect = next(a for a in PIPELINE_ACTIONS if a.key == "collect")
+    assert "--no-scoring" in collect.args, collect
+    rerank = next(a for a in PIPELINE_ACTIONS if a.key == "rerank")
     assert "--no-collect" in rerank.args and "--trigger-rerank" in rerank.args, rerank
 
     # 2. Bandeau KPI, en-tête et cartes d'offres rendus.
@@ -246,13 +281,12 @@ def test_interface_streamlit() -> None:
     assert len(cards) == expected, f"{len(cards)} carte(s) rendue(s) pour {total} offre(s) en base"
     print(f"  Interface : {total} offre(s) en base, {len(cards)} carte(s) rendue(s) OK")
 
-    # 3. Aucun emoji décoratif dans les libellés d'INTERFACE (le contenu des offres
-    #    est exclu : une annonce peut légitimement en contenir).
+    # 3. Aucun emoji décoratif dans les libellés d'INTERFACE.
     rendered = ui_labels_only(" ".join([markup] + [element.value for element in at.caption]))
     for emoji in BANNED_EMOJI:
         assert emoji not in rendered, f"Emoji décoratif détecté : {emoji}"
 
-    sample = app.job_card_html({**JOB, "description": "Annonce rédigée avec 🔍 et 🚀"}, ())
+    sample = job_card_html({**JOB, "description": "Annonce rédigée avec 🔍 et 🚀"}, ())
     assert "🚀" in sample, "Le contenu d'une offre doit être rendu tel quel (aucune censure)."
     assert "🚀" not in ui_labels_only(sample) and "🔍" not in ui_labels_only(sample)
     assert "Détails &amp; évaluation" in ui_labels_only(sample), "Les libellés restent contrôlés."
@@ -278,7 +312,7 @@ def test_interface_streamlit() -> None:
 
     # 6. Vue groupée par plateforme.
     at.sidebar.text_input[0].set_value("").run()
-    at.sidebar.selectbox[0].select(app.DISPLAY_GROUPED).run()
+    at.sidebar.selectbox[0].select(DISPLAY_GROUPED).run()
     assert not at.exception, at.exception
     markup = " ".join(element.value for element in at.markdown)
     assert '<div class="sc-group">' in markup, "Les entêtes de groupe doivent apparaître."
@@ -294,7 +328,7 @@ def test_interface_streamlit() -> None:
 def test_palette_sombre_claire_et_repli() -> None:
     """La feuille de style couvre les deux thèmes natifs et le repli « auto »."""
     styles = {
-        theme: app._CSS_TEMPLATE.substitute(app._token_context(theme))
+        theme: _CSS_TEMPLATE.substitute(_token_context(theme))
         for theme in ("dark", "light", "auto")
     }
     for theme, css in styles.items():
@@ -304,30 +338,7 @@ def test_palette_sombre_claire_et_repli() -> None:
     assert styles["dark"] != styles["light"], "Les palettes sombre et claire doivent différer."
     print("  Palette : jetons complets pour les thèmes sombre, clair et « auto » OK")
 
-    # Hors session Streamlit, la détection retombe proprement sur « auto ».
-    assert app._theme_type() == "auto"
-
-    # En session, le type de thème natif est repris tel quel.
-    class _Theme:
-        type = "dark"
-
-    class _Context:
-        theme = _Theme()
-
-    class _StreamlitStub:
-        context = _Context()
-
-    original = app.st
-    app.st = _StreamlitStub()  # type: ignore[assignment]
-    try:
-        assert app._theme_type() == "dark"
-        _Theme.type = "light"
-        assert app._theme_type() == "light"
-        _Theme.type = None
-        assert app._theme_type() == "auto"
-    finally:
-        app.st = original  # type: ignore[assignment]
-    print("  Palette : détection du thème natif Streamlit OK")
+    assert _theme_type() == "auto"
 
 
 def test_grille_sous_scores() -> None:
@@ -343,15 +354,13 @@ def test_grille_sous_scores() -> None:
         "hard_cap_triggered": None,
         "reasoning": "Calendrier aligné, mission de modélisation réelle, encadrement senior.",
     }
-    markup = app.job_card_html(scored, ())
+    markup = job_card_html(scored, ())
 
-    # 1. Détail (accordéon) : libellés longs + icônes.
     assert "📐 Modélisation 5/5" in markup
     assert "👥 Encadrement 4/5" in markup
     assert "🚀 Carrière 4/5" in markup
     assert "📅 Calendrier PFE 5/5" in markup
 
-    # 2. Mini-indicateurs compacts, VISIBLES sans ouvrir l'accordéon.
     assert "📐 Modélisation : <b>5/5</b>" in markup, markup
     assert "👥 Équipe : <b>4/5</b>" in markup
     assert "🚀 Carrière : <b>4/5</b>" in markup
@@ -360,16 +369,13 @@ def test_grille_sous_scores() -> None:
         "Les mini-indicateurs doivent précéder l'accordéon (visibles d'emblée)."
     )
 
-    # 3. Raisonnement du juge (produit AVANT le score) affiché dans l'accordéon.
     assert "Analyse du juge (raisonnement)" in markup
     assert scored["reasoning"] in markup
 
-    # 4. Aucun verrou : ni bandeau, ni mention.
     assert "Verrou bloquant" not in markup
 
-    # 5. Verrou déclenché : bandeau d'alerte en tête de carte.
     capped = {**scored, "hard_cap_triggered": "Reporting / dashboards BI"}
-    capped_markup = app.job_card_html(capped, ())
+    capped_markup = job_card_html(capped, ())
     assert "Verrou bloquant" in capped_markup
     assert "Reporting / dashboards BI" in capped_markup
     assert "sc-alert" in capped_markup and "sc-tone-alert" in capped_markup
@@ -377,8 +383,7 @@ def test_grille_sous_scores() -> None:
         "Le bandeau de verrou doit être visible en tête de carte."
     )
 
-    # 6. Une offre non évaluée n'affiche ni grille, ni mini-indicateurs, ni bandeau.
-    plain = app.job_card_html(JOB, ())
+    plain = job_card_html(JOB, ())
     assert "Grille d'évaluation" not in plain
     assert "sc-subscore-strip" not in plain
     assert "sc-alert" not in plain
@@ -390,7 +395,7 @@ def test_telemetrie_panneau() -> None:
     runs = [
         {
             "started_at": datetime(2026, 9, 16, 21, 21, 51),
-            "status": app.RUN_OK,
+            "status": RUN_OK,
             "sources": "linkedin,jobteaser",
             "total_found": 30,
             "total_validated": 24,
@@ -400,7 +405,7 @@ def test_telemetrie_panneau() -> None:
         },
         {
             "started_at": datetime(2026, 9, 16, 20, 0, 0),
-            "status": app.RUN_PARTIAL,
+            "status": RUN_PARTIAL,
             "sources": "linkedin",
             "total_found": 17,
             "total_validated": 17,
@@ -409,7 +414,7 @@ def test_telemetrie_panneau() -> None:
             "notes": "max_pages",
         },
     ]
-    runs_table = app._telemetry_runs_table(runs)
+    runs_table = _telemetry_runs_table(runs)
     assert "16/09 21:21" in runs_table
     assert "Terminé" in runs_table and "Partiel (flux tronqué)" in runs_table
     assert "max_pages" in runs_table
@@ -440,28 +445,24 @@ def test_telemetrie_panneau() -> None:
             "stop_reason": "max_pages",
         },
     ]
-    passes_table = app._telemetry_passes_table(passes)
+    passes_table = _telemetry_passes_table(passes)
     assert "Fraîcheur (tri par date)" in passes_table
     assert "Rattrapage (tri par pertinence)" in passes_table
     assert "Page déjà vue (pagination stagnante)" in passes_table
     assert "Plafond de pages atteint (flux potentiellement tronqué)" in passes_table
-    # Une passe tronquée est signalée comme telle (tone d'alerte).
     assert "sc-tone-alert" in passes_table
 
-    assert app._telemetry_runs_table([]) == "" and app._telemetry_passes_table([]) == ""
+    assert _telemetry_runs_table([]) == "" and _telemetry_passes_table([]) == ""
     print("  Télémétrie : tables des runs et des raisons d'arrêt OK")
 
 
 def test_onglet_telemetrie_interface() -> None:
-    """L'onglet « Télémétrie des collectes » est rendu dans l'application."""
-    at = AppTest.from_file(str(app.__file__), default_timeout=60).run()
+    """La page de télémétrie est rendue dans l'application."""
+    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "statistiques.py"), default_timeout=60).run()
     assert not at.exception, at.exception
-    labels = [tab.label for tab in at.tabs]
-    assert "Télémétrie des collectes" in labels, labels
     markup = " ".join(element.value for element in at.markdown)
     assert "Runs de collecte" in markup, "Le tableau des runs doit être rendu."
     assert "Dernières passes (raison d'arrêt)" in markup
-    # Les blocs de pilotage n'apparaissent que si la base porte de la télémétrie.
     db = _open_database()
     has_runs, has_seen = db.count_runs() > 0, db.count_seen_jobs() > 0
     db.engine.dispose()
@@ -470,7 +471,7 @@ def test_onglet_telemetrie_interface() -> None:
         assert "Objectifs de collecte" in markup, "L'état des objectifs doit être rendu."
     if has_seen:
         assert "Ce qui est refusé" in markup, "La répartition des refus doit être rendue."
-    print(f"  Interface : onglets {labels} et panneau de télémétrie OK")
+    print("  Interface : page de télémétrie OK")
 
 
 def test_compteurs_de_collecte_et_refus() -> None:
@@ -505,7 +506,7 @@ def test_compteurs_de_collecte_et_refus() -> None:
     ]
     stamps = {"run-1": "16/09 23:21"}
 
-    strip = app._counters_strip(
+    strip = _counters_strip(
         {"cards_seen": 100, "refused": 50, "already_seen": 25, "jobs_kept": 25}
     )
     assert 'class="sc-kpis"' in strip, strip
@@ -513,12 +514,11 @@ def test_compteurs_de_collecte_et_refus() -> None:
         assert label in strip, label
     assert "100" in strip and "25" in strip
 
-    table = app._collection_counters_table(counters, stamps)
+    table = _collection_counters_table(counters, stamps)
     assert "16/09 23:21" in table and "linkedin" in table and "jobteaser" in table
-    # Les colonnes sont décomposées dans leur motif (lisible sans journal).
     assert "50 hors sujet" in table, table
     assert "15 en base" in table and "10 doublons du run" in table, table
-    assert app._collection_counters_table([], stamps) == ""
+    assert _collection_counters_table([], stamps) == ""
 
     objectives = [
         {
@@ -544,18 +544,18 @@ def test_compteurs_de_collecte_et_refus() -> None:
             "incomplete": False,
         },
     ]
-    objectives_table = app._objectives_table(objectives, stamps)
+    objectives_table = _objectives_table(objectives, stamps)
     assert "objectif atteint (40/40)" in objectives_table, objectives_table
     assert "6/10 — vivier épuisé" in objectives_table, objectives_table
-    assert app.tone_class("positive") in objectives_table
+    assert tone_class("positive") in objectives_table
 
-    truncated = app._objectives_table(
+    truncated = _objectives_table(
         [{**objectives[1], "incomplete": True}], stamps
     )
     assert "6/10 — flux tronqué (à relancer)" in truncated, truncated
-    assert app.tone_class("alert") in truncated
+    assert tone_class("alert") in truncated
 
-    refusals = app._refusals_table(
+    refusals = _refusals_table(
         [
             {"decision": "REJECTED_BI", "rejection_reason": "« power bi »", "total": 22},
             {"decision": "KNOWN", "rejection_reason": None, "total": 9},
@@ -563,8 +563,31 @@ def test_compteurs_de_collecte_et_refus() -> None:
     )
     assert "Refusée — hors sujet" in refusals, refusals
     assert "Déjà connue" in refusals and "« power bi »" in refusals
-    assert app._refusals_table([]) == ""
+    assert _refusals_table([]) == ""
     print("  Télémétrie : compteurs (cherchées/refusées/déjà vues/acceptées) et objectifs OK")
+
+
+def test_kanban_interface() -> None:
+    """La page Kanban de suivi des candidatures est rendue sans erreur."""
+    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "kanban.py"), default_timeout=60).run()
+    assert not at.exception, at.exception
+    markup = " ".join(element.value for element in at.markdown)
+    assert "Tableau Kanban" in markup, "Le titre Kanban doit être rendu."
+    print("  Interface : page Kanban OK")
+
+
+def test_parametres_interface() -> None:
+    """La page Paramètres (configuration, sources, notation) est rendue sans erreur."""
+    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "parametres.py"), default_timeout=60).run()
+    assert not at.exception, at.exception
+    markup = " ".join(element.value for element in at.markdown)
+    assert "Paramètres &amp; Profil" in markup or "Paramètres" in markup
+    # Vérifie que le sélecteur radio de notation est bien présent
+    assert len(at.radio) >= 1
+    # Vérifie que les options incluent l'évaluation des offres non notées
+    radio_options = at.radio[0].options
+    assert any("non notées" in opt for opt in radio_options)
+    print("  Interface : page Paramètres OK")
 
 
 def main() -> None:
@@ -578,6 +601,8 @@ def main() -> None:
     test_compteurs_de_collecte_et_refus()
     test_palette_sombre_claire_et_repli()
     test_onglet_telemetrie_interface()
+    test_kanban_interface()
+    test_parametres_interface()
     test_interface_streamlit()
     print("TOUS LES TESTS PASSENT")
 

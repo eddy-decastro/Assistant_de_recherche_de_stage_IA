@@ -28,8 +28,14 @@ from typing import Any, ClassVar, Sequence
 import httpx
 from bs4 import BeautifulSoup
 
+try:
+    from curl_cffi.requests.errors import RequestsError as CurlRequestsError
+except ImportError:
+    CurlRequestsError = None  # curl_cffi absent : le guard ne sera jamais atteint
+
 from .known import KnownIndex, NullKnownIndex
 from .models import (
+    PASS_FRESHNESS,
     SEEN_DUPLICATE,
     SEEN_KNOWN,
     SEEN_OUT_OF_WINDOW,
@@ -69,15 +75,16 @@ def load_env_file(path: str | Path | None = None) -> None:
 def _contains_keyword(text: str, keyword: str) -> bool:
     """Recherche un mot-clé de façon tolérante (frontières de mot pour les tokens simples).
 
-    Les expressions multi-mots sont cherchées en sous-chaîne ; les tokens simples
-    (``vba``, ``qlik``, ``tableau``…) utilisent une frontière de mot pour éviter
-    les faux positifs (ex. ``vba`` dans un mot comme ``advbance``).
+    Les expressions multi-mots sont cherchées en sous-chaîne après normalisation
+    des espaces ; les tokens simples (``ia``, ``ai``, ``vba``, ``qlik``…) utilisent
+    une frontière de mot insensible aux accents et caractères alphanumériques
+    pour éviter les faux positifs (ex. ``ia`` dans ``dialogue`` ou ``initial``).
     """
-    kw = keyword.casefold()
-    lowered = text.casefold()
+    kw = re.sub(r"\s+", " ", keyword.casefold()).strip()
+    lowered = re.sub(r"\s+", " ", text.casefold())
     if " " in kw:
         return kw in lowered
-    return re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", lowered) is not None
+    return re.search(rf"(?<![a-zA-Z0-9À-ÿ]){re.escape(kw)}(?![a-zA-Z0-9À-ÿ])", lowered) is not None
 
 
 def markup_to_text(node: Any, separator: str = "\n") -> str:
@@ -142,8 +149,9 @@ def describe_rejection(title: str, description: str, config: ScraperConfig) -> s
       2. orientation BI / reporting détectée dans le corps de l'offre ;
       3. absence de tout signal Data Science / ML.
     """
-    title_low = (title or "").casefold()
-    combined = f"{title_low}\n{(description or '').casefold()}"
+    title_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
+    description_low = re.sub(r"\s+", " ", (description or "").casefold()).strip()
+    combined = f"{title_low}\n{description_low}"
     announced_as_internship = any(cue in title_low for cue in INTERNSHIP_TITLE_CUES)
 
     for marker in NON_INTERNSHIP_HARD_MARKERS:
@@ -176,14 +184,14 @@ def screen_rejection(title: str, description: str, config: ScraperConfig) -> str
     À ne pas confondre avec :func:`describe_rejection`, plus strict, réservé à la
     re-validation sur fiche complète (``--revalidate``).
     """
-    title_low = (title or "").casefold()
-    description_low = (description or "").casefold()
+    title_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
+    description_low = re.sub(r"\s+", " ", (description or "").casefold()).strip()
 
     for keyword in config.exclusion_keywords:
         if _contains_keyword(title_low, keyword) or _contains_keyword(description_low, keyword):
             return f"orientation BI / reporting (« {keyword} »)"
 
-    combined = f"{title_low} {description_low}"
+    combined = f"{title_low} {description_low}".strip()
     if any(_contains_keyword(combined, keyword) for keyword in config.positive_ds_ml_keywords):
         return ""
     return "aucun signal Data Science / ML dans l'annonce"
@@ -450,8 +458,9 @@ class BaseScraper(ABC):
         * toute carte inconnue remet ce compteur à zéro ;
         * une offre antérieure à la fenêtre temporelle est écartée — et arrête la
           passe uniquement si l'ordre du flux est jugé fiable ;
-        * une page sans aucune carte inédite arrête la passe (pagination
-          stagnante : utile quand la plateforme ignore un paramètre de page).
+        * en passe « Fraîcheur », une page sans aucune carte inédite arrête la
+          passe (duplicate_page : pagination stagnante) ; en passe « Rattrapage »
+          (relevance), la passe poursuit sa pagination malgré des pages de doublons.
         """
         started = datetime.now(timezone.utc)
         counters = {
@@ -523,8 +532,11 @@ class BaseScraper(ABC):
                 error = str(exc)[:300]
                 break
             except Exception as exc:  # noqa: BLE001 — aucune passe ne doit tuer le run
-                stop_reason, stop_detail = "error", f"{type(exc).__name__}: {exc}"[:300]
-                error = stop_detail
+                if CurlRequestsError is not None and isinstance(exc, CurlRequestsError):
+                    stop_reason, stop_detail = "network_error", type(exc).__name__
+                else:
+                    stop_reason, stop_detail = "error", f"{type(exc).__name__}: {exc}"[:300]
+                error = str(exc)[:300]
                 break
 
             counters["http_requests"] += max(0, int(page.http_calls))
@@ -536,6 +548,7 @@ class BaseScraper(ABC):
             counters["pages_fetched"] += 1
             stop_page = page_number
             new_keys_in_page = 0
+            duplicates_in_page = 0
 
             for entry in page.entries:
                 counters["cards_seen"] += 1
@@ -576,13 +589,13 @@ class BaseScraper(ABC):
                         break
                     continue
 
-                # 2) Déjà connue (base ou run en cours) : ni quota, ni retraitement
                 #    — c'est la jonction avec le scrape précédent.
                 already_in_run = bool(key) and str(key) in run_keys
                 if str(key) and (index.is_known(self.source, str(key), url) or already_in_run):
                     if already_in_run:
                         counters["jobs_duplicate"] += 1
                         streak_duplicates += 1
+                        duplicates_in_page += 1
                     else:
                         counters["jobs_known"] += 1
                         streak_known += 1
@@ -665,7 +678,15 @@ class BaseScraper(ABC):
                 stop_reason = "stream_end"
                 stop_detail = f"flux épuisé (page {page_number})"
                 break
-            if new_keys_in_page == 0:
+            
+            # Stagnation : la page ne contient *que* des cartes déjà croisées dans CE run.
+            # L'API est probablement bloquée (paramètre de page ignoré).
+            if len(page.entries) > 0 and duplicates_in_page == len(page.entries):
+                stop_reason = "duplicate_page"
+                stop_detail = f"stagnation détectée (page {page_number} identique)"
+                break
+                
+            if mode == PASS_FRESHNESS and new_keys_in_page == 0:
                 stop_reason = "duplicate_page"
                 stop_detail = (
                     f"page {page_number} sans carte inédite "

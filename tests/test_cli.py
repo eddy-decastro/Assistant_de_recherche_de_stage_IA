@@ -52,6 +52,14 @@ def test_option_no_collect() -> None:
     print("  CLI : --no-collect OK (travail sur la base existante)")
 
 
+def test_option_backfill_missing() -> None:
+    """--backfill-missing : active l'enrichissement des descriptions avant rerank."""
+    args = parse_args(["--trigger-rerank", "--backfill-missing"])
+    assert args.backfill_missing is True
+    assert parse_args([]).backfill_missing is False
+    print("  CLI : --backfill-missing OK")
+
+
 def test_options_hygiene() -> None:
     """--dedupe / --revalidate / --dry-run : nettoyage avant dépense de tokens."""
     args = parse_args(["--dedupe", "--revalidate", "--dry-run"])
@@ -95,6 +103,35 @@ def test_options_collecte_hybride() -> None:
     print("  CLI : options de collecte hybride OK (--passes / --only-source / --top-telemetry)")
 
 
+def test_options_personnalisation_collecte() -> None:
+    """--queries / --max-offers / --sources / --no-scoring : options de personnalisation."""
+    args = parse_args([
+        "--queries", "Stage NLP;Stage LLM",
+        "--max-offers", "50",
+        "--sources", "linkedin,jobteaser",
+        "--no-scoring",
+        "--concurrency", "8",
+    ])
+    assert args.queries == "Stage NLP;Stage LLM"
+    assert args.max_offers == 50
+    assert args.sources == "linkedin,jobteaser"
+    assert args.no_scoring is True
+    assert args.concurrency == 8
+
+    help_text = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        cwd=str(PROJECT_ROOT),
+    )
+    assert help_text.returncode == 0
+    for option in ("--queries", "--max-offers", "--sources", "--no-scoring", "--concurrency"):
+        assert option in help_text.stdout, f"{option} doit apparaître dans --help"
+    print("  CLI : options de personnalisation OK (--queries / --max-offers / --sources / --no-scoring / --concurrency)")
+
+
 if __name__ == "__main__":
     test_options_par_defaut()
     test_options_actives()
@@ -103,4 +140,5 @@ if __name__ == "__main__":
     test_options_hygiene()
     test_run_pipeline_delegue()
     test_options_collecte_hybride()
+    test_options_personnalisation_collecte()
     print("TOUS LES TESTS PASSENT")

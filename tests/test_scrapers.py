@@ -186,7 +186,55 @@ def test_word_boundary() -> None:
     assert _contains_keyword("excel vba macros", "vba") is True
     assert _contains_keyword("power bi analyste", "power bi") is True
     assert _contains_keyword("analyste power bi", "power bi") is True
+
+    # "ia" et "ai" ne doivent pas matcher dans les mots français ou anglais courants
+    assert _contains_keyword("Stagiaire dialogue client", "ia") is False
+    assert _contains_keyword("Stage initial", "ia") is False
+    assert _contains_keyword("Spécialiste relations", "ia") is False
+    assert _contains_keyword("Stage clair et net", "ai") is False
+    assert _contains_keyword("Candidat motivé", "ai") is False
+
+    # "ia" et "ai" isolés ou délimités doivent matcher
+    assert _contains_keyword("STAGE IA pour la 3D", "ia") is True
+    assert _contains_keyword("Stage Ingénieur AI", "ai") is True
+    assert _contains_keyword("Stage (IA)", "ia") is True
+    assert _contains_keyword("Stage IA/ML", "ia") is True
+
+    # Tolérance aux espaces multiples
+    assert _contains_keyword("STAGE - Deep Reinforcement  Learning", "reinforcement learning") is True
     print("  _contains_keyword : OK")
+
+
+def test_improved_filtering_and_acronyms() -> None:
+    from scrapers.base import screen_rejection
+    config = ScraperConfig()
+
+    # Offres IA/DS légitimes qui étaient auparavant rejetées
+    valid_titles = [
+        "STAGE IA pour la compréhension de scènes 3D (F/H)",
+        "Stage - Ingénieur IA - Modélisation de l'entreprise (F/H)",
+        "STAGE - Deep Reinforcement  Learning",
+        "Ingénieur.e IA - Stage",
+        "AI Engineering Intern",
+        "Stage Builder IA Agentique (H/F)",
+        "Stage ingénieur prédiction de séries temporelles F/H/X",
+        "Stage – Validation de modèles de sillage via données SCADA",
+        "Internship - Graduate Program DA/DS/DI F/M",
+    ]
+    for title in valid_titles:
+        assert screen_rejection(title, "", config) == "", f"Rejeté à tort : {title}"
+
+    # Vrais hors-sujet qui doivent rester strictement rejetés
+    invalid_titles = [
+        "Stagiaire - Juriste Propriété Intellectuelle (H/F)",
+        "Stage Assistant Chef de Projet RH (F/H)",
+        "Stage Commercial B2B",
+        "STAGE - Communication & Marketing Digital",
+        "Assistant Contrôleur de Gestion",
+        "Analyste fonctionnel PMO",
+    ]
+    for title in invalid_titles:
+        assert screen_rejection(title, "", config) != "", f"Accepté à tort : {title}"
 
 
 def test_models() -> None:
@@ -220,8 +268,10 @@ def test_models() -> None:
 
 
 def test_dedupe_url() -> None:
-    assert ScraperManager._normalize_url("HTTPS://X/Job/?q=1") == "https://x/job"
-    assert ScraperManager._normalize_url("https://x/job/") == "https://x/job"
+    # _normalize_url est désormais alignée sur canonical_url (sans schéma, sans www.)
+    assert ScraperManager._normalize_url("HTTPS://X/Job/?q=1") == "x/Job"
+    assert ScraperManager._normalize_url("https://x/job/") == "x/job"
+    assert ScraperManager._normalize_url("http://www.example.com/j") == "example.com/j"
     assert ScraperManager._normalize_url("") == ""
     print("  déduplication URL : OK")
 

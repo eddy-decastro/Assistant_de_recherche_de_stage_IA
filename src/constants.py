@@ -76,29 +76,46 @@ VERDICT_COLORS = {
 }
 
 # --- Sous-scores du juge LLM (grille d'évaluation qualitative, échelle 1-5) ---
-# Les quatre dimensions de la grille ; l'ordre est celui d'affichage dans l'UI.
+# Les cinq dimensions de la nouvelle grille calibrée :
 SUB_SCORE_KEYS = (
     "modeling_depth",
     "mentorship_team",
-    "career_leverage",
-    "pfe_compatibility",
+    "engineering_practice",
+    "option_value",
+    "logistics",
 )
-# Valeur neutre utilisée quand un champ de sous-score est manquant ou inexploitable
-# (repli sécurisé en cas d'erreur de parsing de la réponse du modèle).
-DEFAULT_SUB_SCORE = 3
+
+# Coefficients de pondération du prompt (somme = 1.0)
+SUB_SCORE_WEIGHTS = {
+    "modeling_depth": 0.30,
+    "mentorship_team": 0.25,
+    "engineering_practice": 0.20,
+    "option_value": 0.15,
+    "logistics": 0.10,
+}
+
+# Valeur neutre par défaut pour une information absente (score 2 selon la règle du prompt)
+DEFAULT_SUB_SCORE = 2
 
 SUB_SCORE_LABELS = {
     "modeling_depth": "Modélisation",
     "mentorship_team": "Encadrement",
+    "engineering_practice": "Pratiques d'ingénierie",
+    "option_value": "Thèse / CDI",
+    "logistics": "Logistique / PFE",
+    # Rétro-compatibilité pour offres antérieures :
     "career_leverage": "Carrière",
     "pfe_compatibility": "Calendrier PFE",
 }
 
-# Libellés compacts, pour la ligne de mini-indicateurs affichée sur la carte
-# (forme courte, alignée sur l'usage : « 📐 Modélisation : 4/5 | 👥 Équipe : 5/5 »).
+# Libellés compacts pour la ligne de mini-indicateurs affichée sur la carte
 SUB_SCORE_SHORT_LABELS = {
     "modeling_depth": "Modélisation",
     "mentorship_team": "Équipe",
+    "engineering_practice": "Ingénierie",
+    "option_value": "Thèse / CDI",
+    "logistics": "Logistique",
+    # Rétro-compatibilité :
     "career_leverage": "Carrière",
     "pfe_compatibility": "PFE",
 }
@@ -151,10 +168,10 @@ SOURCE_LABELS = {
 
 # Couleur de badge par plateforme (repli : gris ardoise).
 SOURCE_COLORS = {
-    "linkedin": "#0a66c2",
-    "wttj": "#ca8a04",
-    "welcome_to_the_jungle": "#ca8a04",
-    "jobteaser": "#7c3aed",
+    "linkedin": "#1C1B19",
+    "wttj": "#A8761F",
+    "welcome_to_the_jungle": "#A8761F",
+    "jobteaser": "#A8761F",
 }
 
 SOURCE_FALLBACK_COLOR = "#475569"
