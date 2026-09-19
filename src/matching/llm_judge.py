@@ -1,31 +1,29 @@
-"""Juge LLM (DeepSeek) — étape 2 du ranking (LLM-as-a-Judge).
+"""Juge LLM (Gemini) — étape 2 du ranking (LLM-as-a-Judge).
 
-Architecture Two-Stage :
-  - Étape 1 : Bi-Encoder (src/matching/scorer.py) → pré-filtrage rapide, Top-N.
-  - Étape 2 : ce module → ré-évaluation fine du Top-N par un LLM (DeepSeek V3).
-
-La clé API est lue depuis le fichier .env (variable DEEPSEEK_API_KEY).
+La clé API est lue depuis le fichier .env (variable GEMINI_API_KEY).
 Aucune exception ne remonte : en cas d'erreur, un fallback défensif est renvoyé.
-
-⚠️ Le juge ne reçoit VOLONTAIREMENT pas le score de l'étape 1 : les verdicts
-enregistrés montraient que le modèle commentait ce score au lieu d'évaluer la
-mission (biais d'ancrage). Il juge désormais sur le CV et la fiche complète.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
 
-import httpx
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
 from src.config import PROJECT_ROOT, load_config
 from src.constants import (
     DEFAULT_SUB_SCORE,
     SUB_SCORE_KEYS,
+    SUB_SCORE_WEIGHTS,
     VERDICT_EXCELLENT,
     VERDICT_GOOD,
     VERDICT_MIXED,
@@ -34,8 +32,7 @@ from src.constants import (
     first_number,
 )
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -50,76 +47,21 @@ _VERDICT_ALIASES = {
     "HORSSUJET": VERDICT_OFF_TOPIC,
 }
 
-SYSTEM_PROMPT = """
-Tu es le Head of Data d'une scale-up tech de référence, mentor exigeant d'un candidat d'élite. Ton rôle est d'évaluer avec intransigeance l'adéquation d'une offre pour son stage de fin d'études (PFE) afin de lui garantir le meilleur tremplin de carrière possible en Data Science et R&D.
-
-PROFIL DU CANDIDAT
-- Formation : Élève-ingénieur Mines Saint-Étienne + Master 2 Recherche MAEA (Mathématiques en Action : optimisation, modélisation stochastique, HPC - Mines Saint-Étienne / Centrale Lyon / ENS Lyon) + Licence 3 Mathématiques Générales.
-- Bagage technique : PyTorch (AutoGrad), Graph ML (spectral, Laplacien), Machine Learning appliqué (médical/3D, tabulaire), statistiques inférentielles avancées (bootstrap, tests non paramétriques), Docker, Linux/Bash, SQL, FastAPI, Streamlit, Git.
-- Contraintes PFE : Stage conventionné de fin d'études de 6 mois, début début avril, Paris / Île-de-France impératif (ou télétravail partiel/complet compatible).
-- Objectif de carrière : Entrer directement par le haut du panier (scale-up Tier 1, grand labo industriel ou académique, pôle R&D de grand groupe tech). Exclure tout rôle d'exécutant ou de support.
-
-VERROUS BLOQUANTS (HARD CAPS)
-Si une offre déclenche l'une de ces conditions, plafonne IMMÉDIATEMENT le score global (rerank_score) au plafond indiqué, peu importe la qualité du sujet :
-- Alternance stricte, contrat pro ou durée < 5 mois non négociable en PFE : NOTE MAXIMALE = 15.
-- Livrable principal axé sur le reporting, dashboards BI (Power BI, Tableau, Excel, Qlik) ou support data analyst : NOTE MAXIMALE = 20.
-- Localisation hors Île-de-France sans mention explicite de télétravail compatible : NOTE MAXIMALE = 25.
-- « IA » superficielle (simple prompt engineering, wrappers LangChain/API sans modélisation, fine-tuning ni entraînement) : NOTE MAXIMALE = 40.
-
-GRILLE D'ÉVALUATION PAR CRITÈRES (Sous-scores de 1 à 5)
-Évalue chaque dimension de manière factuelle (ce qui n'est pas écrit n'existe pas) :
-
-1. modeling_depth (Profondeur mathématique & algorithmique)
-- 1 : Simple requêtage SQL, dashboarding, nettoyage de données répétitif ou script d'automatisation.
-- 2 : Machine Learning basique de surface (scikit-learn générique, régression/clustering simple sans feature engineering avancé).
-- 3 : Vrai Machine Learning / Deep Learning appliqué avec modélisation solide et pipeline de validation rigoureux.
-- 4 : Deep Learning avancé, Computer Vision 3D, NLP/LLM open-weights avec fine-tuning, ou pipelines d'optimisation complexes.
-- 5 : R&D de pointe, formulation mathématique sur mesure (fonctions de perte custom, optimisation non convexe, Graph ML, physique/IA).
-
-2. mentorship_team (Qualité de l'encadrement & séniorité)
-- 1 : Stagiaire isolé sur la data ou encadré uniquement par des profils business/produit sans compétences ML.
-- 2 : Équipe tech sans data scientists seniors identifiés, encadrement flou.
-- 3 : Équipe Data Science existante avec des seniors capables de relire du code et cadrer les projets.
-- 4 : Pôle ML structuré, Lead Data Scientists expérimentés, méthodologies d'ingénierie robustes (MLOps, revues de code).
-- 5 : Chercheurs (PhD), Staff ML Engineers reconnus, laboratoire de recherche ou équipe de référence internationale.
-
-3. career_leverage (Prestige & tremplin professionnel)
-- 1 : ESN non spécialisée ou société de conseil en régie avec incertitude sur la mission finale.
-- 2 : Entreprise traditionnelle avec faible culture tech/data, stage peu différenciant sur un CV.
-- 3 : PME technologique solide, grande entreprise reconnue ou scale-up établie avec visibilité marché correcte.
-- 4 : Scale-up tech en forte croissance (Tier 1/2) ou grand pôle R&D industriel très valorisé par les recruteurs.
-- 5 : Acteur de premier plan mondial de l'IA (Inria, CEA, licornes IA, labos tech d'élite), impact direct garanti sur le réseau.
-
-4. pfe_compatibility (Adéquation PFE, dates & logistique)
-- 1 : Incompatible (alternance imposée, césure 3 mois, hors IDF sans remote).
-- 3 : Partiellement compatible mais ambigu (mention "stage ou alternance", date floue).
-- 5 : Parfaitement aligné (stage conventionné 6 mois, démarrage mars/avril, Paris/remote).
-
-FORMAT DE SORTIE (JSON STRICT)
-Réponds UNIQUEMENT avec un objet JSON valide, sans texte d'introduction ni balises superflues. Remplis les champs dans cet ordre précis :
-
-{
-  "reasoning": "<Synthèse critique en 3 phrases : adéquation du calendrier, réalité mathématique de la mission vs buzzwords, calibre de l'encadrement>",
-  "hard_cap_triggered": "<Nom de la contrainte bloquante déclenchée, ou null>",
-  "sub_scores": {
-    "modeling_depth": <Entier de 1 à 5>,
-    "mentorship_team": <Entier de 1 à 5>,
-    "career_leverage": <Entier de 1 à 5>,
-    "pfe_compatibility": <Entier de 1 à 5>
-  },
-  "match_reasons": ["<Point fort factuel 1>", "<Point fort factuel 2>"],
-  "red_flags": ["<Risque ou manque d'information 1>", "<Risque 2>"],
-  "tech_stack_detected": ["<Techno 1>", "<Techno 2>"],
-  "verdict": "EXCELLENT" | "BON" | "MITIGÉ" | "HORS_SUJET",
-  "rerank_score": <Entier de 0 à 100 reflétant les sous-scores et plafonné par les hard caps>
+# Plafonds stricts autorisés par la grille de cadrage
+HARD_CAP_RULES: dict[str, int] = {
+    "ALTERNANCE": 15,
+    "NOT_A_PFE": 15,
+    "BI_REPORTING": 30,
+    "FINANCE": 50,
+    "SHALLOW_AI": 40,
 }
 
-RÈGLES D'ALIGNEMENT DU SCORE GLOBAL :
-- EXCELLENT (85-100) : modeling_depth >= 4, mentorship_team >= 4, pfe_compatibility = 5, aucun hard cap.
-- BON (65-84) : modeling_depth >= 3, encadrement solide, PFE compatible.
-- MITIGÉ (40-64) : mission générique, manque de visibilité sur l'encadrement ou stack standard.
-- HORS_SUJET (0-39) : hard cap déclenché, reporting ou inadéquation PFE.
-"""
+def get_system_prompt() -> str:
+    prompt_path = PROJECT_ROOT / "data" / "prompt_rerank.txt"
+    if prompt_path.exists():
+        return prompt_path.read_text(encoding="utf-8")
+    return "Tu es un évaluateur d'offres de stage."
+
 
 
 def load_env_file(path: str | Path | None = None) -> None:
@@ -153,6 +95,30 @@ def verdict_from_score(score: float) -> str:
     return VERDICT_OFF_TOPIC
 
 
+def calculate_score_from_sub_scores(sub_scores: dict[str, int] | None) -> int:
+    """Calcule la note globale 0-100 à partir des 5 sous-scores (échelle 1-5).
+
+    Pondérations :
+    - modeling_depth : 30%
+    - mentorship_team : 25%
+    - engineering_practice : 20%
+    - option_value : 15%
+    - logistics : 10%
+
+    Formule de conversion linéaire :
+    W = sum(poids * sous_score) dans [1.0, 5.0]
+    score = (W - 1.0) / 4.0 * 100.0 (arrondi à l'entier le plus proche dans [0, 100]).
+    """
+    if not sub_scores:
+        return 0
+    weighted_sum = sum(
+        SUB_SCORE_WEIGHTS.get(key, 0.20) * coerce_sub_score(sub_scores.get(key, DEFAULT_SUB_SCORE))
+        for key in SUB_SCORE_KEYS
+    )
+    score = (weighted_sum - 1.0) / 4.0 * 100.0
+    return max(0, min(100, int(round(score))))
+
+
 def _as_str_list(value: Any) -> list[str]:
     """Normalise une valeur hétérogène en liste de chaînes non vides."""
     if value is None:
@@ -165,46 +131,51 @@ def _as_str_list(value: Any) -> list[str]:
 
 
 # --- Verrous bloquants (hard caps) ------------------------------------------- #
-# Le prompt demande au modèle de plafonner lui-même le score, mais on applique ici
-# un filet défensif : si un verrou est signalé, le score est borné par son plafond
-# quoi que le modèle ait répondu (garantie d'alignement indépendante du LLM).
-_HARD_CAPS: tuple[tuple[tuple[str, ...], int], ...] = (
-    # Contrat / durée
-    (("alternance", "contrat pro", "apprentissage", "durée", "5 mois",
-      "césure", "cesure", "cursus"), 15),
-    # Reporting / BI / support data
-    (("reporting", "dashboard", "power bi", "qlik", "business intelligence",
-      "analyst", "support", "excel", "tableau"), 20),
-    # Localisation
-    (("localisation", "localization", "île-de-france", "ile-de-france", "idf",
-      "télétravail", "teletravail", "remote", "paris", "géographi", "geographi"), 25),
-    # « IA » superficielle
-    (("superficiel", "superficielle", "prompt engineering", "wrapper", "langchain",
-      "sans modélisation", "sans modelisation", "automatisation"), 40),
+# Le prompt instruit le LLM de spécifier hard_cap_triggered ("NONE", "ALTERNANCE", etc.)
+# Le code applique un plafonnement strict et déterministe.
+
+#: Préfixes de négation courants dans les réponses LLM.
+_NEGATION_PREFIXES: tuple[str, ...] = (
+    "aucun ", "aucune ", "pas de ", "pas d'", "non ", "sans ",
+    "no ", "none ", "n/a", "not ", "rien",
 )
 
 
 def _normalize_hard_cap(value: Any) -> str | None:
-    """Normalise ``hard_cap_triggered`` en chaîne, ou ``None`` si aucun verrou."""
+    """Normalise ``hard_cap_triggered`` en chaîne canonique, ou ``None`` si aucun verrou."""
     text = str(value or "").strip()
-    if not text or text.casefold() in ("null", "none", "aucun", "aucune"):
+    if not text or text.casefold() in ("null", "none", "aucun", "aucune", "n/a"):
         return None
+    lowered = text.casefold()
+    if any(lowered.startswith(prefix) for prefix in _NEGATION_PREFIXES):
+        return None
+    upper = text.upper()
+    if upper in HARD_CAP_RULES:
+        return upper
     return text
 
 
 def hard_cap_max(reason: str | None) -> int | None:
-    """Plafond associé à un verrou bloquant (``None`` = pas de plafond).
-
-    Correspondance par mots-clés, volontairement défensive : ``hard_cap_triggered``
-    est un nom libre, on matche donc les familles de contraintes (contrat, BI,
-    localisation, « IA » superficielle).
-    """
+    """Plafond associé à un verrou bloquant (``None`` = pas de plafond)."""
     if not reason:
         return None
+    upper = reason.strip().upper()
+    if upper in HARD_CAP_RULES:
+        return HARD_CAP_RULES[upper]
+    if upper == "NONE":
+        return None
     lowered = reason.casefold()
-    for keywords, max_score in _HARD_CAPS:
-        if any(keyword in lowered for keyword in keywords):
+    for cap_name, max_score in HARD_CAP_RULES.items():
+        if cap_name.lower() in lowered:
             return max_score
+    config = load_config()
+    hard_caps_list = config.get("scoring", {}).get("hard_caps", [])
+    for cap in hard_caps_list:
+        keywords = cap.get("keywords", [])
+        max_score = cap.get("max_score", 100)
+        for keyword in keywords:
+            if re.search(rf"(?<![\w]){re.escape(keyword.casefold())}(?![\w])", lowered):
+                return max_score
     return None
 
 
@@ -244,28 +215,94 @@ def _normalize_sub_scores(value: Any) -> dict[str, int]:
     }
 
 
+logger = logging.getLogger("src.matching.llm_judge")
+
+
+class GeminiRateLimiter:
+    """Régulateur de débit global thread-safe pour l'API Gemini.
+
+    - Respecte le plafond RPM (ex: 14 requêtes/minute en Free Tier).
+    - En cas d'erreur 429, bloque TOUS les threads pour la durée exacte
+      demandée par l'API (retry-after jusqu'à 65s).
+    """
+
+    def __init__(self, rpm: int = 14) -> None:
+        self.rpm = max(1, rpm)
+        self.interval = 60.0 / self.rpm
+        self._lock = threading.Lock()
+        self._last_call_time: float = 0.0
+        self._blocked_until: float = 0.0
+
+    def wait_for_slot(self) -> float:
+        """Attend le prochain créneau disponible. Retourne le temps d'attente effectif en secondes."""
+        with self._lock:
+            now = time.time()
+            total_waited = 0.0
+
+            # 1. Si bloqué globalement suite à un 429
+            if now < self._blocked_until:
+                wait_time = self._blocked_until - now
+                logger.info("  ⏳ Pause globale rate limit : attente de %.1fs...", wait_time)
+                time.sleep(wait_time)
+                total_waited += wait_time
+                now = time.time()
+
+            # 2. Espacement minimal entre requêtes
+            elapsed = now - self._last_call_time
+            if elapsed < self.interval:
+                sleep_time = self.interval - elapsed
+                time.sleep(sleep_time)
+                total_waited += sleep_time
+                now = time.time()
+
+            self._last_call_time = now
+            return total_waited
+
+    def report_429(self, retry_after: float) -> None:
+        """Déclenche une pause globale sur tous les threads."""
+        with self._lock:
+            target = time.time() + max(1.0, retry_after)
+            if target > self._blocked_until:
+                self._blocked_until = target
+
+
+_GLOBAL_RATE_LIMITER: GeminiRateLimiter | None = None
+_LIMITER_LOCK = threading.Lock()
+
+
+def get_global_rate_limiter(rpm: int = 14) -> GeminiRateLimiter:
+    global _GLOBAL_RATE_LIMITER
+    with _LIMITER_LOCK:
+        if _GLOBAL_RATE_LIMITER is None or _GLOBAL_RATE_LIMITER.rpm != rpm:
+            _GLOBAL_RATE_LIMITER = GeminiRateLimiter(rpm)
+        return _GLOBAL_RATE_LIMITER
+
+
 class LLMJudge:
-    """Étape 2 : ré-évaluation fine d'une offre via l'API DeepSeek (deepseek-chat)."""
+    """Étape 2 : ré-évaluation fine d'une offre via l'API Gemini."""
 
     def __init__(
         self,
         config: dict[str, Any] | None = None,
         api_key: str | None = None,
-        client: httpx.Client | None = None,
+        client: genai.Client | None = None,
+        rate_limiter: GeminiRateLimiter | None = None,
     ) -> None:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
-        self.base_url = str(llm_cfg.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
         self.model = str(llm_cfg.get("model", DEFAULT_MODEL))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
-        self.timeout = float(llm_cfg.get("timeout_seconds", 60))
-        self.client = client  # injectable (tests via httpx.MockTransport)
+        self.tier = str(llm_cfg.get("tier", "free")).casefold()
+        default_rpm = 14 if self.tier == "free" else 120
+        self.rpm = int(llm_cfg.get("rate_limit_rpm", default_rpm))
+        self.rate_limiter = rate_limiter or get_global_rate_limiter(self.rpm)
+        self._client = client  # injectable pour mock
 
         if api_key is not None:
             self.api_key = api_key
         else:
             load_env_file()
-            self.api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+            self.api_key = os.environ.get("GEMINI_API_KEY", "")
 
     @property
     def available(self) -> bool:
@@ -275,68 +312,79 @@ class LLMJudge:
     # ------------------------------------------------------------------ #
     # Construction des messages
     # ------------------------------------------------------------------ #
-    def _build_messages(
-        self, job: dict[str, Any], cv_text: str | None = None
-    ) -> list[dict[str, str]]:
-        # Aucun score de l'étape 1 n'est transmis : constaté en pratique, le juge
-        # commentait le score bi-encoder au lieu de juger la mission (« le score
-        # préliminaire est faible, mais… »). Le juge doit statuer sur les FAITS
-        # (CV + description complète), sans ancre numérique.
-        description = (job.get("description") or "").strip()[:6000]
+    def _build_content(self, job: dict[str, Any], cv_text: str | None = None) -> str:
+        description = (job.get("description") or "").strip()[:12000]
         user_content = (
-            "OFFRE DE STAGE À ÉVALUER\n"
+            "<offre>\n"
             f"Titre : {job.get('title', '')}\n"
             f"Entreprise : {job.get('company', '')} (typologie tier {job.get('company_tier', '?')})\n"
             f"Localisation : {job.get('location', '')}\n\n"
             f"Description :\n{description or '(description indisponible)'}\n"
+            "</offre>"
         )
         if cv_text:
-            user_content += f"\nCV DU CANDIDAT (extrait) :\n{cv_text[:3000]}\n"
-        return [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
+            user_content += f"\n\n<cv_candidat>\n{cv_text[:6000]}\n</cv_candidat>"
+        return user_content
 
     # ------------------------------------------------------------------ #
     # Appel API
     # ------------------------------------------------------------------ #
-    def _post_chat(self, messages: list[dict[str, str]]) -> str:
-        """Appelle l'endpoint chat/completions et retourne le contenu texte."""
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "response_format": {"type": "json_object"},
-            "stream": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        client = self.client or httpx.Client(timeout=self.timeout)
-        close_client = self.client is None
-        try:
-            response = client.post(
-                f"{self.base_url}/chat/completions", json=payload, headers=headers
-            )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
-        finally:
-            if close_client:
-                client.close()
+    def _post_chat(self, user_content: str) -> str:
+        """Appelle l'API Gemini et retourne le contenu texte (avec retries défensifs)."""
+        # Silence les avertissements AFC verbeux du SDK google_genai
+        logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+
+        client = self._client or genai.Client(api_key=self.api_key)
+        last_error = None
+
+        for attempt in range(4):
+            # Régulation de débit avant chaque requête (respecte les 14 RPM)
+            self.rate_limiter.wait_for_slot()
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=get_system_prompt(),
+                        temperature=self.temperature,
+                        response_mime_type="application/json"
+                    )
+                )
+                return response.text
+            except APIError as exc:
+                last_error = exc
+                # Si erreur de quota (429) ou surcharge temporaire (503)
+                if attempt < 3 and (exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()):
+                    delay = 5.0 * (attempt + 1)
+                    match = re.search(r"retry in (\d+(?:\.\d+)?)s", str(exc), re.IGNORECASE)
+                    if match:
+                        suggested = float(match.group(1))
+                        delay = max(suggested + 1.5, delay)
+
+                    logger.warning(
+                        "Quota/charge Gemini atteint (%s). Pause automatique de %.1fs avant nouvel essai (%d/3)...",
+                        exc.code, delay, attempt + 1
+                    )
+                    self.rate_limiter.report_429(delay)
+                    time.sleep(delay)
+                    continue
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        return ""
 
     # ------------------------------------------------------------------ #
     # Parsing / normalisation
     # ------------------------------------------------------------------ #
     def _parse_response(self, content: str | None, job: dict[str, Any]) -> dict[str, Any]:
-        """Parse la réponse JSON du LLM en structure normalisée et fiable.
-
-        Extrait, en plus du score et du verdict, la grille de sous-scores
-        qualitatifs (1-5) et le verrou bloquant éventuel. Le score global est
-        plafonné par le hard cap, puis le verdict est re-dérivé du score pour
-        garantir l'alignement (un modèle qui répondrait EXCELLENT avec un score
-        plafonné à 20 est corrigé).
-        """
+        """Parse la réponse JSON du LLM en structure normalisée et fiable."""
         cleaned = _CODE_FENCE_RE.sub("", content or "").strip()
         try:
             data = json.loads(cleaned)
@@ -345,37 +393,60 @@ class LLMJudge:
         if not isinstance(data, dict):
             return self._fallback(job, reason="Réponse LLM invalide (JSON non-objet).")
 
-        score = self._coerce_score(data.get("rerank_score"), job)
+        info_level = str(data.get("information_level") or "").strip().upper()
+        raw_sub = data.get("sub_scores")
+        if info_level == "INSUFFISANT" or raw_sub is None:
+            sub_scores = None
+            score = 0
+        else:
+            sub_scores = _normalize_sub_scores(raw_sub)
+            score = calculate_score_from_sub_scores(sub_scores)
+
+        # Si le score calculé est 0 et qu'un rerank_score explicite était fourni dans une réponse d'ancien format
+        if score == 0 and data.get("rerank_score") is not None and info_level != "INSUFFISANT":
+            score = self._coerce_score(data.get("rerank_score"), job)
 
         hard_cap = _normalize_hard_cap(data.get("hard_cap_triggered"))
         cap = hard_cap_max(hard_cap)
         if cap is not None:
             score = min(score, cap)
 
-        raw_verdict = str(data.get("verdict", "")).strip().upper()
-        verdict = _VERDICT_ALIASES.get(raw_verdict)
-        if verdict != verdict_from_score(score):
-            verdict = verdict_from_score(score)
+        verdict = verdict_from_score(score)
+
+        reasoning_text = str(data.get("reasoning") or "").strip()
+        questions = _as_str_list(data.get("questions_entretien"))
+        if questions:
+            q_formatted = "\n\n💡 Questions clés pour l'entretien :\n" + "\n".join(f"• {q}" for q in questions)
+            combined_reasoning = (reasoning_text + q_formatted).strip()
+        else:
+            combined_reasoning = reasoning_text
+
+        raw_flags = _as_str_list(data.get("flags"))
+        raw_red_flags = _as_str_list(data.get("red_flags"))
+        flags_formatted = [f"[{f}]" for f in raw_flags if f and f != "NONE"]
+        combined_red_flags = flags_formatted + [
+            r for r in raw_red_flags if not any(r.startswith(f) for f in flags_formatted)
+        ]
 
         return {
             "rerank_score": score,
             "verdict": verdict,
-            "sub_scores": _normalize_sub_scores(data.get("sub_scores")),
+            "sub_scores": sub_scores if sub_scores is not None else {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS},
             "hard_cap_triggered": hard_cap,
-            "reasoning": str(data.get("reasoning") or "").strip(),
+            "hard_cap_evidence": data.get("hard_cap_evidence"),
+            "reasoning": combined_reasoning,
+            "flags": raw_flags,
             "match_reasons": _as_str_list(data.get("match_reasons")),
-            "red_flags": _as_str_list(data.get("red_flags")),
+            "red_flags": combined_red_flags,
             "tech_stack": _as_str_list(data.get("tech_stack_detected")),
+            "questions_entretien": questions,
+            "evidence": data.get("evidence") if isinstance(data.get("evidence"), dict) else {},
+            "information_level": info_level or None,
         }
 
     @staticmethod
     def _coerce_score(value: Any, job: dict[str, Any]) -> int:
-        """Convertit une valeur en entier borné 0-100, sinon retombe sur final_score.
-
-        Tolérant à la forme : ``85``, ``"85/100"``, ``"Score : 85"`` ou ``"85 %"``
-        sont tous lus comme 85 — un modèle qui répond ``85/100`` ne doit pas faire
-        perdre son jugement au profit du score de l'étape 1.
-        """
+        """Convertit une valeur en entier borné 0-100, sinon retombe sur final_score."""
         number = first_number(value)
         if number is None:
             number = first_number(job.get("final_score"))
@@ -383,18 +454,32 @@ class LLMJudge:
             return 0
         return max(0, min(100, int(round(number))))
 
-    def _fallback(self, job: dict[str, Any], reason: str = "") -> dict[str, Any]:
-        """Fallback défensif : réutilise le score initial et signale le problème."""
-        score = self._coerce_score(job.get("final_score"), job)
+    def _fallback(
+        self, job: dict[str, Any], reason: str = "", is_api_error: bool = False
+    ) -> dict[str, Any]:
+        """Fallback défensif : réutilise le score initial ou signale l'erreur API.
+
+        Si is_api_error est True (ex: quota 429 ou panne réseau), rerank_score est None
+        afin de ne pas corrompre l'offre avec une fausse note 0.0 et de permettre
+        sa réévaluation future.
+        """
+        score = None if is_api_error else self._coerce_score(job.get("final_score"), job)
+        verdict = None if is_api_error else verdict_from_score(score or 0.0)
         return {
             "rerank_score": score,
-            "verdict": verdict_from_score(score),
-            "sub_scores": {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS},
+            "verdict": verdict,
+            "sub_scores": {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS} if not is_api_error else None,
             "hard_cap_triggered": None,
+            "hard_cap_evidence": None,
             "reasoning": "",
+            "flags": [],
             "match_reasons": [],
             "red_flags": [reason] if reason else [],
             "tech_stack": [],
+            "questions_entretien": [],
+            "evidence": {},
+            "information_level": "API_ERROR" if is_api_error else "INSUFFISANT",
+            "api_error": is_api_error,
         }
 
     # ------------------------------------------------------------------ #
@@ -403,15 +488,17 @@ class LLMJudge:
     def judge(self, job: dict[str, Any], cv_text: str | None = None) -> dict[str, Any]:
         """Évalue une offre. Ne lève JAMAIS d'exception (fallback garanti)."""
         if not self.available:
-            return self._fallback(job, reason="DEEPSEEK_API_KEY absente — analyse LLM ignorée.")
-        try:
-            content = self._post_chat(self._build_messages(job, cv_text))
-            return self._parse_response(content, job)
-        except httpx.HTTPStatusError as exc:
             return self._fallback(
-                job, reason=f"Erreur HTTP API DeepSeek ({exc.response.status_code})."
+                job, reason="GEMINI_API_KEY absente — analyse LLM ignorée.", is_api_error=True
             )
-        except httpx.HTTPError as exc:
-            return self._fallback(job, reason=f"Erreur réseau API DeepSeek : {exc}.")
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            return self._fallback(job, reason=f"Réponse API DeepSeek inattendue : {exc}.")
+        try:
+            content = self._post_chat(self._build_content(job, cv_text))
+            return self._parse_response(content, job)
+        except APIError as exc:
+            return self._fallback(
+                job, reason=f"Erreur API Gemini ({exc.code} - {exc.message}).", is_api_error=True
+            )
+        except Exception as exc:
+            return self._fallback(
+                job, reason=f"Réponse API Gemini inattendue : {exc}.", is_api_error=True
+            )

@@ -1,28 +1,40 @@
-EDDY — Élève-ingénieur en dernière année, Mines Saint-Étienne
-Recherche un stage de fin d'études en Data Science / Machine Learning / Data Engineering
+CANDIDAT : Eddy DE CASTRO
+Élève-ingénieur, recherche un PFE de 6 mois en Data Science / Deep Learning / R&D IA
+Disponibilité : début avril 2027, durée 6 mois, stage conventionné de fin d'études
+Localisation : Paris / Île-de-France préféré, reste de la France possible si le sujet est exceptionnel
+Langues : français (natif), anglais C1 (TOEIC 930, pratique professionnelle)
 
-PROFIL
-- Élève-ingénieur à l'École des Mines de Saint-Étienne (cycle ingénieur civil).
-- Spécialisation : Intelligence Artificielle, Machine Learning et Science des Données.
-- Intérêt marqué pour la modélisation prédictive, le NLP et les systèmes distribués.
+=== FORMATION ===
+- 2026-présent : Double diplôme Master 2 Mathématiques en Action (MAEA), majeure data science, Mines Saint-Étienne (co-accrédité Centrale Lyon et ENS Lyon). Contenu : modélisation stochastique, optimisation convexe et non convexe, apprentissage statistique avancé, calcul intensif (HPC), quantification d'incertitudes.
+- 2024-présent : Diplôme d'ingénieur IMT Mines Alès, majeure Intelligence Artificielle et Data Science (Deep Learning, ML avancé, modélisation statistique, algorithmique).
+- 2025-2026 : Licence 3 de Mathématiques Générales, Université de Montpellier (menée en parallèle). Algèbre linéaire, optimisation, calcul différentiel, probabilités approfondies, statistiques.
+- 2022-2024 : Classes préparatoires PCSI / PC*, Lycée Descartes, Tours.
 
-COMPÉTENCES TECHNIQUES
-- Langages : Python, SQL.
-- Machine Learning : scikit-learn, XGBoost, LightGBM, régression, classification, clustering.
-- Deep Learning : PyTorch, TensorFlow, réseaux de neurones, GNN (Graph Neural Networks), Computer Vision, NLP.
-- MLOps / Data Engineering : Docker, Kubernetes, Airflow, MLflow, Spark, dbt, PostgreSQL, SQLite.
-- NLP & LLM : Hugging Face, transformers, embeddings, RAG, fine-tuning de LLM.
-- Visualisation : Streamlit, matplotlib, seaborn, Plotly.
-- Outils : Git, Linux, CI/CD, cloud (AWS, GCP — notions).
+=== EXPÉRIENCE ===
+Stagiaire R&D, Machine Learning et sécurité de l'IA (Graph ML et robustesse)
+Universitat Politècnica de Catalunya (UPC), Barcelone, mai-août 2025 (4 mois)
+- Graph ML et détection d'anomalies : modélisation des activations internes d'un réseau en graphes de similarité (Mutual k-NN, PageRank, spectre du Laplacien). Optimisation d'experts One-Class SVM RBF : ROC AUC 97,9 % en détection de fraude bancaire sur flux très déséquilibré (0,172 % de fraudes, rééchantillonnage SMOTETomek).
+- Attaques adaptatives : substitut différentiable sous PyTorch (autograd) pour contourner l'obfuscation de gradient (BPDA). Taux de succès d'attaque de 48,19 % sur le modèle non durci (PGD, FGSM).
+- Validation statistique : test de McNemar exact et bootstrap apparié (B = 10 000) sur 8 budgets de perturbation. Résultat négatif rigoureusement établi : la surcouche topologique n'apporte pas de gain de sécurité par rapport aux réducteurs classiques.
+- Livrables : rapport de synthèse R&D et présentation de préconisations d'architecture.
 
-EXPÉRIENCES
-- Projet de recherche : détection de fraudes par réseaux de neurones sur graphes (GNN) avec PyTorch.
-- Projet : pipeline ETL Spark pour agréger des données massives puis entraînement d'un modèle de recommandation.
-- Déploiement d'un assistant RAG documentaire avec Docker et Streamlit.
+=== PROJETS ===
+1. ML médical, détection de contraste sur scans 3D (Python, NiBabel, scikit-learn), dataset international PanTS 2025
+- Traitement par lots et normalisation de 420 Go d'images NIfTI (9 000 patients), en amont d'une chaîne de détection de tumeurs pancréatiques.
+- Feature engineering clinique : descripteurs statistiques d'intensité HU (écarts-types, percentiles) modélisant la cinétique du produit de contraste (aorte, foie, reins).
+- Random Forest à 82 % d'accuracy, soit +10 % vs baseline, après filtrage de 15 % d'outliers et recadrage en classification binaire équilibrée.
 
-LANGUES
-- Français (natif), Anglais (courant, TOEIC 950).
+2. Pipeline ETL et analytics macroéconomique (Python, PostgreSQL, Docker, R/Shiny, Plotly), projet personnel
+- Ingestion automatisée multi-sources (Banque Mondiale, SIPRI), modélisation relationnelle PostgreSQL sur 25 ans de séries temporelles hétérogènes.
+- Application interactive conteneurisée avec Docker (budgets de défense, flux macroéconomiques, cartographie Leaflet).
 
-OBJECTIF
-- Stage de 6 mois en Île-de-France à partir de mars 2026.
-- Intéressé par les scale-ups, les labs de recherche et les équipes produit data.
+=== COMPÉTENCES (niveau) ===
+- Solide : Python, PyTorch (autograd, attaques adversariales), scikit-learn, Pandas, NumPy, statistiques inférentielles (McNemar exact, bootstrap apparié, Wilson), optimisation convexe et non convexe, algèbre linéaire, modélisation stochastique, Graph ML spectral (Laplacien, PageRank, k-NN), SQL/PostgreSQL, Linux/Bash, Git/GitHub.
+- Pratique : Docker, pipelines ETL/ELT, données volumineuses (420 Go), FastAPI, Streamlit, matplotlib, seaborn, Plotly, R/Shiny.
+- Notions (usage limité, pas de mise en production à grande échelle) : Transformers et LLM (Hugging Face, RAG, MCP, Qwen 3.5 en local, API DeepSeek), déploiement de modèle (Vercel).
+- Non pratiqué à ce jour : cloud en production (AWS/GCP), Kubernetes, Spark, MLflow, CI/CD, entraînement distribué multi-GPU, publication scientifique.
+
+=== OBJECTIFS ===
+- Apprendre un maximum en data science et deep learning pendant 6 mois, avec de l'ingénierie ML : mise en production, cloud, GPU, CI/CD, suivi d'expériences.
+- Suites envisagées après le PFE, à garder ouvertes : CDI de ML / Research Engineer, thèse (CIFRE de préférence), Master MVA.
+- Préfère : sujets de deep learning avancé, génératif, entraînement ou fine-tuning de modèles, vision 3D/médical, optimisation, avec encadrement par des chercheurs ou des ingénieurs ML seniors, dans une entreprise ou un labo à forte notoriété (nom reconnu et valorisant sur un CV pour être recruté plus tard par de très bonnes entreprises).
