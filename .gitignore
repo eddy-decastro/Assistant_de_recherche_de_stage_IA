@@ -4,8 +4,11 @@ venv/
 __pycache__/
 *.pyc
 
-# --- Secrets ---
+# --- Secrets & Données personnelles ---
 .env
+data/cv_*.txt
+!data/cv_template.txt
+data/*.pdf
 
 # --- Base de données locale ---
 data/*.db

@@ -1,0 +1,34 @@
+CANDIDAT : [Prénom Nom]
+Élève-ingénieur / Étudiant Master, recherche un stage de fin d'études (PFE) de 6 mois en Data Science / R&D IA
+Disponibilité : mars-avril, durée 6 mois, conventionné
+Localisation : France (Île-de-France, Lyon, télétravail partiel)
+Langues : français (natif), anglais (courant)
+
+=== FORMATION ===
+- 2024-présent : École d'ingénieurs / Master IA & Data Science
+- 2022-2024 : Classes préparatoires / Licence Mathématiques - Informatique
+
+=== EXPÉRIENCE ===
+Stagiaire R&D / Data Science (4 mois)
+- Projet d'apprentissage statistique et modélisation prédictive
+- Traitement de données tabulaires et séries temporelles sous Python (Pandas, scikit-learn, PyTorch)
+- Évaluation des métriques de performance et validation croisée
+
+=== PROJETS ===
+1. Modélisation Deep Learning / Vision par ordinateur
+- Entraînement et évaluation de modèles convolutifs sous PyTorch
+- Pipeline d'augmentation de données et analyse d'erreurs
+
+2. Pipeline de traitement de données et dashboard interactif
+- Ingestion automatisée et stockage relationnel (PostgreSQL / SQLite)
+- Visualisation interactive sous Streamlit / Plotly
+
+=== COMPÉTENCES ===
+- Langages & Frameworks : Python, PyTorch, scikit-learn, Pandas, NumPy, SQL
+- Outils & Environnement : Git, Docker, Linux, Bash, Streamlit
+- Mathématiques & Modélisation : Statistiques, Algèbre linéaire, Optimisation
+
+=== OBJECTIFS DE STAGE ===
+- Mission de 6 mois avec une forte composante mathématique et algorithmique (Machine Learning, Deep Learning, MLOps)
+- Encadrement technique de qualité (chercheurs, ingénieurs seniors) au sein d'une équipe R&D ou Data
+

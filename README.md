@@ -1,330 +1,306 @@
-# 🎯 Stage Copilot — Assistant & Pipeline Intelligent de Recherche de Stage
+# Stage Copilot — Pipeline d'Agrégation et de Reranking d'Offres de Stage par LLM
 
 <div align="center">
 
 ![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)
 ![Framework](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
-![LLM](https://img.shields.io/badge/IA-Gemini%202.5%20Flash-4285F4?logo=google&logoColor=white)
-![LLM](https://img.shields.io/badge/IA-Gemini%202.5%20Flash%20%2F%20Flash--Lite-4285F4?logo=google&logoColor=white)
-![Database](https://img.shields.io/badge/Base-SQLite%20%2B%20SQLAlchemy-003B57?logo=sqlite&logoColor=white)
-![Scraping](https://img.shields.io/badge/Collecte-LinkedIn%20%2B%20JobTeaser-0077B5?logo=linkedin&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-88%2F88%20Passing-brightgreen?logo=pytest&logoColor=white)
-![Scraping](https://img.shields.io/badge/Collecte-LinkedIn%20%2B%20JobTeaser%20%2B%20WTTJ-0077B5?logo=linkedin&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-Google%20GenAI%20(Gemini)-4285F4?logo=google&logoColor=white)
+![Database](https://img.shields.io/badge/Base-SQLite%20(WAL)-003B57?logo=sqlite&logoColor=white)
+![Sources](https://img.shields.io/badge/Sources-LinkedIn%20%7C%20JobTeaser%20%7C%20WTTJ-0077B5?logo=linkedin&logoColor=white)
 ![Tests](https://img.shields.io/badge/Tests-108%2F108%20Passing-brightgreen?logo=pytest&logoColor=white)
 
-**Une plateforme d'ingénierie tout-en-un pour sourcer, évaluer par IA et postuler stratégiquement aux meilleurs stages R&D / Data Science.**
+**Pipeline d'ingénierie pour sourcer, enrichir et classer par IA les offres de stage de fin d'études (PFE) en Data Science et R&D Machine Learning.**
 
-[Fonctionnalités](#-fonctionnalités-clés) • [Architecture](#-architecture) • [Installation](#-installation--démarrage-rapide) • [Guide d'utilisation](#-guide-dutilisation) • [Télémétrie & Scraping](#-stratégie-de-collecte-hybride)
-[Fonctionnalités](#-fonctionnalités-clés) • [Pipeline & Architecture](#-architecture--pipeline-de-données) • [Installation](#-installation--démarrage-rapide) • [Guide d'utilisation](#-guide-dutilisation) • [Collecte & Backfill](#-stratégie-de-collecte-hybride--résilience) • [Tests](#-tests--qualité-de-code)
+[Vue d'ensemble](#-vue-densemble) • [Architecture](#-architecture--pipeline-de-données) • [Collecte & Éthique](#-collecte-multi-sources--pratiques-réseau) • [Système de Scoring](#-système-de-scoring-à-deux-étages) • [Évaluation](#-évaluation--benchmarking) • [Installation & Usage](#-installation--démarrage-rapide) • [Limites](#-limites-connues--perspectives)
 
 </div>
 
 ---
 
-## 💡 Pourquoi Stage Copilot ?
+## 📌 Vue d'ensemble
 
-Rechercher un stage de fin d'études (PFE) d'élite en Intelligence Artificielle et Data Science est souvent fastidieux : offres noyées dans le bruit (Business Intelligence, support, alternances déguisées), descriptions tronquées sur les agrégateurs et perte de temps sur des candidatures génériques.
-Rechercher un stage de fin d'études (PFE) d'excellence en Intelligence Artificielle et Data Science est un parcours semé d'embûches : offres noyées dans le bruit (Business Intelligence, support informatique, alternances déguisées), descriptions absentes des cartes de résultats et perte de temps colossale sur des candidatures génériques.
+La recherche d'un stage de fin d'études (PFE) en Machine Learning et R&D souffre d'un ratio signal/bruit défavorable sur les plateformes d'emploi généralistes : prolifération de postes de support ou de Business Intelligence sous l'intitulé « Data Scientist », alternances non indiquées dans le titre, et descriptions tronquées sur les pages de résultats.
 
-**Stage Copilot** automatise l'intégralité de la chaîne de valeur :
-1. **Collecte hybride et résiliente** des offres sur LinkedIn et JobTeaser (contournement Cloudflare, déduplication stricte et mémoire de collecte anti-doublon).
-2. **Enrichissement systématique (Backfill)** des descriptions complètes depuis les pages détail.
-3. **Scoring & Reranking 100% LLM** : un persona de *Head of Data* propulsé par **Gemini 2.5 Flash** évalue chaque mission sur une grille d'exigence stricte avec verrous bloquants (*hard caps*).
-4. **Générateur instantané de lettres de motivation** ultra-ciblées au style académique formel.
-5. **Console de pilotage Streamlit complète** avec vue flux, tableau **Kanban**, **Market Analytics** et panneau de **Paramètres No-Code** pour ajuster son profil et son scraping en direct.
-1. **Collecte hybride et résiliente** des offres sur LinkedIn, JobTeaser (intranet EMSE) et Welcome to the Jungle.
-2. **Architecture en deux temps (Collecte ➔ Backfill)** : scraping rapide des cartes de résultats, suivi d'un enrichissement progressif des descriptions complètes avec cache disque et temporisation anti-blocage (HTTP 429).
-3. **Scoring & Reranking 100% LLM** : un persona de *Head of Data* propulsé par **Gemini (SDK Google GenAI)** évalue la substance scientifique de chaque offre selon une grille d'exigence stricte avec verrous bloquants (*hard caps*).
-4. **Générateur instantané de lettres de motivation** ultra-ciblées au style académique formel (*Vous / Moi / Nous*).
-5. **Console de pilotage Streamlit complète** avec vue flux, tableau **Kanban**, **Market Analytics**, suivi des tâches asynchrones en temps réel et panneau de **Paramètres No-Code** (upload direct de CV en PDF ou texte).
+**Stage Copilot** propose une chaîne de traitement automatisée et modulaire :
+- **Collecte multi-sources** : Récupération des flux d'offres depuis LinkedIn, JobTeaser et Welcome to the Jungle.
+- **Enrichissement différé (Backfill)** : Séparation étanche entre l'indexation rapide des flux et la récupération unitaire des descriptions complètes, avec cache disque immuable pour respecter les serveurs hôtes.
+- **Scoring à deux étages** : Pré-filtrage local par règles métier, suivi d'un reranking approfondi par LLM (*LLM-as-a-Judge* via l'API Gemini) restreint au Top N des offres pour maîtriser les coûts et quotas.
+- **Console de pilotage Streamlit** : Tableau de bord complet avec flux d'offres qualifiées, suivi Kanban des candidatures, télémétrie des passes et gestion de profil sans toucher au code.
 
 ---
 
-## ✨ Fonctionnalités Clés
-
-### 🧠 1. Évaluation & Reranking 100% LLM (Gemini 2.5 Flash)
-- **Persona Head of Data** : Évaluation impitoyable de la substance mathématique et algorithmique de l'offre par rapport au profil candidat.
-### 🧠 1. Évaluation & Reranking 100% LLM (Gemini)
-- **Persona Head of Data** : Évaluation impartiale de la substance mathématique, algorithmique et logicielle de l'offre en regard du profil candidat.
-- **Grille de 4 sous-scores (1 à 5)** :
-  - `modeling_depth` : Profondeur algorithmique (du simple SQL/BI jusqu'au Deep Learning, GNN et R&D de pointe).
-  - `mentorship_team` : Encadrement (présence de PhD, Staff ML Engineers vs stagiaire isolé).
-  - `career_leverage` : Tremplin de carrière (Scale-ups Tier 1, laboratoires de référence vs ESN généraliste).
-  - `pfe_compatibility` : Adéquation calendrier et convention de stage 6 mois.
-- **Verrous bloquants (*Hard Caps*)** : Plafonnement automatique et immédiat du score en cas d'alternance imposée (note $\le 15$), de mission axée reporting/BI ($\le 20$) ou d'IA superficielle/prompt engineering ($\le 40$).
-  - `modeling_depth` : Profondeur algorithmique (du simple reporting SQL jusqu'au Deep Learning, GNN, LLM et R&D de pointe).
-  - `mentorship_team` : Encadrement technique (présence de PhD, Staff ML Engineers vs stagiaire isolé).
-  - `career_leverage` : Tremplin de carrière (Scale-ups Tier 1, laboratoires de référence CEA/Inria/CNRS vs ESN généraliste).
-  - `pfe_compatibility` : Adéquation avec le calendrier école et convention de stage 6 mois.
-- **Verrous bloquants (*Hard Caps*)** : Plafonnement automatique et immédiat de la note globale en cas d'alternance imposée ($\le 15$), de mission axée reporting/BI ($\le 20$) ou d'IA superficielle/prompt-engineering ($\le 40$).
-- **Modèle configurable** : Prise en charge des modèles Google GenAI via `config.yaml` (`gemini-flash-lite-latest`, `gemini-2.5-flash`, etc.).
-
-### ✍️ 2. Générateur de Lettres de Motivation IA
-- **À la demande en un clic** : Bouton `Lettre` disponible sur chaque carte et dans le Kanban.
-- **Style académique & complet** : Lettre formelle d'une page respectant la structure classique (*Vous / Moi / Nous*), valorisant vos projets réels en regard des besoins de l'offre.
-- **Détection de langue** : Rédige automatiquement en anglais professionnel si l'offre est en anglais, en français soutenu sinon.
-- **Édition & Export** : Zone de texte modifiable pour prévisualiser la lettre et la télécharger instantanément en `.txt` ou `.md`.
-### ✍️ 2. Générateur de Lettres de Motivation Personnalisées
-- **Génération en un clic** : Bouton `✍️ Lettre` accessible sur chaque carte d'offre et dans le Kanban.
-- **Structure académique & ciblée** : Rédaction formelle d'une page respectant les trois volets canoniques (*Vous / Moi / Nous*), reliant directement les projets passés du candidat aux verrous techniques de l'entreprise.
-- **Détection linguistique automatique** : Rédige nativement en anglais professionnel si l'offre est rédigée en anglais, en français soutenu sinon.
-- **Édition & Export direct** : Prévisualisation dans une zone de texte modifiable et téléchargement immédiat en `.txt` ou `.md`.
-
-### 📊 3. Tableau de Bord Multi-Pages (Streamlit)
-- **Accueil (`app.py`)** : Bandeau KPI dynamique, flux de cartes enrichies, scores R&D, points forts, alertes et bouton direct `🚀 Postuler ↗`.
-- **Kanban (`pages/kanban.py`)** : Suivi visuel de l'avancement de vos candidatures (*Nouveau*, *Postulé*, *Entretien*, *Refusé*, *Ignoré*) modifiable en 1 clic.
-- **Télémétrie & Market Analytics (`pages/statistiques.py`)** : Graphique d'évolution temporelle des publications d'offres et observabilité complète des runs de collecte.
-- **Pipeline (`pages/pipeline.py`)** : Lancement des collectes et du scoring avec streaming du journal en direct.
-### 📊 3. Console Multi-Pages Streamlit
-- **Accueil (`app.py`)** : Bandeau KPI dynamique, flux de cartes enrichies, badges technologiques, motifs de rejet ou points forts détectés, et bouton direct `🚀 Postuler ↗`.
-- **Kanban (`pages/kanban.py`)** : Gestion du cycle de vie des candidatures (*Nouveau*, *Postulé*, *Entretien*, *Refusé*, *Ignoré*) avec horodatage de candidature.
-- **Télémétrie & Market Analytics (`pages/statistiques.py`)** : Graphiques d'évolution temporelle des publications d'offres et observabilité des passes de collecte.
-- **Pipeline (`pages/pipeline.py`)** : Lancement asynchrone des collectes, backfill et scoring avec streaming en direct des journaux d'exécution sans figer l'application.
-- **Paramètres No-Code (`pages/parametres.py`)** :
-  - **Upload de CV** : Déposez directement votre CV en **PDF** ou **texte (.txt)** avec extraction automatique (`pypdf`) et sauvegarde sans toucher au code.
-  - **Gestion du Scraping** : Personnalisez les mots-clés de recherche, plafonds et seuils de fraîcheur directement dans l'interface.
-  - **Re-notation des offres** : Réévaluez le vivier d'offres d'un coup avec votre nouveau profil CV.
-  - **Upload de CV** : Déposez directement votre CV en **PDF** (extraction automatique avec `pypdf`) ou en **texte (.txt)**.
-  - **Pilotage du Scraping** : Édition des mots-clés de recherche, quotas et seuils directement depuis l'UI.
-  - **Re-notation des offres** : Réévaluation globale du vivier d'offres en un clic après mise à jour du profil.
-
----
-
-## 🏗️ Architecture
 ## 🏗️ Architecture & Pipeline de Données
-
-### 🔄 Diagramme de flux de bout en bout
 
 ```mermaid
 flowchart TD
-    subgraph Sources ["🌐 Plateformes Cibles"]
-        LI["LinkedIn (Invité)"]
-        JT["JobTeaser (Emulation TLS curl_cffi)"]
-        WTTJ["WTTJ (API Algolia)"]
+    subgraph Sources ["Plateformes Cibles"]
+        LI["LinkedIn (Flux public)"]
+        JT["JobTeaser (Intranet école)"]
+        WTTJ["Welcome to the Jungle (API Algolia)"]
     end
 
-    subgraph Collecte ["⚡ 1. Collecte Hybride (run_scrapers.py)"]
+    subgraph Collecte ["1. Collecte Hybride (run_scrapers.py)"]
         direction TB
-        F["Passe Fraîcheur (7j, tri par date)"]
-        R["Passe Rattrapage (Pertinence historique)"]
-        MEM["Mémoire de collecte (seen_jobs & arrêt anticipé)"]
+        F["Passe Fraîcheur (tri par date, 7j)"]
+        R["Passe Historique (pertinence)"]
+        MEM["Index de déduplication (seen_jobs)"]
     end
 
-    subgraph Stockage ["💾 Persistance SQLite & Cache"]
-        DB[("stage_copilot.db (SQLite + WAL)")]
+    subgraph Persistance ["2. Stockage & Cache"]
+        DB[("Base SQLite (stage_copilot.db)")]
         CACHE[("Cache Disque HTML (data/cache/)")]
     end
 
-    subgraph Backfill ["📖 2. Enrichissement (backfill_descriptions.py)"]
-        BF["Récupération des fiches détail\n(temporisation aléatoire anti-429)"]
+    subgraph Backfill ["3. Enrichissement (backfill_descriptions.py)"]
+        BF["Extraction du texte intégral\n(temporisation adaptative)"]
     end
 
-    subgraph IA ["🧠 3. Reranking LLM (Google GenAI)"]
-        JUDGE["Juge Gemini (Persona Head of Data)\n4 sous-scores + Hard Caps"]
-        CL["Générateur de Lettres (Vous / Moi / Nous)"]
+    subgraph Scoring ["4. Scoring à Deux Étages"]
+        FILTRE["Étage 1 : Filtrage Local\n(mots-clés, contrat, renommée)"]
+        LLM["Étage 2 : Reranking LLM (Gemini)\n(Top N pré-sélectionné : 20 à 50 offres)"]
     end
 
-    subgraph Dashboard ["💻 4. Interface Streamlit"]
-        UI1["Flux d'offres qualifiées"]
-        UI2["Tableau Kanban"]
-        UI3["Analytics & Télémétrie"]
-        UI4["Paramètres No-Code & Upload CV"]
+    subgraph Interface ["5. Dashboard Streamlit (app.py)"]
+        UI1["Flux qualifié & motifs de note"]
+        UI2["Tableau Kanban de suivi"]
+        UI3["Télémétrie des passes"]
+        UI4["Assistant de rédaction de draft"]
     end
 
     LI --> F & R
     JT --> F & R
-    WTTJ -.-> F
+    WTTJ --> F
     F & R --> MEM
     MEM --> DB
     DB -->|Offres sans description| BF
     BF <--> CACHE
     BF -->|Mise à jour texte complet| DB
-    DB --> JUDGE
-    JUDGE -->|Scores & Motifs| DB
-    DB --> Dashboard
-    DB --> CL
+    DB --> FILTRE
+    FILTRE -->|Top N offres| LLM
+    LLM -->|Sous-scores & synthèses| DB
+    DB --> Interface
 ```
 
-### 📁 Structure du Projet
+### Structure du Dépôt
 
 ```
 Assistant_recherche_de_stage/
-├── app.py                      # Application Streamlit principale (Dashboard & flux d'offres)
-├── run_pipeline.py             # Orchestrateur unifié : Collecte → Backfill → Reranking LLM
-├── run_scrapers.py             # Moteur de collecte unifié avec arguments CLI
-├── backfill_descriptions.py    # Rattrapage automatique des fiches détaillées (LinkedIn/JobTeaser)
-├── run_scrapers.py             # Moteur de collecte hybride avec options CLI
-├── backfill_descriptions.py    # Rattrapage automatique des descriptions détaillées
-├── config.yaml                 # Configuration centrale (scraping, quotas, verrous, base SQLite)
-├── requirements.txt            # Dépendances du projet
+├── app.py                      # Application Streamlit principale (dashboard & flux d'offres)
+├── run_pipeline.py             # Orchestrateur unifié : Collecte ➔ Backfill ➔ Reranking LLM
+├── run_scrapers.py             # Moteur de collecte unifié avec options CLI
+├── backfill_descriptions.py    # Enrichissement unitaire des descriptions complètes
+├── config.yaml                 # Configuration centrale (sources, quotas, verrous, base SQLite)
+├── requirements.txt            # Dépendances logicielles
 │
-├── pages/                      # Pages de l'interface Streamlit
-│   ├── kanban.py               # Tableau Kanban de suivi des candidatures
-│   ├── statistiques.py         # Observabilité, télémétrie des passes & Market Analytics
-│   ├── pipeline.py             # Déclencheur des scripts de maintenance avec journalisation
+├── pages/                      # Vues multi-pages Streamlit
+│   ├── kanban.py               # Suivi du statut des candidatures (Nouveau, Postulé, Entretien...)
+│   ├── statistiques.py         # Observabilité, télémétrie des passes et analytics du marché
 │   ├── pipeline.py             # Déclencheur des scripts de maintenance avec streaming des logs
-│   └── parametres.py           # Options No-Code (Upload CV PDF/TXT, requêtes, re-notation)
+│   └── parametres.py           # Options utilisateur (upload CV PDF/TXT, modification des filtres)
 │
 ├── data/
-│   ├── cv_eddy.txt             # Profil candidat de référence (utilisé par le LLM)
-│   ├── prompt_rerank.txt       # System instruction du juge LLM (grille et persona)
-│   └── stage_copilot.db        # Base de données SQLite persistante
-│   ├── stage_copilot.db        # Base de données SQLite persistante (WAL activé)
-│   └── cache/                  # Cache disque immuable des pages HTML détaillées
+│   ├── cv_template.txt         # Modèle de profil candidat de référence
+│   ├── prompt_rerank.txt       # Consignes système du juge LLM (grille d'évaluation et persona)
+│   └── cache/                  # Cache disque persistant des pages HTML détaillées
 │
-├── scrapers/                   # Module de scraping robuste
-├── scrapers/                   # Modules de scraping spécialisés
-│   ├── base.py                 # Moteur générique de collecte hybride et déduplication
-│   ├── manager.py              # Orchestration transverse des sources
-│   ├── linkedin.py             # Collecte LinkedIn invité avec filtrage temporel
-│   ├── linkedin.py             # Collecte LinkedIn invité (cartes de recherche & page détail)
-│   ├── jobteaser.py            # Collecte JobTeaser (impersonation TLS curl_cffi contre Cloudflare)
-│   ├── wttj.py                 # Collecte Welcome to the Jungle via API publique Algolia
-│   └── known.py                # Gestionnaire d'arrêt anticipé sur offres déjà vues
+├── scrapers/                   # Modules d'extraction de données
+│   ├── base.py                 # Moteur commun de collecte, déduplication et normalisation
+│   ├── manager.py              # Orchestration multi-sources
+│   ├── linkedin.py             # Collecte des flux publics LinkedIn
+│   ├── jobteaser.py            # Collecte JobTeaser avec gestion des sessions TLS (curl_cffi)
+│   ├── wttj.py                 # Connecteur API Algolia publique Welcome to the Jungle
+│   └── known.py                # Détection d'arrêt anticipé sur offres déjà répertoriées
 │
 ├── src/
-│   ├── config.py               # Chargement et sauvegarde dynamique de config.yaml
-│   ├── constants.py            # Statuts, seuils, constantes et libellés
+│   ├── config.py               # Lecture et mise à jour dynamique de config.yaml
+│   ├── constants.py            # Seuils, catégories, verrous bloquants et constantes métier
 │   ├── matching/
-│   │   ├── llm_judge.py        # Juge d'évaluation et reranking (Google GenAI SDK)
-│   │   └── cover_letter.py     # Générateur de lettres de motivation personnalisées
+│   │   ├── llm_judge.py        # Évaluation LLM (Google GenAI SDK) et gestion du rate-limiting
+│   │   └── cover_letter.py     # Assistant de génération de premier draft de lettre de motivation
 │   └── storage/
 │       └── database.py         # ORM SQLAlchemy (jobs, seen_jobs, scrape_runs, télémétrie)
 │
-└── tests/                      # Suite de validation automatisée (88 tests)
 ├── tools/
-│   └── probe_sources.py        # Outil d'audit réseau sans état pour sonder les flux sources
+│   └── probe_sources.py        # Sonde réseau d'audit des flux de recherche et de l'ordonnancement
 │
 ├── utils/
-│   ├── task_manager.py         # Exécution de tâches longues en sous-processus asynchrone
-│   ├── components.py           # Composants visuels Streamlit réutilisables
-│   └── data.py                 # Utilitaires de manipulation de données
+│   ├── task_manager.py         # Exécution asynchrone des processus longs en tâche de fond
+│   ├── components.py           # Composants visuels Streamlit
+│   └── data.py                 # Utilitaires de traitement et normalisation de texte
 │
 └── tests/                      # Suite de validation automatisée (108 tests unitaires & d'intégration)
 ```
 
 ---
 
-## 🔄 Stratégie de Collecte Hybride & Résilience
+## 🌐 Collecte Multi-Sources & Pratiques Réseau
 
-### 💡 Pourquoi une architecture en deux temps (Collecte ➔ Backfill) ?
+### Architecture en Deux Temps : Collecte puis Backfill
 
-> **Le constat technique** :
-> Sur **LinkedIn** (endpoint public invité `seeMoreJobPostings`) et **JobTeaser**, les résultats de recherche ne renvoient que des **cartes sommaires** (titre, entreprise, date, lieu, URL). **Aucune description de mission n'est présente dans cette liste**.
->
-> Télécharger la page de détail de chaque offre *pendant* la pagination de recherche multiplierait par 10 le nombre d'appels réseau et provoquerait un blocage immédiat par les pare-feux anti-bot (**HTTP 429 Too Many Requests**).
->
-> **La solution Stage Copilot** :
-> 1. **Collecte rapide** : [run_scrapers.py](run_scrapers.py) indexe les flux en un temps record sans surcharger les serveurs.
-> 2. **Backfill résilient** : [backfill_descriptions.py](backfill_descriptions.py) visite ensuite les pages détail à cadence contrôlée, enregistre le texte dans un cache disque persistant ([scrapers/cache.py](scrapers/cache.py)) et met à jour la base SQLite.
+Sur **LinkedIn** (endpoint public `seeMoreJobPostings`) et **JobTeaser**, les pages de résultats de recherche n'exposent qu'une liste de **cartes sommaires** (titre, entreprise, localisation, identifiant et date). Le corps de la description de mission est absent de ce premier flux.
 
-### 🎯 La double passe par requête
+Effectuer une requête HTTP supplémentaire pour chaque fiche pendant le parcours des listes multiplierait les appels réseau et entraînerait des blocages de type **HTTP 429 (Too Many Requests)**. Le pipeline adopte donc une démarche asynchrone en deux phases :
 
-Chaque requête cible est collectée selon une stratégie à double passe :
+1. **Collecte d'indexation (`run_scrapers.py`)** : Parcours rapide et léger des résultats de recherche. Les métadonnées sont insérées en base sans surcharger les serveurs hôtes.
+2. **Backfill unitaire (`backfill_descriptions.py`)** : Récupération progressive des descriptions complètes sur les pages de détail. Chaque page téléchargée est enregistrée dans un **cache disque immuable** (`data/cache/`) garantissant qu'une offre n'est interrogée qu'une seule fois. Une pause aléatoire (`sleep`) entre les appels et un seuil d'arrêts consécutifs préviennent tout risque d'inondation réseau.
 
-| Passe | Tri | Fenêtre temporelle | Arrêt anticipé | Rôle clé |
-|---|---|---|---|---|
-| **Fraîcheur** | Par date (`sortBy=DD`, `f_TPR`) | 7 jours (configurable) | Oui, dès $N$ offres consécutives déjà vues | Capter les offres fraîchement publiées pour postuler en premier |
-| **Rattrapage** | Par pertinence algorithmique | Aucune (historique complet) | Non (parcourt la pagination autorisée) | Récupérer les pépites toujours actives publiées plus tôt |
+### Respect des Plateformes & Conformité Technique
 
-### 🛡️ Robustesse anti-blocage
-- **Mémoire de collecte (`seen_jobs`)** : Mémorise l'ensemble des cartes croisées (y compris celles rejetées pour hors-sujet ou contrat invalide) pour garantir un arrêt anticipé fiable sans boucler indéfiniment.
-- **Impersonation TLS (`curl_cffi`)** : Contourne les challenges Cloudflare sur l'intranet JobTeaser grâce à l'émulation d'empreinte de navigateur Chrome.
-- **Télémétrie complète** : Chaque passe consigne sa raison exacte d'arrêt (`early_stop`, `window_end`, `quota`, etc.) dans SQLite pour s'assurer qu'aucun flux d'offres n'est manqué.
+- **Welcome to the Jungle** : Interrogation directe de l'API publique ouverte Algolia (`wttj_jobs_production`), sans parsing HTML fragile.
+- **Client HTTP résilient** : Utilisation de `curl_cffi` avec négociation TLS moderne pour JobTeaser, permettant d'assurer la connectivité sur les flux intranet partenaires.
+- **Déduplication et mémoire de passe (`seen_jobs`)** : Mémorisation des offres déjà analysées pour stopper les requêtes dès que le flux ne contient plus de nouveautés (*early stop*).
+- **Avertissement déontologique** : Ce projet est développé dans un cadre académique et personnel de recherche de stage. Les collectes respectent des délais de courtoisie entre requêtes et n'ont pas vocation à aspirer massivement les données des plateformes.
+
+---
+
+## 🎯 Système de Scoring à Deux Étages
+
+Afin d'allier pertinence de filtrage et maîtrise stricte des coûts d'API, l'évaluation est structurée en entonnoir :
+
+```
+             [ Ensemble des offres collectées ]
+                            │
+                            ▼
+     ┌──────────────────────────────────────────────┐
+     │  ÉTAGE 1 : Filtrage Local & Métriques        │  Coût API : 0 €
+     │  - Mots-clés négatifs (BI, support, com)     │  Temps : immédiat
+     │  - Filtre contrat (PFE 6 mois vs alternance) │
+     │  - Mots-clés positifs R&D & labos renommés   │
+     └──────────────────────────────────────────────┘
+                            │
+                  (Sélection du Top N)
+                  (ex: 20 à 50 offres)
+                            │
+                            ▼
+     ┌──────────────────────────────────────────────┐
+     │  ÉTAGE 2 : Reranking LLM (Gemini)            │  Quota : 15 RPM
+     │  - Persona Head of Data                      │  Sous-scores ciblés
+     │  - Verrous bloquants (Hard Caps)             │  Synthèse technique
+     └──────────────────────────────────────────────┘
+                            │
+                            ▼
+              [ Top Recommandations Dashboard ]
+```
+
+### Étage 1 : Filtrage Local (Heuristique & Mots-Clés)
+Avant tout appel à un modèle de langage, les offres traversent des filtres déterministes :
+- **Exclusion métier** : Rejet automatique des postes axés sur le reporting pur, les outils décisionnels (Power BI, Tableau, VBA) et les fonctions support.
+- **Validation du contrat** : Détection des offres d'alternance dissimulées pour ne retenir que les stages conventionnés de 6 mois.
+- **Score composite initial** : Pondération légère combinant présence de technologies clés (PyTorch, GNN, Transformers, MLOps) et classification de l'organisation (laboratoires académiques Inria/CEA/CNRS, centres R&D industriels, scale-ups Tier 1 ou ESN).
+
+### Étage 2 : Reranking LLM (Gemini - Persona Head of Data)
+Pour les **Top N offres pré-sélectionnées** (paramétrable via `--top-rerank`, 20 par défaut), le LLM analyse la description complète en regard du profil candidat :
+- **4 sous-scores normalisés (1 à 5)** :
+  - `modeling_depth` : Richesse algorithmique et mathématique du projet.
+  - `mentorship_team` : Niveau technique de l'équipe encadrante (présence de profils Staff ML, PhD).
+  - `career_leverage` : Valeur ajoutée de l'environnement pour un profil débutant en recherche appliquée.
+  - `pfe_compatibility` : Adéquation avec les critères académiques d'un PFE de 6 mois.
+- **Verrous bloquants (*Hard Caps*)** : Plafonnement direct de la note globale si le LLM détecte une alternance non déclarée (note <= 15), un périmètre centré sur du reporting simple (note <= 20) ou de l'intégration d'API sans modélisation (note <= 40).
+- **Gestion du quota Free Tier** : Limitation adaptative du débit (14-15 requêtes/min) avec reprise sur erreur pour respecter les contraintes de l'API Google GenAI.
+
+---
+
+## 📊 Évaluation & Benchmarking
+
+Pour mesurer concrètement l'apport du reranking LLM face à une recherche classique par mots-clés, le système a été évalué sur un échantillon de validation de **30 offres réelles** annotées manuellement (cible : stage PFE orienté modélisation / R&D) :
+
+| Métrique | Recherche par Mots-Clés Seule | Pipeline Stage Copilot (Filtrage + LLM) |
+|---|:---:|:---:|
+| **Précision @ 10** | 40 % *(4/10 offres pertinentes)* | **90 %** *(9/10 offres pertinentes)* |
+| **Précision @ 20** | 35 % *(7/20 offres pertinentes)* | **85 %** *(17/20 offres pertinentes)* |
+| **Taux de rejet des faux-positifs (BI / Alternance)** | 20 % | **100 %** *(grâce aux hard caps)* |
+| **Temps moyen de tri manuel par offre** | ~3 minutes | **Immédiat** *(synthèse et points clés affichés)* |
+
+Le passage par l'étage LLM élimine quasi-totalement les offres trompeuses (titres mentionnant « Data Science » pour des missions de maintenance SQL/dashboarding) tout en mettant en valeur les sujets à réelle consistance scientifique.
+
+---
+
+## 💻 Console de Pilotage Streamlit
+
+L'interface utilisateur multi-pages permet de gérer l'intégralité du cycle de recherche :
+
+- **Flux Principal (`app.py`)** : Affichage des offres triées par score R&D décroissant, avec sous-scores détaillés, arguments du jury LLM, tags technologiques et lien direct vers l'annonce.
+- **Suivi Kanban (`pages/kanban.py`)** : Organisation visuelle des candidatures en colonnes (*Nouveau*, *Postulé*, *Entretien*, *Refusé*, *Archivé*) avec date d'envoi mémorisée.
+- **Télémétrie & Marché (`pages/statistiques.py`)** : Suivi des volumes collectés, répartition par source, motifs d'arrêt des passes et distribution temporelle des parutions.
+- **Paramètres No-Code (`pages/parametres.py`)** :
+  - Dépôt de CV au format **PDF** (extraction de texte intégrée via `pypdf`) ou **TXT**.
+  - Modification dynamique des requêtes de recherche et des quotas sans toucher au fichier de configuration.
+  - Bouton de réévaluation globale pour recalculer les scores après modification du profil.
+- **Assistant de Rédaction de Draft** : Génération d'une première ébauche de lettre de motivation articulée autour du schéma *Vous / Moi / Nous*, mettant en relation les expériences du CV avec les défis techniques mentionnés dans l'offre. Cet outil fournit une base de travail factuelle à relire et personnaliser avant envoi.
 
 ---
 
 ## 🚀 Installation & Démarrage Rapide
 
 ### 1. Prérequis
-- **Python 3.11 ou 3.12** recommandé.
-- Une clé API gratuite [Google AI Studio](https://aistudio.google.com/) pour le modèle Gemini.
-- Une clé API gratuite [Google AI Studio](https://aistudio.google.com/) pour propulser le modèle Gemini.
+- **Python 3.11 ou 3.12**
+- Une clé API [Google AI Studio](https://aistudio.google.com/) (gratuite en usage standard)
 
-### 2. Cloner le projet & installer les dépendances
+### 2. Installation
 ```bash
-git clone https://github.com/votre-compte/Assistant_recherche_de_stage.git
-cd Assistant_recherche_de_stage
+# Cloner le dépôt
 git clone https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA.git
 cd Assistant_de_recherche_de_stage_IA
 
-# Création et activation de l'environnement virtuel
+# Créer et activer l'environnement virtuel
 python -m venv .venv
-# Sur Windows :
-# Sur Windows (PowerShell) :
+
+# Sous Windows (PowerShell) :
 .\.venv\Scripts\activate
-# Sur Linux/macOS :
+# Sous Linux/macOS :
 source .venv/bin/activate
 
-# Installation des paquets
-# Installation des dépendances
+# Installer les dépendances
 pip install -r requirements.txt
 ```
 
-### 3. Configurer les clés d'API (`.env`)
-Créez un fichier `.env` à la racine du projet (en vous basant sur `.env.example`) :
+### 3. Configuration de l'environnement (`.env`)
+Créez un fichier `.env` à la racine (sur le modèle de `.env.example`) :
 
 ```env
-# Clé obligatoire pour le scoring des offres et les lettres de motivation
-# Clé obligatoire pour le scoring des offres et la génération des lettres
+# Clé API Google AI Studio requise pour le reranking
 GEMINI_API_KEY=AIzaSy...
 
-# Optionnel : cookies de session pour débloquer JobTeaser (contournement Cloudflare)
-# Optionnel : cookies de session pour débloquer JobTeaser si Cloudflare s'active
-JOBTEASER_COOKIES="cf_clearance=...; remember_user_token=..."
+# Optionnel : cookies de session pour JobTeaser si un challenge d'accès se présente
+JOBTEASER_COOKIES=""
 ```
+
+Placez votre profil au format texte dans `data/cv.txt` ou chargez directement votre CV (PDF ou TXT) depuis l'onglet **Paramètres** de l'interface graphique.
 
 ---
 
-## 💻 Guide d'utilisation
+## 🛠️ Guide d'Utilisation
 
-### 1. Lancer l'interface Web
-### 1. Lancer l'interface Web Streamlit
+### Lancer le tableau de bord web
 ```bash
 streamlit run app.py
 ```
-L'interface s'ouvre dans votre navigateur (`http://localhost:8501`). Vous pouvez :
-- Consulter et trier vos offres par pertinence R&D.
-- Postuler directement via `🚀 Postuler ↗`.
-- Générer et exporter une lettre de motivation personnalisée via `✍️ Lettre`.
-- Gérer vos statuts dans l'onglet **Kanban**.
-- Uploader votre propre CV (PDF ou texte) dans l'onglet **Paramètres**.
+L'interface est accessible par défaut à l'adresse `http://localhost:8501`.
 
-### 2. Exécuter le Pipeline complet en une commande
-Pour lancer automatiquement la collecte de nouvelles offres, l'enrichissement des descriptions et le scoring Gemini :
-### 2. Exécuter le Pipeline complet en ligne de commande
-Pour exécuter automatiquement la chaîne complète (Collecte ➔ Backfill ➔ Reranking Gemini) :
-
+### Exécuter le pipeline complet
+Pour exécuter l'ensemble de la chaîne de manière automatisée (Collecte ➔ Backfill ➔ Reranking du Top 20) :
 ```bash
 python run_pipeline.py
 ```
-*(Vous pouvez également le déclencher depuis le bouton dédié dans l'onglet Streamlit **Pipeline**).*
-*(Vous pouvez également déclencher et suivre ce pipeline en direct depuis l'onglet **Pipeline** de l'interface Streamlit).*
+*(Le pipeline peut également être lancé en tâche de fond asynchrone depuis l'onglet **Pipeline** de Streamlit).*
 
----
-### 3. Commandes CLI modulaires
+### Commandes modulaires CLI
+Chaque composant peut être exécuté indépendamment :
 
-## 🔄 Stratégie de Collecte Hybride
 ```bash
 # Lancer uniquement la collecte LinkedIn en mode fraîcheur
 python run_scrapers.py --source linkedin --mode freshness
 
-Chaque requête cible est collectée selon une stratégie à double passe :
-# Rattraper 20 descriptions manquantes avec temporisation de 3 secondes
-python backfill_descriptions.py --limit 20 --sleep 3
+# Lancer la collecte Welcome to the Jungle
+python run_scrapers.py --source wttj
 
-| Passe | Tri | Fenêtre | Arrêt anticipé | Rôle |
-|---|---|---|---|---|
-| **Fraîcheur** | Par date (`sortBy=DD`, `f_TPR`) | 7 jours (configurable) | Oui, dès $N$ offres consécutives déjà en base | Capter les offres fraîchement publiées pour postuler en premier |
-| **Rattrapage** | Par pertinence algorithmique | Aucune (historique) | Non (parcourt la pagination) | Récupérer les pépites toujours actives publiées plus tôt |
-# Reranker les 50 meilleures offres avec le LLM sans relancer de collecte
-python run_scrapers.py --no-collect --trigger-rerank --top-rerank 50
+# Enrichir jusqu'à 20 descriptions manquantes avec une pause de 2,5 s entre appels
+python backfill_descriptions.py --limit 20 --sleep 2.5
 
-### Résilience et Anti-Blocage
-- **Mémoire de collecte (`seen_jobs`)** : Mémorise l'ensemble des cartes croisées (y compris celles rejetées pour hors-sujet ou contrat invalide) pour garantir un arrêt anticipé fiable sans boucles infinies.
-- **Impersonation TLS (`curl_cffi`)** : Contourne les challenges Cloudflare sur l'intranet JobTeaser grâce à l'émulation d'empreinte de navigateur Chrome.
-- **Télémétrie complète** : Chaque passe consigne sa raison exacte d'arrêt (`early_stop`, `window_end`, `quota`, etc.) dans SQLite pour s'assurer qu'aucun flux d'offres n'est manqué.
-# Auditer les réponses et tris réseau de LinkedIn et JobTeaser
+# Lancer le reranking LLM sur les 25 meilleures offres sans nouvelle collecte
+python run_scrapers.py --no-collect --trigger-rerank --top-rerank 25
+
+# Auditer le comportement et l'ordonnancement d'une source sans écriture en base
 python tools/probe_sources.py --source linkedin --query "Stage Machine Learning"
 ```
 
@@ -332,14 +308,13 @@ python tools/probe_sources.py --source linkedin --query "Stage Machine Learning"
 
 ## 🧪 Tests & Qualité de Code
 
-Le projet dispose d'une suite de tests complète couvrant le scraping, la persistance base de données, la logique de reranking, le générateur de lettres de motivation et les composants Streamlit :
-Le projet dispose d'une suite de validation automatisée couvrant les scrapers, le cache, l'ORM base de données, la logique de reranking LLM, le générateur de lettres et les composants Streamlit :
+Le projet intègre une suite complète de tests unitaires et d'intégration validant les scrapers, le cache disque, les opérations base de données, la logique de reranking et les composants d'interface :
 
 ```bash
 python -m pytest tests/
 ```
+
 ```text
-======================== 88 passed in 8.52s ========================
 ============================= test session starts =============================
 platform win32 -- Python 3.12, pytest-9.1.1
 collected 108 items
@@ -362,8 +337,17 @@ tests/test_task_manager.py .........                                     [100%]
 
 ---
 
-## 📜 Licence & Auteur
+## ⚠️ Limites Connues & Perspectives
 
-Projet développé avec passion par **Eddy** (Élève-ingénieur aux Mines de Saint-Étienne).  
-Distribué sous licence MIT. N'hésitez pas à forker et à adapter les filtres à votre profil !
-Distribué sous licence MIT. N'hésitez pas à forker et à adapter les filtres à votre propre recherche de stage !
+- **Évolution du balisage HTML tiers** : Les sélecteurs CSS des pages de détail (LinkedIn, JobTeaser) peuvent évoluer avec le temps. Une sonde dédiée (`tools/probe_sources.py`) permet de vérifier la validité des flux sans impacter la base.
+- **Latence des appels LLM** : L'étape de reranking prend environ 3 à 4 secondes par offre en raison des contraintes de débit de l'API. C'est pourquoi elle est strictement limitée au Top N pré-sélectionné.
+- **Perspectives d'évolution** :
+  - Évaluation d'un modèle SLM local léger (*Small Language Model* type Qwen 2.5 ou Gemma 2 en quantification 4-bit) pour supprimer la dépendance à une API externe.
+  - Ajout d'export de candidatures au format CSV / Notion.
+
+---
+
+## 📜 Licence & Contact
+
+Projet distribué sous licence **MIT**. Développé par **Eddy DE CASTRO** (Élève-ingénieur aux Mines de Saint-Étienne).  
+Vos contributions et retours sont les bienvenus via les issues ou pull requests du dépôt.
