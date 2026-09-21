@@ -26,7 +26,16 @@ st.set_page_config(page_title="Pipeline", page_icon=":material/settings:", layou
 inject_styles()
 render_sidebar_task_badge()
 
-st.markdown("<h1>Pipeline & Maintenance</h1>", unsafe_allow_html=True)
+from utils.auth import require_auth, render_logout_button
+require_auth()
+render_logout_button()
+
+from src.storage.cloud_storage import (
+    is_cloud_storage_configured,
+    get_remote_metadata,
+    download_database,
+    upload_database,
+)
 
 # Exécution du pipeline depuis le dashboard
 # --------------------------------------------------------------------------- #
@@ -249,27 +258,75 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
     if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", use_container_width=True):
         bump_data_version()
         st.rerun()
-        
-    render_custom_collection_form(is_task_running)
 
+    # Section Synchronisation Cloud
     st.markdown("---")
-    st.markdown("### Actions de pipeline prédéfinies")
-    if is_task_running:
-        st.info("⏳ Un traitement est actuellement en cours. Vous pouvez suivre sa progression en direct ci-dessus.")
+    st.markdown("### ☁️ Synchronisation Cloud (R2 / S3)")
+    if is_cloud_storage_configured():
+        meta = get_remote_metadata()
+        if meta:
+            size_mb = meta["size_bytes"] / (1024 * 1024)
+            date_str = meta["last_modified"].strftime("%d/%m/%Y à %H:%M UTC") if meta.get("last_modified") else "inconnue"
+            st.success(f"Stockage distant connecté. Base distante : **{size_mb:.2f} Mo** (modifiée le {date_str}).")
+        else:
+            st.info("Stockage distant configuré mais aucune base distante trouvée dans le bucket.")
 
-    for action in PIPELINE_ACTIONS:
-        if st.button(
-            action.label,
-            use_container_width=True,
-            help=action.help,
-            key=f"pipeline-{action.key}",
-            disabled=is_task_running,
-        ):
-            run_pipeline(action)
-    st.caption(
-        "Chaque action s'exécute en tâche de fond avec suivi en temps réel et survit à la navigation entre les pages. "
-        "Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement."
-    )
+        c_sync1, c_sync2 = st.columns(2)
+        with c_sync1:
+            if st.button("⬇️ Récupérer la dernière base distante", use_container_width=True, help="Force le téléchargement de la base depuis le bucket."):
+                with st.spinner("Téléchargement de la base distante en cours..."):
+                    if download_database(force=True):
+                        bump_data_version()
+                        st.toast("Base locale mise à jour depuis le cloud !")
+                        st.rerun()
+                    else:
+                        st.warning("Échec du téléchargement ou stockage vide.")
+        with c_sync2:
+            if st.button("⬆️ Sauvegarder la base vers le cloud", use_container_width=True, help="Envoie la base SQLite actuelle vers le bucket."):
+                with st.spinner("Envoi vers le cloud en cours..."):
+                    if upload_database():
+                        st.toast("Base sauvegardée sur le cloud avec succès !")
+                    else:
+                        st.error("Échec de l'envoi.")
+    else:
+        st.caption("Synchronisation cloud non active. Configurez les variables R2/S3 pour lier un bucket.")
+
+    is_cloud_env = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
+
+    if is_cloud_env:
+        st.markdown("---")
+        st.markdown("### 🛡️ Collecte & Pipeline (Mode Cloud)")
+        st.warning(
+            "**Collecte automatique désactivée depuis Render** : Les requêtes vers LinkedIn et Cloudflare JobTeaser "
+            "depuis les serveurs cloud de datacenters sont fréquemment bloquées ou bannies par les systèmes anti-bot.\n\n"
+            "👉 **Pour collecter de nouvelles offres** : lancez simplement `python run_pipeline.py` sur votre machine locale. "
+            "Les nouvelles offres seront ensuite synchronisées avec ce tableau de bord."
+        )
+        with st.expander("Mode avancé (Forcer une action sur le serveur Render)"):
+            st.caption("Attention : réservé au dépannage ou aux tests.")
+            for action in PIPELINE_ACTIONS:
+                if st.button(action.label, use_container_width=True, key=f"cloud-pipeline-{action.key}", disabled=is_task_running):
+                    run_pipeline(action)
+    else:
+        render_custom_collection_form(is_task_running)
+        st.markdown("---")
+        st.markdown("### Actions de pipeline prédéfinies")
+        if is_task_running:
+            st.info("⏳ Un traitement est actuellement en cours. Vous pouvez suivre sa progression en direct ci-dessus.")
+
+        for action in PIPELINE_ACTIONS:
+            if st.button(
+                action.label,
+                use_container_width=True,
+                help=action.help,
+                key=f"pipeline-{action.key}",
+                disabled=is_task_running,
+            ):
+                run_pipeline(action)
+        st.caption(
+            "Chaque action s'exécute en tâche de fond avec suivi en temps réel et survit à la navigation entre les pages. "
+            "Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement."
+        )
 
 
 db = get_database()

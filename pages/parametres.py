@@ -42,6 +42,10 @@ st.set_page_config(
 inject_styles()
 render_sidebar_task_badge()
 
+from utils.auth import require_auth, render_logout_button
+require_auth()
+render_logout_button()
+
 st.markdown("<h1>Paramètres &amp; Profil</h1>", unsafe_allow_html=True)
 st.caption("Personnalisez votre CV, vos critères de scraping et pilotez la ré-évaluation par Gemini.")
 

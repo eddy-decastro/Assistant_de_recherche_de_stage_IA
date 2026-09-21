@@ -517,10 +517,16 @@ def render_kpis(
 def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -> Filters:
     """Barre latérale de filtres compacts ; retourne les critères courants."""
     counts: dict[str, int] = {}
+    company_counts: dict[str, int] = {}
     for job in jobs:
         source = job.get("source")
         if source:
             counts[source] = counts.get(source, 0) + 1
+        comp = (job.get("company") or "").strip()
+        if comp:
+            company_counts[comp] = company_counts.get(comp, 0) + 1
+
+    sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
 
     with st.sidebar:
         from utils.task_manager import render_sidebar_task_badge
@@ -575,6 +581,24 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
                 "Exclure les ESN",
                 help="Retire les ESN / SSII du flux (filtre également appliqué en amont si configuré).",
             )
+            exclude_dassault = st.toggle(
+                "Exclure Dassault",
+                help="Masque les offres Dassault Systèmes et Dassault Aviation.",
+            )
+            exclude_companies = st.multiselect(
+                "Exclure des entreprises",
+                options=sorted_companies,
+                default=[],
+                format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+                help="Sélectionnez une ou plusieurs entreprises à masquer du flux.",
+            )
+            selected_companies = st.multiselect(
+                "Cibler des entreprises",
+                options=sorted_companies,
+                default=[],
+                format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+                help="Ne conserver que les offres des entreprises sélectionnées.",
+            )
 
         with st.expander("Affichage"):
             display_mode = st.selectbox("Mode de flux", options=[DISPLAY_FLAT, DISPLAY_GROUPED])
@@ -596,6 +620,9 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         llm_only=llm_only,
         hide_processed=hide_processed,
         exclude_esn=exclude_esn,
+        exclude_dassault=exclude_dassault,
+        exclude_companies=tuple(exclude_companies),
+        selected_companies=tuple(selected_companies),
         limit=limit,
         group_by_source=display_mode == DISPLAY_GROUPED,
     )

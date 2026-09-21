@@ -1,0 +1,35 @@
+# ============================================================
+# stage_copilot — Dépendances Render (Dashboard Cloud Léger)
+# ============================================================
+# Version allégée sans PyTorch / sentence-transformers pour
+# garantir un démarrage instantané et respecter la limite de 512 Mo de RAM.
+
+# --- Client HTTP ---
+httpx
+
+# --- Validation de données / modèles ---
+pydantic>=2.0
+
+# --- Configuration YAML ---
+PyYAML
+
+# --- ORM / base de données SQLite ---
+SQLAlchemy
+
+# --- Tableau de bord & Visualisation ---
+streamlit
+pandas
+altair
+
+# --- Chargement des variables d'environnement ---
+python-dotenv
+
+# --- Génération IA (Juge LLM & Lettres de motivation) ---
+google-genai
+
+# --- Traitement de CV (PDF) ---
+pypdf
+
+# --- Synchronisation Cloud (Cloudflare R2 / AWS S3) ---
+boto3
+

@@ -68,7 +68,17 @@ def get_database() -> Database:
     import src.storage.database
     importlib.reload(src.storage.database)
     config = load_config()
-    db = src.storage.database.Database(config["database"]["path"])
+    db_path = config["database"]["path"]
+
+    # Restauration automatique depuis le stockage distant (R2/S3) si configuré
+    try:
+        from src.storage.cloud_storage import is_cloud_storage_configured, download_database
+        if is_cloud_storage_configured():
+            download_database(target_path=db_path)
+    except Exception:
+        pass
+
+    db = src.storage.database.Database(db_path)
     return db
 
 
@@ -85,8 +95,13 @@ def load_jobs(_db: Database, data_version: int) -> list[dict[str, Any]]:
 
 
 def bump_data_version() -> None:
-    """Invalide les données mises en cache (statut modifié, base rafraîchie)."""
+    """Invalide les données mises en cache et programme une synchronisation cloud."""
     st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1
+    try:
+        from src.storage.cloud_storage import trigger_debounced_upload
+        trigger_debounced_upload()
+    except Exception:
+        pass
 
 
 def _set_status(db: Database, job_id: str, status: str) -> None:
@@ -227,6 +242,9 @@ class Filters:
     llm_only: bool = False
     hide_processed: bool = False
     exclude_esn: bool = False
+    exclude_dassault: bool = False
+    exclude_companies: tuple[str, ...] = ()
+    selected_companies: tuple[str, ...] = ()
     group_by_source: bool = False
     limit: int | None = None
 
@@ -242,6 +260,9 @@ class Filters:
             or self.min_score
             or self.llm_only
             or self.exclude_esn
+            or getattr(self, "exclude_dassault", False)
+            or getattr(self, "exclude_companies", ())
+            or getattr(self, "selected_companies", ())
             or (self.statuses and len(self.statuses) != len(STATUS_ORDER))
             or (self.tiers and len(self.tiers) != len(TIER_LABELS))
             or self.limit is not None
@@ -254,11 +275,24 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     statuses = {STATUS_NEW} if filters.hide_processed else set(filters.statuses)
     tiers = set(filters.tiers)
     sources = set(filters.sources)
+    exclude_dassault = getattr(filters, "exclude_dassault", False)
+    exclude_comps_raw = getattr(filters, "exclude_companies", ())
+    selected_comps_raw = getattr(filters, "selected_companies", ())
+    excluded_comps = {c.strip().lower() for c in exclude_comps_raw if c and c.strip()}
+    selected_comps = {c.strip().lower() for c in selected_comps_raw if c and c.strip()}
     selected: list[dict[str, Any]] = []
     for job in jobs:
         # Les offres écartées par la re-validation métier ne polluent pas le flux :
         # elles n'apparaissent que si l'utilisateur coche explicitement « Rejeté ».
         if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in set(filters.statuses):
+            continue
+        company = (job.get("company") or "").strip()
+        comp_lower = company.lower()
+        if exclude_dassault and "dassault" in comp_lower:
+            continue
+        if excluded_comps and (comp_lower in excluded_comps or any(ec in comp_lower for ec in excluded_comps if len(ec) >= 3)):
+            continue
+        if selected_comps and not (comp_lower in selected_comps or any(sc in comp_lower for sc in selected_comps if len(sc) >= 3)):
             continue
         if filters.min_score and effective_score(job) < filters.min_score:
             continue

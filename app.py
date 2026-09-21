@@ -43,7 +43,17 @@ st.set_page_config(
 
 def main() -> None:
     """Assemble le dashboard : styles, filtres, en-tête, KPI, flux et télémétrie."""
+    from utils.auth import require_auth, render_logout_button
+    require_auth()
     inject_styles()
+    render_logout_button()
+    import utils.data
+    import utils.components
+    import importlib
+    if not hasattr(utils.data.Filters, "__dataclass_fields__") or "exclude_companies" not in utils.data.Filters.__dataclass_fields__:
+        importlib.reload(utils.data)
+        importlib.reload(utils.components)
+
     config = load_config()
     db = get_database()
     keywords = tuple(config.get("scoring", {}).get("excellence_keywords", ()))
@@ -56,8 +66,8 @@ def main() -> None:
     from src.constants import source_rank
     sources = sorted({str(job["source"]) for job in jobs if job.get("source")}, key=source_rank)
 
-    filters = render_sidebar_filters(jobs, sources)
-    selected = filter_jobs(jobs, filters)
+    filters = utils.components.render_sidebar_filters(jobs, sources)
+    selected = utils.data.filter_jobs(jobs, filters)
 
     render_header(jobs, config)
     render_kpis(selected, llm_model, len(jobs), not filters.is_default())

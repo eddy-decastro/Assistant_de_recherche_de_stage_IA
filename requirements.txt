@@ -48,3 +48,6 @@ curl_cffi
 pytest
 google-genai
 pypdf
+
+# --- Synchronisation Cloud (Cloudflare R2 / AWS S3) ---
+boto3

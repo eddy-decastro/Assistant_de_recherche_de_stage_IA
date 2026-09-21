@@ -205,16 +205,51 @@ def test_filtres_et_repartition() -> None:
     assert len(filter_jobs(jobs, Filters(query="mistral pytorch"))) == 1
     assert filter_jobs(jobs, Filters(query="zz-introuvable")) == []
 
+    # Filtrage par entreprise : exclusion Dassault, exclusion/ciblage d'entreprises.
+    assert [j["id"] for j in filter_jobs(jobs, Filters(exclude_dassault=True))] == ["offre-2"]
+    assert [j["id"] for j in filter_jobs(jobs, Filters(exclude_companies=("Mistral AI",)))] == ["offre-1"]
+    assert [j["id"] for j in filter_jobs(jobs, Filters(selected_companies=("Mistral AI",)))] == ["offre-2"]
+
     # La vue focus (masquer les offres traitées) prime sur la sélection de statuts.
     focus = Filters(statuses=(STATUS_APPLIED,), hide_processed=True)
     assert [job["id"] for job in filter_jobs(jobs, focus)] == ["offre-1"]
 
     assert Filters().is_default() is True
     assert Filters(min_score=10).is_default() is False
+    assert Filters(exclude_dassault=True).is_default() is False
+    assert Filters(exclude_companies=("Dassault",)).is_default() is False
+    assert Filters(selected_companies=("Mistral",)).is_default() is False
     assert Filters(group_by_source=True).is_default() is True, "Le mode d'affichage n'est pas un filtre."
     assert source_distribution(jobs) == [("JobTeaser", 2, SOURCE_COLORS["jobteaser"])]
     assert [label for label, _ in group_jobs_by_source(jobs)] == ["JobTeaser"]
-    print("  Filtres : score, statuts, typologie, plateformes, recherche et répartition OK")
+    print("  Filtres : score, statuts, typologie, plateformes, entreprises, recherche et répartition OK")
+
+
+def test_filtres_entreprises_avance() -> None:
+    """Vérifie le filtrage multi-entreprises et le cas spécifique Dassault."""
+    j1 = {**JOB, "id": "1", "company": "Dassault Systèmes"}
+    j2 = {**JOB, "id": "2", "company": "DASSAULT AVIATION"}
+    j3 = {**JOB, "id": "3", "company": "CEA"}
+    j4 = {**JOB, "id": "4", "company": "Bpifrance"}
+    j5 = {**JOB, "id": "5", "company": "Sopra Steria"}
+    sample = [j1, j2, j3, j4, j5]
+
+    # 1. Sans Dassault : élimine toutes les variantes de Dassault
+    sans_dassault = filter_jobs(sample, Filters(exclude_dassault=True))
+    assert [j["id"] for j in sans_dassault] == ["3", "4", "5"]
+
+    # 2. Exclusion arbitraire multi-entreprises
+    sans_cea_sopra = filter_jobs(sample, Filters(exclude_companies=("CEA", "Sopra Steria")))
+    assert [j["id"] for j in sans_cea_sopra] == ["1", "2", "4"]
+
+    # 3. Ciblage exclusif
+    seulement_bpi_cea = filter_jobs(sample, Filters(selected_companies=("Bpifrance", "CEA")))
+    assert [j["id"] for j in seulement_bpi_cea] == ["3", "4"]
+
+    # 4. Combinaison sans Dassault + ciblage d'un ensemble incluant Dassault
+    combo = filter_jobs(sample, Filters(exclude_dassault=True, selected_companies=("Dassault Systèmes", "CEA")))
+    assert [j["id"] for j in combo] == ["3"]
+    print("  Filtres entreprises : exclusion Dassault et multi-entreprises OK")
 
 
 def test_carte_html() -> None:
@@ -249,12 +284,15 @@ def test_interface_streamlit() -> None:
         "Plateformes",
         "Statut de candidature",
         "Typologie d'entreprise",
+        "Exclure des entreprises",
+        "Cibler des entreprises",
     ]
     assert [widget.label for widget in at.sidebar.slider] == ["Score R&D minimal"]
     assert [widget.label for widget in at.sidebar.toggle] == [
         "Verdict LLM uniquement",
         "Masquer les offres traitées",
         "Exclure les ESN",
+        "Exclure Dassault",
     ]
     assert [widget.label for widget in at.sidebar.selectbox] == ["Mode de flux", "Offres affichées"]
 

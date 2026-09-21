@@ -58,6 +58,17 @@ st.set_page_config(
 inject_styles()
 render_sidebar_task_badge()
 
+from utils.auth import require_auth, render_logout_button
+require_auth()
+render_logout_button()
+
+# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
+if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
+    import importlib
+    import utils.data
+    importlib.reload(utils.data)
+    from utils.data import Filters, filter_jobs
+
 KANBAN_COLUMNS = [
     (STATUS_NEW, "🆕 Nouveau", "sc-tone-accent"),
     (STATUS_APPLIED, "📤 Postulé", "sc-tone-positive"),
@@ -153,6 +164,13 @@ def main() -> None:
     data_version = int(st.session_state.setdefault("data_version", 0))
     jobs = load_jobs(db, data_version)
 
+    company_counts: dict[str, int] = {}
+    for job in jobs:
+        comp = (job.get("company") or "").strip()
+        if comp:
+            company_counts[comp] = company_counts.get(comp, 0) + 1
+    sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
+
     # Zone de filtres compacts
     with st.expander("🎛️ Filtres du Tableau Kanban", expanded=False):
         c1, c2, c3 = st.columns([2, 1, 1])
@@ -162,6 +180,23 @@ def main() -> None:
             min_score = st.slider("Score min", 0, 100, 0, step=5)
         with c3:
             rerank_only = st.toggle("Verdict LLM uniquement", value=False)
+            exclude_dassault = st.toggle("Exclure Dassault", value=False, help="Masque les offres Dassault Systèmes et Dassault Aviation.")
+
+        col_ex, col_sel = st.columns(2)
+        with col_ex:
+            exclude_companies = st.multiselect(
+                "Exclure des entreprises",
+                options=sorted_companies,
+                default=[],
+                format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+            )
+        with col_sel:
+            selected_companies = st.multiselect(
+                "Cibler des entreprises",
+                options=sorted_companies,
+                default=[],
+                format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+            )
 
     filtered = filter_jobs(
         jobs,
@@ -169,6 +204,9 @@ def main() -> None:
             query=query,
             min_score=min_score,
             llm_only=rerank_only,
+            exclude_dassault=exclude_dassault,
+            exclude_companies=tuple(exclude_companies),
+            selected_companies=tuple(selected_companies),
             limit=500,
         ),
     )

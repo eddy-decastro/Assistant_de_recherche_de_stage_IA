@@ -17,6 +17,8 @@ from utils.data import (
     load_jobs,
     effective_score,
     is_reranked,
+    Filters,
+    filter_jobs,
 )
 from utils.styles import inject_styles
 from utils.task_manager import render_sidebar_task_badge
@@ -28,6 +30,18 @@ st.set_page_config(page_title="Statistiques & Télémétrie", page_icon=":materi
 
 inject_styles()
 render_sidebar_task_badge()
+
+from utils.auth import require_auth, render_logout_button
+require_auth()
+render_logout_button()
+
+# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
+if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
+    import importlib
+    import utils.data
+    importlib.reload(utils.data)
+    from utils.data import Filters, filter_jobs
+
 db = get_database()
 if not hasattr(db, "get_rejected_seen_jobs"):
     import importlib
@@ -1030,9 +1044,61 @@ def render_rejections_explorer(db: Database) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Rendu principal : 5 onglets Streamlit
+# Rendu principal : filtres d'entreprise et 5 onglets Streamlit
 # --------------------------------------------------------------------------- #
 jobs = load_jobs(db, 0)
+
+company_counts: dict[str, int] = {}
+for j in jobs:
+    c = (j.get("company") or "").strip()
+    if c:
+        company_counts[c] = company_counts.get(c, 0) + 1
+sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
+
+with st.sidebar:
+    st.markdown('<div class="sc-eyebrow">Filtres du marché</div>', unsafe_allow_html=True)
+    exclude_dassault = st.toggle(
+        "Exclure Dassault",
+        value=False,
+        help="Masque les offres de Dassault Systèmes et Dassault Aviation pour révéler la diversité du reste du marché.",
+    )
+    exclude_companies = st.multiselect(
+        "Exclure des entreprises",
+        options=sorted_companies,
+        default=[],
+        format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+        help="Retire les entreprises sélectionnées des analyses statistiques.",
+    )
+    selected_companies = st.multiselect(
+        "Cibler des entreprises",
+        options=sorted_companies,
+        default=[],
+        format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
+        help="Restreint l'analyse uniquement aux entreprises sélectionnées.",
+    )
+
+filters = Filters(
+    exclude_dassault=exclude_dassault,
+    exclude_companies=tuple(exclude_companies),
+    selected_companies=tuple(selected_companies),
+)
+filtered_jobs = filter_jobs(jobs, filters)
+
+if len(filtered_jobs) != len(jobs):
+    st.markdown(
+        f'<div class="sc-stream"><span class="sc-stream-count">'
+        f"Statistiques sur {len(filtered_jobs)} offres</span>"
+        f'<span class="sc-stream-note">'
+        f"({len(jobs) - len(filtered_jobs)} offre(s) masquée(s) par le filtre entreprise)</span></div>",
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        f'<div class="sc-stream"><span class="sc-stream-count">'
+        f"Statistiques sur {len(jobs)} offres au total</span>"
+        f'<span class="sc-stream-note">Toutes entreprises confondues</span></div>',
+        unsafe_allow_html=True,
+    )
 
 tab_personal, tab_geo, tab_rd, tab_telemetry, tab_rejections = st.tabs(
     [
@@ -1045,13 +1111,13 @@ tab_personal, tab_geo, tab_rd, tab_telemetry, tab_rejections = st.tabs(
 )
 
 with tab_personal:
-    _render_personal_analytics(jobs)
+    _render_personal_analytics(filtered_jobs)
 
 with tab_geo:
-    _render_geo_and_companies(jobs, db)
+    _render_geo_and_companies(filtered_jobs, db)
 
 with tab_rd:
-    _render_rd_and_tech(jobs)
+    _render_rd_and_tech(filtered_jobs)
 
 with tab_telemetry:
     render_telemetry(db)

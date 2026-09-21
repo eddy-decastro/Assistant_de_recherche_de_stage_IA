@@ -7,7 +7,7 @@
 ![LLM](https://img.shields.io/badge/LLM-Google%20GenAI%20(Gemini)-4285F4?logo=google&logoColor=white)
 ![Database](https://img.shields.io/badge/Base-SQLite%20(WAL)-003B57?logo=sqlite&logoColor=white)
 ![Sources](https://img.shields.io/badge/Sources-LinkedIn%20%7C%20JobTeaser%20%7C%20WTTJ-0077B5?logo=linkedin&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-108%2F108%20Passing-brightgreen?logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-118%2F118%20Passing-brightgreen?logo=pytest&logoColor=white)
 
 **Pipeline d'ingénierie pour sourcer, enrichir et classer par IA les offres de stage de fin d'études (PFE) en Data Science et R&D Machine Learning.**
 
@@ -317,22 +317,57 @@ python -m pytest tests/
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.12, pytest-9.1.1
-collected 108 items
+collected 109 items
 
-tests/test_app.py ............                                           [ 11%]
+tests/test_app.py .............                                          [ 11%]
 tests/test_bridge.py .                                                   [ 12%]
-tests/test_cleanup.py ........                                           [ 19%]
-tests/test_cli.py .........                                              [ 27%]
-tests/test_cover_letter.py ....                                          [ 31%]
-tests/test_database.py .........                                         [ 39%]
+tests/test_cleanup.py ........                                           [ 20%]
+tests/test_cli.py .........                                              [ 28%]
+tests/test_cover_letter.py ....                                          [ 32%]
+tests/test_database.py .........                                         [ 40%]
 tests/test_enrichment.py ...........                                     [ 50%]
-tests/test_hybrid_collection.py ................                         [ 64%]
+tests/test_hybrid_collection.py ................                         [ 65%]
 tests/test_llm_judge.py .........                                        [ 73%]
 tests/test_scorer.py ..                                                  [ 75%]
 tests/test_scrapers.py ..................                                [ 91%]
 tests/test_task_manager.py .........                                     [100%]
 
-======================== 108 passed in ~1m18s ========================
+======================== 118 passed in ~25s ========================
+```
+
+---
+
+## ☁️ Déploiement Cloud (Render) & Architecture Hybride
+
+Stage Copilot est prêt pour un déploiement 24h/24 sur **Render** via son architecture hybride conçue pour préserver la persistance des données et contourner les blocages anti-bot :
+
+### 1. Pourquoi une Architecture Hybride ?
+* **Protection Anti-Bot** : Les datacenters cloud (AWS, Render, etc.) sont systématiquement restreints par LinkedIn et Cloudflare (JobTeaser). La collecte lourde s'exécute donc sur votre machine locale (IP résidentielle).
+* **Persistance Totale (0 €)** : Render Free a un disque éphémère. L'état SQLite (`stage_copilot.db`) est automatiquement restauré au boot et sauvegardé vers un bucket **Cloudflare R2** (ou AWS S3). Vos changements de statut Kanban (« Postulé ») saisis depuis votre smartphone sont ainsi conservés pour toujours.
+* **Sécurité Intégrée** : Accès protégé par la variable `APP_PASSWORD` pour empêcher tout accès public non autorisé.
+
+### 2. Déploiement sur Render en 3 Étapes
+1. **Créer un bucket Cloudflare R2** (gratuit jusqu'à 10 Go) et générer les identifiants S3 API (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`).
+2. **Connecter le dépôt sur Render** :
+   - Sélectionner **New Web Service** (ou importer `render.yaml`).
+   - Environnement : `Python`.
+   - Build Command : `pip install -r requirements-render.txt` (démarrage ultra-rapide sans PyTorch).
+   - Start Command : `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`.
+3. **Configurer les variables d'environnement sur Render** :
+   - `APP_PASSWORD` : votre mot de passe d'accès.
+   - `GEMINI_API_KEY` : votre clé Gemini.
+   - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`.
+
+### 3. Workflow au Quotidien
+```bash
+# Avant de collecter : récupérer les statuts modifiés depuis le téléphone
+python scripts/sync_db.py --pull
+
+# Collecter et scorer les nouvelles offres sur votre PC
+python run_pipeline.py
+
+# Envoyer la base enrichie vers le Cloud
+python scripts/sync_db.py --push
 ```
 
 ---
