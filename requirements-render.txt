@@ -27,9 +27,11 @@ python-dotenv
 # --- Génération IA (Juge LLM & Lettres de motivation) ---
 google-genai
 
-# --- Traitement de CV (PDF) ---
+# --- Traitement de CV & Génération PDF ---
 pypdf
+reportlab
 
 # --- Synchronisation Cloud (Cloudflare R2 / AWS S3) ---
 boto3
+
 

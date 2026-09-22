@@ -133,6 +133,48 @@ with tab_cv:
             icon=":material/download:",
         )
 
+    st.markdown("---")
+    st.markdown("#### 3. Coordonnées de contact (Lettres de motivation & Export PDF)")
+    st.caption("Ces coordonnées sont injectées automatiquement dans vos lettres pour un copier-coller immédiat sans aucun placeholder.")
+
+    cfg_main = load_config()
+    candidate_cfg = cfg_main.get("candidate", {})
+
+    col_nom, col_tel = st.columns(2)
+    with col_nom:
+        c_name = st.text_input("Nom & Prénom", value=candidate_cfg.get("name", "Eddy DE CASTRO"), key="c_name_input")
+    with col_tel:
+        c_phone = st.text_input("Téléphone", value=candidate_cfg.get("phone", "06 98 82 44 85"), key="c_phone_input")
+
+    col_mail, col_loc = st.columns(2)
+    with col_mail:
+        c_email = st.text_input("Email", value=candidate_cfg.get("email", "eddyprepa123@gmail.com"), key="c_email_input")
+    with col_loc:
+        c_location = st.text_input("Ville / Localisation", value=candidate_cfg.get("location", "Paris, France"), key="c_location_input")
+
+    col_li, col_gh = st.columns(2)
+    with col_li:
+        c_linkedin = st.text_input("Profil LinkedIn", value=candidate_cfg.get("linkedin", "https://www.linkedin.com/in/eddy-de-castro/"), key="c_linkedin_input")
+    with col_gh:
+        c_github = st.text_input("Profil GitHub", value=candidate_cfg.get("github", "https://github.com/eddy-decastro"), key="c_github_input")
+
+    c_title = st.text_input("Titre / Formation", value=candidate_cfg.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action"), key="c_title_input")
+
+    if st.button("Enregistrer les coordonnées", type="primary", icon=":material/badge:", key="save_candidate_btn"):
+        cfg_main["candidate"] = {
+            "name": c_name.strip(),
+            "title": c_title.strip(),
+            "phone": c_phone.strip(),
+            "email": c_email.strip(),
+            "linkedin": c_linkedin.strip(),
+            "github": c_github.strip(),
+            "location": c_location.strip(),
+        }
+        save_config(cfg_main)
+        bump_data_version()
+        st.success("Coordonnées enregistrées avec succès dans `config.yaml` !")
+
+
 
 # =========================================================================== #
 # ONGLET 2 : RECHERCHES & SCRAPING

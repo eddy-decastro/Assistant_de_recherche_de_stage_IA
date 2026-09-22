@@ -2,12 +2,14 @@ from __future__ import annotations
 import streamlit as st
 from typing import Any, Sequence, Mapping
 import html
+import json
 from utils.data import *
 from utils.data import _esc, _set_status
 
 from src.constants import *
 from src.storage.database import Database
 from src.matching.cover_letter import CoverLetterGenerator
+from src.matching.pdf_exporter import generate_cover_letter_pdf
 
 # Fragments HTML (typographie et badges, aucun emoji décoratif)
 # --------------------------------------------------------------------------- #
@@ -319,31 +321,119 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         key=f"editor_{session_key}",
     )
 
-    safe_company = "".join(c for c in company if c.isalnum() or c in ("-", "_")).strip() or "Entreprise"
-    c1, c2, c3 = st.columns([1, 1, 1], gap="small")
+    words_count = len(edited.split())
+    chars_count = len(edited)
+    approx_pages = max(1.0, round(words_count / 420.0, 1))
+    st.caption(f"📊 **{words_count} mots** · {chars_count:,} caractères (environ {approx_pages} page{'s' if approx_pages > 1.1 else ''} standard)")
+
+    custom_inst = st.text_input(
+        "Consigne spécifique pour orienter la rédaction (optionnel) :",
+        placeholder="ex : Insiste sur les Transformers et la vision par ordinateur, mets en valeur le projet MedStay-CI...",
+        key=f"inst_{session_key}",
+    )
+
+    clean_company = "".join(c for c in company if c.isalnum() or c in ("-", "_", " ")).strip()
+    if clean_company and clean_company.lower() not in ("entreprise", "inconnue", "none"):
+        pdf_filename = f"Lettre de motivation Eddy De Castro - {clean_company}.pdf"
+    else:
+        pdf_filename = "Lettre de motivation Eddy De Castro.pdf"
+
+    pdf_bytes = generate_cover_letter_pdf(edited, job=job)
+    escaped_json = json.dumps(edited)
+    copy_btn_id = f"copy_btn_{job_id}"
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 1], gap="small")
     with c1:
-        st.download_button(
-            "Télécharger (.txt)",
-            data=edited,
-            file_name=f"Lettre_Motivation_{safe_company}.txt",
-            mime="text/plain",
-            use_container_width=True,
-            icon=":material/download:",
+        st.html(
+            f"""
+            <div style="display: flex; width: 100%;">
+              <button
+                id="{copy_btn_id}"
+                type="button"
+                onclick='(function(btn) {{
+                  let textToCopy = {escaped_json};
+                  const area = document.querySelector("textarea[aria-label*=\\"Brouillon\\"]");
+                  if (area && area.value) {{
+                    textToCopy = area.value;
+                  }}
+                  if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(textToCopy).then(() => {{
+                      btn.innerText = "✓ Copié dans le presse-papier !";
+                      btn.style.backgroundColor = "#059669";
+                      btn.style.borderColor = "#059669";
+                      btn.style.color = "#FFFFFF";
+                      setTimeout(() => {{
+                        btn.innerText = "📋 Copier la lettre";
+                        btn.style.backgroundColor = "";
+                        btn.style.borderColor = "";
+                        btn.style.color = "";
+                      }}, 2500);
+                    }}).catch(() => fallbackCopy(textToCopy, btn));
+                  }} else {{
+                    fallbackCopy(textToCopy, btn);
+                  }}
+                  function fallbackCopy(str, b) {{
+                    const el = document.createElement("textarea");
+                    el.value = str;
+                    el.setAttribute("readonly", "");
+                    el.style.position = "absolute";
+                    el.style.left = "-9999px";
+                    document.body.appendChild(el);
+                    el.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(el);
+                    b.innerText = "✓ Copié dans le presse-papier !";
+                    b.style.backgroundColor = "#059669";
+                    b.style.borderColor = "#059669";
+                    b.style.color = "#FFFFFF";
+                    setTimeout(() => {{
+                      b.innerText = "📋 Copier la lettre";
+                      b.style.backgroundColor = "";
+                      b.style.borderColor = "";
+                      b.style.color = "";
+                    }}, 2500);
+                  }}
+                }})(this)'
+                style="
+                  width: 100%;
+                  min-height: 38px;
+                  padding: 0.4rem 0.75rem;
+                  font-family: inherit;
+                  font-size: 14px;
+                  font-weight: 500;
+                  color: inherit;
+                  background-color: transparent;
+                  border: 1px solid rgba(128, 128, 128, 0.35);
+                  border-radius: 8px;
+                  cursor: pointer;
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                  gap: 6px;
+                  transition: all 0.2s ease-in-out;
+                "
+                onmouseover="this.style.borderColor='#1E3A8A'; this.style.backgroundColor='rgba(30, 58, 138, 0.08)';"
+                onmouseout="if(!this.innerText.includes('Copié')) {{ this.style.borderColor='rgba(128, 128, 128, 0.35)'; this.style.backgroundColor='transparent'; }}"
+              >
+                📋 Copier la lettre
+              </button>
+            </div>
+            """
         )
     with c2:
         st.download_button(
-            "Télécharger (.md)",
-            data=edited,
-            file_name=f"Lettre_Motivation_{safe_company}.md",
-            mime="text/markdown",
+            "Télécharger (.pdf)",
+            data=pdf_bytes,
+            file_name=pdf_filename,
+            mime="application/pdf",
             use_container_width=True,
-            icon=":material/download:",
+            icon=":material/picture_as_pdf:",
         )
     with c3:
         if st.button("Régénérer", key=f"regen_{job_id}", use_container_width=True, icon=":material/refresh:"):
             with st.spinner("Nouvelle rédaction en cours..."):
                 generator = CoverLetterGenerator()
-                st.session_state[session_key] = generator.generate(job)
+                st.session_state[session_key] = generator.generate(job, custom_instruction=custom_inst)
                 st.rerun()
 
 

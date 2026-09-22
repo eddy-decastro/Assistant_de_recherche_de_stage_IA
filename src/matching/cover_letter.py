@@ -1,11 +1,13 @@
 """Générateur de lettres de motivation personnalisées (Gemini).
 
-Utilise le profil candidat (data/cv_eddy.txt) et la fiche de poste pour
-produire une lettre de motivation complète, académique et formelle.
+Utilise le profil candidat (data/cv_eddy.txt et config.yaml) et la fiche de poste
+pour produire une lettre de motivation complète, académique et percutante (1 à 1,5 pages,
+environ 500 à 650 mots), directement prête à l'envoi sans aucun placeholder ni crochet.
 """
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,29 @@ from google.genai.errors import APIError
 from src.config import PROJECT_ROOT, load_config
 from src.matching.llm_judge import load_env_file
 
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-2.5-pro"
+
+DEFAULT_CANDIDATE: dict[str, str] = {
+    "name": "Eddy DE CASTRO",
+    "title": "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action",
+    "phone": "06 98 82 44 85",
+    "email": "eddyprepa123@gmail.com",
+    "linkedin": "https://www.linkedin.com/in/eddy-de-castro/",
+    "github": "https://github.com/eddy-decastro",
+    "location": "Paris, France",
+}
+
+
+def get_candidate_info(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """Récupère les coordonnées du candidat depuis config.yaml ou les valeurs par défaut."""
+    cfg = config or load_config()
+    raw = cfg.get("candidate", {})
+    info = dict(DEFAULT_CANDIDATE)
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if v and str(v).strip():
+                info[k] = str(v).strip()
+    return info
 
 
 def get_cv_text() -> str:
@@ -27,51 +51,75 @@ def get_cv_text() -> str:
     return ""
 
 
-SYSTEM_PROMPT = """Tu es un expert en recrutement et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (Mines Saint-Étienne).
-Ton rôle est de rédiger une lettre de motivation complète, soignée, hautement personnalisée et formelle (style académique d'environ une page) pour une offre de stage spécifique, à partir du CV du candidat et de la fiche de poste.
+def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
+    """Construit le prompt système intégrant les coordonnées et le parcours d'excellence du candidat."""
+    cand = candidate or DEFAULT_CANDIDATE
+    name = cand.get("name", "Eddy DE CASTRO")
+    title = cand.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action")
+    phone = cand.get("phone", "")
+    email = cand.get("email", "")
+    linkedin = cand.get("linkedin", "")
+    github = cand.get("github", "")
 
-RÈGLES IMPÉRATIVES DE RÉDACTION :
-1. LANGUE :
-   - Si la description du poste est rédigée en anglais, rédige l'intégralité de la lettre en anglais professionnel / académique.
-   - Sinon, rédige en français soutenu et formel.
+    sig_lines = [name]
+    if title:
+        sig_lines.append(title)
+    contacts = [c for c in [phone, email, linkedin, github] if c]
+    if contacts:
+        sig_lines.append(" | ".join(contacts))
+    signature_block = "\n".join(sig_lines)
 
-2. STRUCTURE DE LA LETTRE (environ 1 page standard) :
-   - En-tête Expéditeur :
-     EDDY
-     Élève-ingénieur en dernière année — École des Mines de Saint-Étienne
-     Spécialisation : Intelligence Artificielle & Data Science
-     [Votre Adresse postale]
-     [Votre Téléphone] | [Votre Adresse Email] | [Lien LinkedIn / GitHub]
+    return f"""Tu es un expert en recrutement scientifique & tech de haut niveau et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (Mines Saint-Étienne / IMT Mines Alès).
+Ton rôle est de rédiger une lettre de motivation complète, substantielle, argumentée et hautement personnalisée (format développé d'environ 1 à 1,5 pages, soit 500 à 650 mots) pour une offre de stage de fin d'études spécifique, à partir du CV du candidat et de la description du poste.
 
-   - En-tête Destinataire :
-     À l'attention de [Nom du Responsable du recrutement / Nom de l'équipe]
-     [Nom de l'Entreprise]
-     [Adresse de l'Entreprise / Service concerné]
+RÈGLE D'OR ABSOLUE : ZÉRO CROCHET, ZÉRO PLACEHOLDER.
+- Il est STRICTEMENT INTERDIT d'utiliser des crochets `[...]` ou des variables non résolues (comme [Nom du Recruteur], [Votre Téléphone], [Adresse de l'Entreprise], etc.).
+- Tout doit être rédigé de façon naturelle, précise et directement exploitable. Le candidat doit pouvoir copier-coller ou exporter la lettre immédiatement sans la moindre retouche manuelle obligatoire.
+- Ne pas mettre d'adresses postales physiques en en-tête.
 
-   - Objet clair et précis :
-     Exemple : "Objet : Candidature au stage de fin d'études — [Intitulé exact de l'offre]"
+STRUCTURE ET CONTENU DÉTAILLÉ DE LA LETTRE (1 à 1,5 pages, ~500-650 mots) :
+1. Objet clair et professionnel :
+   Exemple : "Objet : Candidature au stage de fin d'études — [Intitulé exact du poste]" (en intégrant directement le titre réel, sans aucun crochet).
 
-   - Formule d'appel :
-     "Madame, Monsieur," (ou le nom si identifié avec certitude).
+2. Formule d'appel :
+   "Madame, Monsieur," (ou nom exact de la personne si mentionné sans ambiguïté dans l'offre).
 
-   - Corps de texte en 3 à 4 paragraphes équilibrés et argumentés :
-     a. L'ACCROCHE & L'ENTREPRISE (Vous) : Mentionner l'admiration ou l'intérêt marqué pour les projets, la réputation, les publications ou les défis techniques spécifiques de l'entreprise/du laboratoire. Montrer une excellente compréhension de la mission proposée.
-     b. LE PROFIL & LES RÉALISATIONS (Moi) : Valoriser la solide formation d'ingénieur civil des Mines de Saint-Étienne. Mettre en avant 1 ou 2 projets techniques concrets du CV (ex. modélisation GNN sous PyTorch, pipelines ETL distribués, assistant RAG LLM) qui répondent directement aux besoins clés énoncés dans la description.
-     c. LA COLLABORATION & LA VALEUR AJOUTÉE (Nous) : Expliquer concrètement comment le candidat compte s'intégrer, contribuer et résoudre les problématiques de l'équipe. Rappeler la disponibilité pour un stage de fin d'études de 6 mois à partir de mars 2026.
+3. Corps de texte en 4 à 5 paragraphes équilibrés, techniques et approfondis :
+   a. L'ACCROCHE & L'ENTREPRISE (Vous) :
+      Analyser avec pertinence les enjeux, la mission ou les technologies de l'entreprise. Démontrer un intérêt sincère et documenté pour ses projets, ses produits, ses défis R&D ou ses publications.
 
-   - Formule de politesse formelle académique :
-     Exemple : "Dans l'attente d'un échange au cours duquel je pourrai vous exposer plus en détail mes motivations et mon projet professionnel, je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations les plus distinguées."
+   b. FORMATION D'EXCELLENCE & TRIPLE PARCOURS MATHS / IA (Moi) :
+      Valoriser le profil académique particulièrement robuste du candidat :
+      - Double diplôme Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne co-accrédité Centrale Lyon et ENS Lyon) et cursus ingénieur IMT Mines Alès (spécialisation IA & Data Science).
+      - MENTIONNER EXPLICITEMENT la Licence 3 de Mathématiques Générales à l'Université de Montpellier menée en parallèle de l'école d'ingénieurs.
+      - Souligner l'atout de cette double compétence rare : un socle théorique de haut niveau (algèbre linéaire, calcul différentiel, optimisation convexe/non convexe, modélisation stochastique, statistiques inférentielles) combiné à une solide rigueur en génie logiciel et Machine Learning appliqué.
 
-   - Signature :
-     EDDY
+   c. RÉALISATIONS CONCRÈTES & PROJETS TECHNIQUES EN MIROIR (Moi) :
+      Illustrer vos compétences en vous appuyant sur 2 réalisations techniques majeures du CV qui font directement écho aux missions du poste :
+      - Le stage R&D à l'UPC Barcelone : modélisation en graphes (Graph ML, similarité spectrale), contournement d'obfuscation par substitut différentiable sous PyTorch (BPDA), et rigueur d'évaluation statistique (test de McNemar, bootstrap apparié).
+      - Un projet applicatif ciblé du CV : par exemple MedStay-CI (quantification d'incertitude certifiée à 89,9 %, régression quantile conforme sous LightGBM/MAPIE, pipeline FastAPI/Docker avec 124 tests) ou CinéFilm IA (recherche sémantique vectorielle sous 100 ms avec bi-encodeur E5-Large, PyTorch, scoring hybride).
+      Faire un pont technique direct et convaincant avec la stack et les responsabilités mentionnées dans l'offre.
 
-3. BALISES & PLACEHOLDERS :
-   - Utilise impérativement des crochets bien visibles pour toute information manquante ou variable que le candidat doit personnaliser avant l'envoi (ex. : [Nom du Responsable], [Votre Téléphone], [Votre Adresse Email], [Adresse de l'Entreprise]).
+   d. COLLABORATION, VALEUR AJOUTÉE & PROJECTION (Nous) :
+      Expliquer comment le candidat compte s'intégrer, collaborer avec l'équipe et monter rapidement en puissance sur les problématiques du projet.
 
-4. TON & QUALITÉ :
-   - Aucun cliché creux ("passionné et dynamique"). Utilise un vocabulaire technique précis, rigoureux et mesuré.
-   - Reste fidèle aux faits du CV (ne pas inventer d'expériences ou de diplômes inexistants).
+   e. MODALITÉS PRATIQUES & DISPONIBILITÉ :
+      Confirmer la disponibilité pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à partir de début avril 2027.
+
+4. Formule de politesse soignée :
+   Élégante et formelle (ex. "Dans l'attente d'un prochain échange au cours duquel je serai ravi de vous exposer plus en détail mes motivations et l'adéquation de mon profil avec vos projets, je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations les plus distinguées.").
+
+5. Signature complète :
+{signature_block}
+
+RÈGLES DE STYLE :
+- LANGUE : Si l'offre est rédigée en anglais, rédige l'intégralité de la lettre en anglais professionnel soutenu. Sinon, en français soigné, fluide et percutant.
+- TON : Rigueur scientifique, vocabulaire technique précis, assurance mesurée, aucun cliché creux.
+- VÉRACITÉ : Reste strictement conforme aux éléments du CV.
 """
+
+
+SYSTEM_PROMPT = build_system_prompt()
 
 
 class CoverLetterGenerator:
@@ -85,8 +133,11 @@ class CoverLetterGenerator:
     ) -> None:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
-        self.model = str(llm_cfg.get("model", DEFAULT_MODEL))
+        # Modèle dédié pour la lettre de motivation (gemini-2.5-flash par défaut, plus qualitatif que flash-lite)
+        self.model = str(llm_cfg.get("cover_letter_model") or llm_cfg.get("model", DEFAULT_MODEL))
         self.temperature = float(llm_cfg.get("temperature", 0.2))
+        self.candidate = get_candidate_info(self.config)
+        self.system_prompt = build_system_prompt(self.candidate)
         self._client = client
 
         if api_key is not None:
@@ -100,27 +151,74 @@ class CoverLetterGenerator:
         """True si une clé API est configurée."""
         return bool(self.api_key)
 
-    def _build_user_prompt(self, job: dict[str, Any], cv_text: str) -> str:
-        """Construit le contenu utilisateur pour le LLM."""
+    def _build_user_prompt(
+        self,
+        job: dict[str, Any],
+        cv_text: str,
+        custom_instruction: str | None = None,
+    ) -> str:
+        """Construit le contenu utilisateur pour le LLM, avec consigne spécifique optionnelle."""
         title = job.get("title", "")
         company = job.get("company", "")
         location = job.get("location", "")
         description = (job.get("description") or "").strip()[:8000]
 
-        return (
-            "DONNÉES DU POSTE À POURVOIR :\n"
-            f"Titre : {title}\n"
-            f"Entreprise / Organisation : {company}\n"
-            f"Localisation : {location}\n\n"
-            f"Description de l'offre :\n{description or '(Description non fournie)'}\n\n"
-            "--------------------------------------------------\n"
-            "CV DU CANDIDAT :\n"
-            f"{cv_text}\n"
-            "--------------------------------------------------\n"
-            "Rédige maintenant la lettre de motivation complète et formelle selon les instructions."
-        )
+        parts = [
+            "DONNÉES DU POSTE À POURVOIR :",
+            f"Titre : {title}",
+            f"Entreprise / Organisation : {company}",
+            f"Localisation : {location}",
+            "",
+            f"Description de l'offre :\n{description or '(Description non fournie)'}",
+            "",
+            "--------------------------------------------------",
+            "CV DU CANDIDAT :",
+            f"{cv_text}",
+            "--------------------------------------------------",
+        ]
 
-    def generate(self, job: dict[str, Any], cv_text: str | None = None) -> str:
+        if custom_instruction and custom_instruction.strip():
+            parts.extend([
+                "CONSIGNES SPÉCIFIQUES DU CANDIDAT POUR CETTE LETTRE :",
+                f"{custom_instruction.strip()}",
+                "--------------------------------------------------",
+            ])
+
+        parts.append(
+            "Rédige maintenant la lettre de motivation complète, développée (environ 1 à 1,5 pages, 500 à 650 mots) "
+            "et strictement sans aucun crochet selon toutes les instructions."
+        )
+        return "\n".join(parts)
+
+    def _postprocess_letter(self, text: str) -> str:
+        """Nettoie d'éventuels crochets résiduels pour garantir un texte 100% propre."""
+        if not text:
+            return ""
+        cleaned = text
+        for bracket in re.findall(r"\[([^\]]+)\]", cleaned):
+            lower_b = bracket.lower()
+            if any(k in lower_b for k in ["nom du", "responsable", "recruteur", "destinataire"]):
+                cleaned = cleaned.replace(f"[{bracket}]", "l'équipe recrutement")
+            elif any(k in lower_b for k in ["téléphone", "tel"]):
+                cleaned = cleaned.replace(f"[{bracket}]", self.candidate.get("phone", ""))
+            elif any(k in lower_b for k in ["email", "mail"]):
+                cleaned = cleaned.replace(f"[{bracket}]", self.candidate.get("email", ""))
+            elif any(k in lower_b for k in ["linkedin"]):
+                cleaned = cleaned.replace(f"[{bracket}]", self.candidate.get("linkedin", ""))
+            elif any(k in lower_b for k in ["github"]):
+                cleaned = cleaned.replace(f"[{bracket}]", self.candidate.get("github", ""))
+            elif any(k in lower_b for k in ["adresse", "ville"]):
+                cleaned = cleaned.replace(f"[{bracket}]", self.candidate.get("location", ""))
+            else:
+                cleaned = cleaned.replace(f"[{bracket}]", bracket)
+        return cleaned.strip()
+
+    def generate(
+        self,
+        job: dict[str, Any],
+        cv_text: str | None = None,
+        custom_instruction: str | None = None,
+    ) -> str:
         """Génère une lettre de motivation.
 
         Renvoie le texte de la lettre ou un message explicatif en cas d'erreur.
@@ -135,7 +233,7 @@ class CoverLetterGenerator:
         if not cv.strip():
             return "⚠️ Aucun profil candidat trouvé dans data/cv_eddy.txt."
 
-        prompt_content = self._build_user_prompt(job, cv)
+        prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
         client = self._client or genai.Client(api_key=self.api_key)
 
         for attempt in range(3):
@@ -144,11 +242,12 @@ class CoverLetterGenerator:
                     model=self.model,
                     contents=prompt_content,
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
+                        system_instruction=self.system_prompt,
                         temperature=self.temperature,
                     ),
                 )
-                return (response.text or "").strip()
+                raw_text = (response.text or "").strip()
+                return self._postprocess_letter(raw_text)
             except APIError as exc:
                 if attempt < 2 and (exc.code in (503, 429) or "demand" in str(exc).lower()):
                     import time
