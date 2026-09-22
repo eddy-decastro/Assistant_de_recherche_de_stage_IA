@@ -307,6 +307,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
 
     session_key = f"cover_letter_{job_id}"
+    source_key = f"cover_letter_source_{job_id}"
     cached_letter = str(st.session_state.get(session_key, ""))
     editor_key = f"editor_{session_key}"
 
@@ -316,10 +317,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         or cached_letter.startswith("⚠️")
         or "no longer available" in cached_letter
     ):
-        with st.spinner("Rédaction de la lettre en cours par Gemini (3.8 Flash)..."):
+        with st.spinner("Rédaction de la lettre en cours..."):
             generator = CoverLetterGenerator()
             new_letter = generator.generate(job)
             st.session_state[session_key] = new_letter
+            st.session_state[source_key] = generator.last_source
             if editor_key in st.session_state:
                 st.session_state[editor_key] = new_letter
 
@@ -328,6 +330,14 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     # Nettoyage préventif de l'état du widget éditeur s'il contenait l'erreur
     if editor_key in st.session_state and ("⚠️" in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
         st.session_state[editor_key] = letter_text
+
+    # Si la lettre a été produite via le moteur de secours (ex: saturation 503 de Google)
+    if st.session_state.get(source_key) == "fallback":
+        st.info(
+            "ℹ️ **Mode de secours actif** : L'API Gemini était momentanément indisponible ou saturée (erreur 503). "
+            "Cette lettre a été rédigée sur-mesure par le moteur algorithmique à partir de votre profil et de l'offre. "
+            "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou retenter l'appel Gemini ci-dessous."
+        )
 
     edited = st.text_area(
         "Brouillon de la lettre (éditable directement avant envoi) :",
@@ -357,7 +367,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     escaped_json = json.dumps(edited)
     copy_btn_id = f"copy_btn_{job_id}"
 
-    c1, c2, c3 = st.columns([1.2, 1.2, 1], gap="small")
+    c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.1, 1.1], gap="small")
     with c1:
         st.html(
             f"""
@@ -414,7 +424,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                   min-height: 38px;
                   padding: 0.4rem 0.75rem;
                   font-family: inherit;
-                  font-size: 14px;
+                  font-size: 13px;
                   font-weight: 500;
                   color: inherit;
                   background-color: transparent;
@@ -445,10 +455,29 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             icon=":material/picture_as_pdf:",
         )
     with c3:
-        if st.button("Régénérer", key=f"regen_{job_id}", use_container_width=True, icon=":material/refresh:"):
-            with st.spinner("Nouvelle rédaction en cours..."):
+        if st.button("Réessayer Gemini", key=f"regen_gemini_{job_id}", use_container_width=True, icon=":material/refresh:"):
+            with st.spinner("Appel à Gemini en cours..."):
                 generator = CoverLetterGenerator()
-                st.session_state[session_key] = generator.generate(job, custom_instruction=custom_inst)
+                new_l = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
+                st.session_state[session_key] = new_l
+                st.session_state[source_key] = generator.last_source
+                if editor_key in st.session_state:
+                    st.session_state[editor_key] = new_l
+                if generator.last_source == "fallback":
+                    st.toast("⚠️ Gemini est encore saturé (503). Version de secours maintenue.")
+                else:
+                    st.toast("✓ Lettre générée avec succès par Gemini !")
+                st.rerun()
+    with c4:
+        if st.button("Version secours", key=f"force_fallback_{job_id}", use_container_width=True, icon=":material/bolt:"):
+            with st.spinner("Génération de la version de secours..."):
+                generator = CoverLetterGenerator()
+                new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
+                st.session_state[session_key] = new_l
+                st.session_state[source_key] = "fallback"
+                if editor_key in st.session_state:
+                    st.session_state[editor_key] = new_l
+                st.toast("✓ Version de secours régénérée !")
                 st.rerun()
 
 

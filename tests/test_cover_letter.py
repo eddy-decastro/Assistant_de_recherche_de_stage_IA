@@ -10,7 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.matching.cover_letter import CoverLetterGenerator, get_cv_text, SYSTEM_PROMPT
+from google.genai.errors import APIError
+from src.matching.cover_letter import (
+    CoverLetterGenerator,
+    get_cv_text,
+    SYSTEM_PROMPT,
+    generate_algorithmic_cover_letter,
+    is_english_text,
+)
 
 SAMPLE_JOB = {
     "title": "Stage R&D Deep Learning / NLP",
@@ -120,5 +127,70 @@ def test_generator_custom_instruction() -> None:
     )
     assert "CONSIGNES SPÉCIFIQUES DU CANDIDAT" in prompt
     assert "Mettre l'accent sur les Transformers et la vision par ordinateur" in prompt
+
+
+def test_is_english_text_detection() -> None:
+    """Vérifie la détection fiable de l'anglais vs français."""
+    assert is_english_text("We are looking for an ambitious intern with strong deep learning skills and experience.") is True
+    assert is_english_text("Stage de fin d'études en recherche R&D au sein de notre équipe pour un élève-ingénieur.") is False
+
+
+def test_algorithmic_cover_letter_french() -> None:
+    """Vérifie que la lettre de secours algorithmique française est complète et sans crochets."""
+    letter = generate_algorithmic_cover_letter(SAMPLE_JOB)
+    assert "Objet : Candidature au stage de fin d'études — Stage R&D Deep Learning / NLP" in letter
+    assert "Madame, Monsieur," in letter
+    assert "Mines de Saint-Étienne" in letter
+    assert "M2 Mathématiques en Action" in letter
+    assert "IMT Mines Alès" in letter
+    assert "Licence 3 de Mathématiques Générales à l'Université de Montpellier" in letter
+    assert "UPC" in letter or "Barcelone" in letter
+    assert "MedStay-CI" in letter
+    assert "CinéFilm IA" in letter
+    assert "avril 2027" in letter
+    assert "Eddy DE CASTRO" in letter
+    assert "[" not in letter and "]" not in letter
+    words = len(letter.split())
+    assert 400 <= words <= 700
+
+
+def test_algorithmic_cover_letter_english() -> None:
+    """Vérifie que la lettre de secours pour une offre en anglais est rédigée en anglais de haut niveau."""
+    english_job = {
+        "title": "Research Intern - Machine Learning & Foundation Models",
+        "company": "DeepMind",
+        "location": "London / Paris",
+        "description": "We are seeking a talented research intern with strong mathematical foundations and PyTorch skills to work on frontier models.",
+    }
+    letter = generate_algorithmic_cover_letter(english_job)
+    assert "Subject: Application for End-of-Studies Internship" in letter
+    assert "Dear Hiring Team," in letter
+    assert "Mines de Saint-Étienne" in letter
+    assert "University of Montpellier" in letter
+    assert "Barcelona" in letter
+    assert "April 2027" in letter
+    assert "Sincerely," in letter
+    assert "Eddy DE CASTRO" in letter
+    assert "[" not in letter and "]" not in letter
+
+
+def test_generator_fallback_on_503_error() -> None:
+    """Vérifie que le générateur bascule automatiquement sur la lettre de secours en cas d'erreur 503."""
+    mock_client = MagicMock()
+    # Simuler une erreur 503 de Google sur tous les modèles
+    mock_client.models.generate_content.side_effect = APIError(
+        503,
+        {"error": {"code": 503, "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}},
+    )
+
+    generator = CoverLetterGenerator(api_key="valid-key", client=mock_client)
+    result = generator.generate(SAMPLE_JOB)
+
+    # La lettre ne doit PAS être un message d'erreur rouge, mais la lettre de secours complète !
+    assert not result.startswith("⚠️ Erreur API Gemini")
+    assert "Objet : Candidature au stage de fin d'études" in result
+    assert "Mines de Saint-Étienne" in result
+    assert generator.last_source == "fallback"
+
 
 
