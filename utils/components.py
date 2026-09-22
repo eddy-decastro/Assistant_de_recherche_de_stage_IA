@@ -307,18 +307,33 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
 
     session_key = f"cover_letter_{job_id}"
-    if session_key not in st.session_state:
-        with st.spinner("Rédaction de la lettre en cours par Gemini..."):
+    cached_letter = str(st.session_state.get(session_key, ""))
+    editor_key = f"editor_{session_key}"
+
+    # Si la lettre n'a pas été générée ou si le cache contient une ancienne erreur
+    if (
+        not cached_letter
+        or cached_letter.startswith("⚠️")
+        or "no longer available" in cached_letter
+    ):
+        with st.spinner("Rédaction de la lettre en cours par Gemini (3.8 Flash)..."):
             generator = CoverLetterGenerator()
-            st.session_state[session_key] = generator.generate(job)
+            new_letter = generator.generate(job)
+            st.session_state[session_key] = new_letter
+            if editor_key in st.session_state:
+                st.session_state[editor_key] = new_letter
 
     letter_text = st.session_state.get(session_key, "")
+
+    # Nettoyage préventif de l'état du widget éditeur s'il contenait l'erreur
+    if editor_key in st.session_state and ("⚠️" in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
+        st.session_state[editor_key] = letter_text
 
     edited = st.text_area(
         "Brouillon de la lettre (éditable directement avant envoi) :",
         value=letter_text,
         height=380,
-        key=f"editor_{session_key}",
+        key=editor_key,
     )
 
     words_count = len(edited.split())

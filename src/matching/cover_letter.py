@@ -18,7 +18,7 @@ from google.genai.errors import APIError
 from src.config import PROJECT_ROOT, load_config
 from src.matching.llm_judge import load_env_file
 
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
@@ -238,7 +238,7 @@ class CoverLetterGenerator:
 
         # Chaîne de repli automatique pour garantir 100% de succès sans 404/503/429
         fallback_models: list[str] = []
-        for m in [self.model, "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash", "gemini-flash-lite-latest"]:
+        for m in [self.model, "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]:
             if m and m not in fallback_models:
                 fallback_models.append(m)
 

@@ -15,7 +15,7 @@ pinned: false
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://recherche-de-stage-ia.streamlit.app/)
 ![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)
 ![Framework](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
-![LLM](https://img.shields.io/badge/LLM-Gemini%202.5%20Pro%20%26%20Flash-4285F4?logo=google&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-Gemini%203.8%20Flash-4285F4?logo=google&logoColor=white)
 ![Database](https://img.shields.io/badge/Base-SQLite%20(WAL)%20%2B%20R2-003B57?logo=sqlite&logoColor=white)
 ![Sources](https://img.shields.io/badge/Sources-LinkedIn%20%7C%20JobTeaser%20%7C%20WTTJ-0077B5?logo=linkedin&logoColor=white)
 ![Tests](https://img.shields.io/badge/Tests-122%2F122%20Passing-brightgreen?logo=pytest&logoColor=white)
@@ -98,9 +98,9 @@ flowchart TD
 
 ---
 
-## ✍️ Générateur de Lettres de Motivation (Gemini 2.5 Pro)
+## ✍️ Générateur de Lettres de Motivation (Gemini 3.8 Flash)
 
-Pour transformer les offres qualifiées en entretiens réels, l'application intègre un moteur de rédaction sur-mesure alimenté par le modèle de pointe **Gemini 2.5 Pro**.
+Pour transformer les offres qualifiées en entretiens réels, l'application intègre un moteur de rédaction sur-mesure alimenté par le modèle de pointe **Gemini 3.8 Flash**.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
