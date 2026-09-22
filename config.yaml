@@ -272,7 +272,7 @@ llm:
   provider: google
   base_url: ''
   model: gemini-flash-lite-latest
-  cover_letter_model: gemini-2.5-pro
+  cover_letter_model: gemini-3.1-flash-lite
   temperature: 0.0
   timeout_seconds: 60
   tier: free

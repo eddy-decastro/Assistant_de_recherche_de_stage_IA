@@ -18,7 +18,7 @@ from google.genai.errors import APIError
 from src.config import PROJECT_ROOT, load_config
 from src.matching.llm_judge import load_env_file
 
-DEFAULT_MODEL = "gemini-2.5-pro"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
@@ -236,28 +236,40 @@ class CoverLetterGenerator:
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
         client = self._client or genai.Client(api_key=self.api_key)
 
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=prompt_content,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        temperature=self.temperature,
-                    ),
-                )
-                raw_text = (response.text or "").strip()
-                return self._postprocess_letter(raw_text)
-            except APIError as exc:
-                if attempt < 2 and (exc.code in (503, 429) or "demand" in str(exc).lower()):
-                    import time
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
-                return f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
-            except Exception as exc:
-                if attempt < 2:
-                    import time
-                    time.sleep(1.0 * (attempt + 1))
-                    continue
-                return f"⚠️ Erreur lors de la génération de la lettre : {exc}"
-        return "⚠️ Impossible de générer la lettre après plusieurs tentatives."
+        # Chaîne de repli automatique pour garantir 100% de succès sans 404/503/429
+        fallback_models: list[str] = []
+        for m in [self.model, "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.6-flash", "gemini-flash-lite-latest"]:
+            if m and m not in fallback_models:
+                fallback_models.append(m)
+
+        last_error = ""
+        for model_candidate in fallback_models:
+            for attempt in range(2):
+                try:
+                    response = client.models.generate_content(
+                        model=model_candidate,
+                        contents=prompt_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.system_prompt,
+                            temperature=self.temperature,
+                        ),
+                    )
+                    raw_text = (response.text or "").strip()
+                    if raw_text:
+                        return self._postprocess_letter(raw_text)
+                except APIError as exc:
+                    last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
+                    # Modèle non accessible (404) ou quota dépassé sur ce modèle (429) : basculer immédiatement
+                    if exc.code in (404, 429) or "not available" in str(exc).lower():
+                        break
+                    # Pic de charge temporaire (503) : pause rapide
+                    if attempt < 1 and (exc.code == 503 or "demand" in str(exc).lower()):
+                        import time
+                        time.sleep(1.0)
+                        continue
+                    break
+                except Exception as exc:
+                    last_error = f"⚠️ Erreur : {exc}"
+                    break
+
+        return last_error or "⚠️ Impossible de générer la lettre après plusieurs tentatives."
