@@ -33,7 +33,18 @@ _PENDING_TIMER: threading.Timer | None = None
 
 
 def _load_env() -> None:
-    """Charge les variables du fichier .env si présent (sans écraser os.environ)."""
+    """Charge les variables depuis st.secrets (Streamlit Cloud) ou du fichier .env local."""
+    # 1. Si exécuté sous Streamlit (ex: Streamlit Community Cloud secrets)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            for k, v in st.secrets.items():
+                if isinstance(v, str) and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+    # 2. Depuis le fichier .env local (sans écraser os.environ)
     env_file = PROJECT_ROOT / ".env"
     if env_file.exists():
         try:

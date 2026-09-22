@@ -1,0 +1,20 @@
+# ============================================================
+# stage_copilot — Dépendances Complètes (Local, Scraping & Tests)
+# ============================================================
+-r requirements.txt
+
+# --- PyTorch (CPU) ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# --- Embeddings sémantiques (similarité CV vs offres) ---
+sentence-transformers
+scikit-learn==1.6.1
+
+# --- Scraping (HTML parsing & TLS impersonation) ---
+beautifulsoup4
+lxml
+curl_cffi
+
+# --- Tests automatisés ---
+pytest

@@ -1,11 +1,12 @@
 # ============================================================
-# stage_copilot — Dépendances Python
+# stage_copilot — Dépendances Déploiement Cloud (Streamlit / Render)
 # ============================================================
+# Version légère optimisée pour le Cloud :
+# - Aucun dépassement de mémoire (OOM / Killed)
+# - Démarrage et installation ultra-rapides (< 10s)
+# - Scraping & Embeddings lourds exécutés en local
 
-# --- PyTorch (CPU) : index déclaré en premier pour privilégier les wheels CPU ---
---extra-index-url https://download.pytorch.org/whl/cpu
-
-# --- Client HTTP ---
+# --- Client HTTP & API ---
 httpx
 
 # --- Validation de données / modèles ---
@@ -14,40 +15,22 @@ pydantic>=2.0
 # --- Configuration YAML ---
 PyYAML
 
-# --- ORM / base de données SQLite ---
+# --- ORM / Base de données SQLite ---
 SQLAlchemy
 
-# --- Tableau de bord ---
+# --- Interface Web & Visualisation ---
 streamlit
-
-# --- Manipulation de données ---
 pandas
+altair
 
-# --- Embeddings sémantiques (similarité CV vs offres) ---
-sentence-transformers
-
-# --- scikit-learn (dépendance de sentence-transformers via util.metrics) ---
-# Version épinglée : les wheels les plus récentes (1.9.x) sont bloquées par le
-# contrôle d'application Windows de cette machine (Smart App Control / AppLocker)
-# — « DLL load failed while importing _dist_metrics » — alors que la 1.6.1 est
-# autorisée et suffisante pour l'encodage.
-scikit-learn==1.6.1
-
-# --- PyTorch ---
-torch
-
-# --- Chargement du fichier .env (clé API DeepSeek) ---
+# --- Variables d'environnement & Sécurité ---
 python-dotenv
 
-# --- Scraping LinkedIn (parsing HTML) ---
-beautifulsoup4
-lxml
-
-# --- Impersonation TLS (contourne le challenge Cloudflare de l'intranet JobTeaser) ---
-curl_cffi
-pytest
+# --- Génération IA (Juge LLM & Lettres de motivation) ---
 google-genai
+
+# --- Traitement de CV (PDF) ---
 pypdf
 
-# --- Synchronisation Cloud (Cloudflare R2 / AWS S3) ---
+# --- Synchronisation Cloud (Cloudflare R2 / S3) ---
 boto3
