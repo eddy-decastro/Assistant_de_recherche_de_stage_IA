@@ -173,7 +173,7 @@ def main() -> None:
 
     # Zone de filtres compacts
     with st.expander("🎛️ Filtres du Tableau Kanban", expanded=False):
-        c1, c2, c3 = st.columns([2, 1, 1])
+        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
         with c1:
             query = st.text_input("Recherche", placeholder="Rechercher par poste ou entreprise…")
         with c2:
@@ -181,6 +181,13 @@ def main() -> None:
         with c3:
             rerank_only = st.toggle("Verdict LLM uniquement", value=False)
             exclude_dassault = st.toggle("Exclure Dassault", value=False, help="Masque les offres Dassault Systèmes et Dassault Aviation.")
+        with c4:
+            kanban_limit_choice = st.selectbox(
+                "Affichage par colonne",
+                options=["30", "50", "100", "Tout"],
+                index=0,
+                help="Choisissez 'Tout' pour afficher l'intégralité des offres de la base sans restriction.",
+            )
 
         col_ex, col_sel = st.columns(2)
         with col_ex:
@@ -198,6 +205,8 @@ def main() -> None:
                 format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
             )
 
+    display_limit = None if kanban_limit_choice == "Tout" else int(kanban_limit_choice)
+
     filtered = filter_jobs(
         jobs,
         Filters(
@@ -207,7 +216,7 @@ def main() -> None:
             exclude_dassault=exclude_dassault,
             exclude_companies=tuple(exclude_companies),
             selected_companies=tuple(selected_companies),
-            limit=500,
+            limit=None,
         ),
     )
 
@@ -239,14 +248,15 @@ def main() -> None:
 
             if not column_jobs:
                 st.caption("Aucune offre")
+            elif display_limit is None or len(column_jobs) <= display_limit:
+                for job in column_jobs:
+                    _render_kanban_card(job, db)
             else:
-                display_limit = 30
                 for job in column_jobs[:display_limit]:
                     _render_kanban_card(job, db)
-                if len(column_jobs) > display_limit:
-                    with st.expander(f"Voir les {len(column_jobs) - display_limit} autres offres…"):
-                        for job in column_jobs[display_limit:]:
-                            _render_kanban_card(job, db)
+                with st.expander(f"Voir les {len(column_jobs) - display_limit} autres offres…"):
+                    for job in column_jobs[display_limit:]:
+                        _render_kanban_card(job, db)
 
 
 if __name__ == "__main__":
