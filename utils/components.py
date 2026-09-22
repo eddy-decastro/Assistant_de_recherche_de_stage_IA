@@ -331,12 +331,18 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     if editor_key in st.session_state and ("⚠️" in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
         st.session_state[editor_key] = letter_text
 
-    # Si la lettre a été produite via le moteur de secours (ex: saturation 503 de Google)
-    if st.session_state.get(source_key) == "fallback":
+    # Si la lettre a été produite via DeepSeek ou le moteur de secours algorithmique
+    source = st.session_state.get(source_key)
+    if source == "deepseek":
         st.info(
-            "ℹ️ **Mode de secours actif** : L'API Gemini était momentanément indisponible ou saturée (erreur 503). "
-            "Cette lettre a été rédigée sur-mesure par le moteur algorithmique à partir de votre profil et de l'offre. "
-            "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou retenter l'appel Gemini ci-dessous."
+            "🤖 **IA de secours DeepSeek V3 active** : Votre lettre a été rédigée avec succès par DeepSeek "
+            "(relais automatique suite à une saturation temporaire de Google Gemini). "
+            "Vous pouvez la copier, la modifier ou la télécharger en PDF."
+        )
+    elif source == "fallback":
+        st.info(
+            "⚡ **Mode de secours algorithmique actif** : Rédigée sur-mesure à partir de votre profil et de l'offre. "
+            "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou tenter une génération IA ci-dessous."
         )
 
     edited = st.text_area(
@@ -463,21 +469,31 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 st.session_state[source_key] = generator.last_source
                 if editor_key in st.session_state:
                     st.session_state[editor_key] = new_l
-                if generator.last_source == "fallback":
-                    st.toast("⚠️ Gemini est encore saturé (503). Version de secours maintenue.")
+                if generator.last_source == "gemini":
+                    st.toast("✓ Lettre rédigée avec succès par Gemini !")
+                elif generator.last_source == "deepseek":
+                    st.toast("🤖 Gemini saturé : relayé avec succès par DeepSeek V3 !")
                 else:
-                    st.toast("✓ Lettre générée avec succès par Gemini !")
+                    st.toast("⚡ Version de secours algorithmique générée.")
                 st.rerun()
     with c4:
-        if st.button("Version secours", key=f"force_fallback_{job_id}", use_container_width=True, icon=":material/bolt:"):
-            with st.spinner("Génération de la version de secours..."):
+        if st.button("Rédiger DeepSeek", key=f"force_deepseek_{job_id}", use_container_width=True, icon=":material/smart_toy:"):
+            with st.spinner("Rédaction par DeepSeek V3..."):
                 generator = CoverLetterGenerator()
-                new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
-                st.session_state[session_key] = new_l
-                st.session_state[source_key] = "fallback"
-                if editor_key in st.session_state:
-                    st.session_state[editor_key] = new_l
-                st.toast("✓ Version de secours régénérée !")
+                new_l = generator.generate_with_deepseek(job, custom_instruction=custom_inst)
+                if new_l and not new_l.startswith("⚠️"):
+                    st.session_state[session_key] = new_l
+                    st.session_state[source_key] = "deepseek"
+                    if editor_key in st.session_state:
+                        st.session_state[editor_key] = new_l
+                    st.toast("✓ Lettre rédigée avec succès par DeepSeek V3 !")
+                else:
+                    st.toast("⚠️ DeepSeek non disponible, génération de secours activée.")
+                    new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
+                    st.session_state[session_key] = new_l
+                    st.session_state[source_key] = "fallback"
+                    if editor_key in st.session_state:
+                        st.session_state[editor_key] = new_l
                 st.rerun()
 
 

@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import requests
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -332,6 +333,7 @@ class CoverLetterGenerator:
         config: dict[str, Any] | None = None,
         api_key: str | None = None,
         client: genai.Client | None = None,
+        deepseek_api_key: str | None = None,
     ) -> None:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
@@ -349,10 +351,16 @@ class CoverLetterGenerator:
             load_env_file()
             self.api_key = os.environ.get("GEMINI_API_KEY", "")
 
+        if deepseek_api_key is not None:
+            self.deepseek_api_key = deepseek_api_key
+        else:
+            load_env_file()
+            self.deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+
     @property
     def available(self) -> bool:
-        """True si une clé API est configurée."""
-        return bool(self.api_key)
+        """True si une clé API Gemini ou DeepSeek est configurée."""
+        return bool(self.api_key or self.deepseek_api_key)
 
     def _build_user_prompt(
         self,
@@ -416,6 +424,51 @@ class CoverLetterGenerator:
                 cleaned = cleaned.replace(f"[{bracket}]", bracket)
         return cleaned.strip()
 
+    def generate_with_deepseek(
+        self,
+        job: dict[str, Any],
+        cv_text: str | None = None,
+        custom_instruction: str | None = None,
+    ) -> str | None:
+        """Génère la lettre de motivation via la deuxième IA : DeepSeek (deepseek-chat)."""
+        if not self.deepseek_api_key:
+            return None
+
+        cv = cv_text or get_cv_text()
+        prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
+
+        headers = {
+            "Authorization": f"Bearer {self.deepseek_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt_content},
+            ],
+            "temperature": self.temperature,
+            "max_tokens": 1800,
+        }
+
+        try:
+            resp = requests.post(
+                "https://api.deepseek.com/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=35,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw_text = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+            if raw_text:
+                self.last_source = "deepseek"
+                return self._postprocess_letter(raw_text)
+            return None
+        except Exception as exc:
+            self.last_error = f"⚠️ Erreur DeepSeek : {exc}"
+            return None
+
     def generate_fallback(
         self,
         job: dict[str, Any],
@@ -440,13 +493,15 @@ class CoverLetterGenerator:
     ) -> str:
         """Génère une lettre de motivation.
 
-        En cas d'erreur de l'API Gemini (surcharge 503, quota 429, etc.), bascule
-        automatiquement sur la solution de secours haute fidélité si allow_fallback=True.
+        Cascade de résilience :
+        1. Google Gemini (modèle configuré ou variantes Flash)
+        2. Deuxième IA de secours : DeepSeek V3 (deepseek-chat)
+        3. Moteur algorithmique déterministe (zéro API, 100% garanti)
         """
         if not self.available:
             return (
-                "⚠️ Clé GEMINI_API_KEY manquante dans votre fichier .env.\n\n"
-                "Veuillez ajouter votre clé API Gemini pour pouvoir générer des lettres de motivation."
+                "⚠️ Clé GEMINI_API_KEY ou DEEPSEEK_API_KEY manquante dans votre fichier .env.\n\n"
+                "Veuillez ajouter une clé API pour pouvoir générer des lettres de motivation."
             )
 
         cv = cv_text or get_cv_text()
@@ -454,47 +509,56 @@ class CoverLetterGenerator:
             return "⚠️ Aucun profil candidat trouvé dans data/cv_eddy.txt."
 
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
-        client = self._client or genai.Client(api_key=self.api_key)
 
-        fallback_models: list[str] = []
-        for m in [
-            self.model,
-            "gemini-3-flash-preview",
-            "gemini-3.8-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-        ]:
-            if m and m not in fallback_models:
-                fallback_models.append(m)
+        # Niveau 1 : Tentative via Google Gemini si configuré
+        if self.api_key:
+            client = self._client or genai.Client(api_key=self.api_key)
+            fallback_models: list[str] = []
+            for m in [
+                self.model,
+                "gemini-3-flash-preview",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-3.1-flash-lite",
+                "gemini-flash-latest",
+                "gemini-flash-lite-latest",
+            ]:
+                if m and m not in fallback_models:
+                    fallback_models.append(m)
 
-        self.last_error = ""
-        for model_candidate in fallback_models:
-            try:
-                response = client.models.generate_content(
-                    model=model_candidate,
-                    contents=prompt_content,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        temperature=self.temperature,
-                    ),
-                )
-                raw_text = (response.text or "").strip()
-                if raw_text:
-                    self.last_source = "gemini"
-                    return self._postprocess_letter(raw_text)
-            except APIError as exc:
-                self.last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
-                # En cas de 404, 429 ou 503 (surcharge), bascule instantanément vers le modèle suivant
-                continue
-            except Exception as exc:
-                self.last_error = f"⚠️ Erreur : {exc}"
-                continue
+            self.last_error = ""
+            for model_candidate in fallback_models:
+                try:
+                    response = client.models.generate_content(
+                        model=model_candidate,
+                        contents=prompt_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.system_prompt,
+                            temperature=self.temperature,
+                        ),
+                    )
+                    raw_text = (response.text or "").strip()
+                    if raw_text:
+                        self.last_source = "gemini"
+                        return self._postprocess_letter(raw_text)
+                except APIError as exc:
+                    self.last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
+                    # En cas de 404, 429 ou 503 (surcharge), bascule instantanément vers le modèle suivant
+                    continue
+                except Exception as exc:
+                    self.last_error = f"⚠️ Erreur : {exc}"
+                    continue
 
-        # Si tous les modèles ont échoué (par exemple à cause d'une saturation 503 générale de Google) :
+        # Niveau 2 : Deuxième IA indépendante de secours (DeepSeek V3)
+        if self.deepseek_api_key:
+            ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
+            if ds_result and not ds_result.startswith("⚠️"):
+                self.last_source = "deepseek"
+                return ds_result
+
+        # Niveau 3 : Moteur algorithmique déterministe de secours (zéro API, haute fidélité)
         if allow_fallback:
             return self.generate_fallback(job, cv_text=cv, custom_instruction=custom_instruction)
 

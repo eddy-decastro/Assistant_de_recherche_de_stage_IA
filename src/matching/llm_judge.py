@@ -65,7 +65,18 @@ def get_system_prompt() -> str:
 
 
 def load_env_file(path: str | Path | None = None) -> None:
-    """Charge les variables d'un fichier .env dans os.environ (sans écraser l'existant)."""
+    """Charge les variables d'un fichier .env ou de st.secrets dans os.environ (sans écraser l'existant)."""
+    # 1. Si exécuté dans Streamlit (Streamlit Community Cloud)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            for k, v in st.secrets.items():
+                if isinstance(v, str) and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+    # 2. Depuis le fichier .env local
     env_path = Path(path) if path else (PROJECT_ROOT / ".env")
     if not env_path.exists():
         return

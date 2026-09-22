@@ -46,9 +46,9 @@ def test_generator_prompt_building() -> None:
 
 def test_generator_missing_api_key() -> None:
     """Vérifie le message d'avertissement lorsque la clé est absente."""
-    generator = CoverLetterGenerator(api_key="")
+    generator = CoverLetterGenerator(api_key="", deepseek_api_key="")
     result = generator.generate(SAMPLE_JOB)
-    assert "GEMINI_API_KEY manquante" in result
+    assert "manquante" in result
 
 
 def test_generator_mock_client() -> None:
@@ -175,22 +175,45 @@ def test_algorithmic_cover_letter_english() -> None:
 
 
 def test_generator_fallback_on_503_error() -> None:
-    """Vérifie que le générateur bascule automatiquement sur la lettre de secours en cas d'erreur 503."""
+    """Vérifie que le générateur bascule sur la lettre de secours si les deux APIs sont indisponibles."""
     mock_client = MagicMock()
-    # Simuler une erreur 503 de Google sur tous les modèles
     mock_client.models.generate_content.side_effect = APIError(
         503,
         {"error": {"code": 503, "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."}},
     )
 
-    generator = CoverLetterGenerator(api_key="valid-key", client=mock_client)
+    generator = CoverLetterGenerator(api_key="valid-key", client=mock_client, deepseek_api_key="")
     result = generator.generate(SAMPLE_JOB)
 
-    # La lettre ne doit PAS être un message d'erreur rouge, mais la lettre de secours complète !
     assert not result.startswith("⚠️ Erreur API Gemini")
     assert "Objet : Candidature au stage de fin d'études" in result
     assert "Mines de Saint-Étienne" in result
     assert generator.last_source == "fallback"
+
+
+def test_generator_deepseek_fallback_on_gemini_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Vérifie que le générateur bascule sur l'IA DeepSeek si Gemini renvoie une erreur 503."""
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = APIError(
+        503,
+        {"error": {"code": 503, "message": "High demand"}},
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {"message": {"content": "Objet : Candidature DeepSeek\n\nMadame, Monsieur,\nRédigé par DeepSeek."}}
+        ]
+    }
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: mock_resp)
+
+    generator = CoverLetterGenerator(api_key="valid-key", client=mock_client, deepseek_api_key="mock-ds-key")
+    result = generator.generate(SAMPLE_JOB)
+
+    assert "Candidature DeepSeek" in result
+    assert generator.last_source == "deepseek"
+
 
 
 
