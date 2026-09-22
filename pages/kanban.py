@@ -240,8 +240,13 @@ def main() -> None:
             if not column_jobs:
                 st.caption("Aucune offre")
             else:
-                for job in column_jobs:
+                display_limit = 30
+                for job in column_jobs[:display_limit]:
                     _render_kanban_card(job, db)
+                if len(column_jobs) > display_limit:
+                    with st.expander(f"Voir les {len(column_jobs) - display_limit} autres offres…"):
+                        for job in column_jobs[display_limit:]:
+                            _render_kanban_card(job, db)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,13 @@
+---
+title: Stage Copilot
+emoji: 🎯
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+app_file: app.py
+pinned: false
+---
+
 # Stage Copilot — Pipeline d'Agrégation et de Reranking d'Offres de Stage par LLM
 
 <div align="center">

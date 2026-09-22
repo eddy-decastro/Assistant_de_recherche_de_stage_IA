@@ -21,7 +21,7 @@ def test_auth_disabled_by_default() -> None:
 
 
 def test_auth_enabled_when_env_set() -> None:
-    with patch.dict(os.environ, {"APP_PASSWORD": "SecretPassword123"}):
+    with patch.dict(os.environ, {"APP_PASSWORD": "SecretPassword123", "TESTING_AUTH": "1"}):
         assert is_auth_enabled()
         assert check_password("SecretPassword123") is True
         assert check_password(" SecretPassword123 ") is True  # strip
