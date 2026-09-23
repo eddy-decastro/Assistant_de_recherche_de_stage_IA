@@ -2,10 +2,13 @@ scrapers:
   enabled_sources:
   - linkedin
   - jobteaser
+  - wttj
   target_queries:
   - Stage Data Scientist
+  - Stage Data Science
   - Stage Machine Learning
   - Stage Recherche IA
+  - Data Science Recherche
   max_offers_per_source: 200
   request_timeout_seconds: 30
   passes:
@@ -14,7 +17,7 @@ scrapers:
       sort: date
       target_new_per_source: 150
       max_offers_per_query: 150
-      window_days: 7
+      window_days: 14
       early_stop_after_known: 10
       arm_early_stop: true
       early_stop_min_pages: 2

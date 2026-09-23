@@ -302,9 +302,18 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     job_id = str(job.get("id"))
     title = str(job.get("title") or "Offre sans titre")
     company = str(job.get("company") or "Entreprise")
+    url = str(job.get("url") or "")
 
-    st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
-    st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
+    if url.startswith("http"):
+        col_title, col_apply = st.columns([2.8, 1.2], vertical_alignment="center")
+        with col_title:
+            st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
+            st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
+        with col_apply:
+            st.link_button("🚀 Postuler à l'offre ↗", url, type="primary", use_container_width=True)
+    else:
+        st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
+        st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
 
     session_key = f"cover_letter_{job_id}"
     source_key = f"cover_letter_source_{job_id}"
@@ -495,6 +504,35 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     if editor_key in st.session_state:
                         st.session_state[editor_key] = new_l
                 st.rerun()
+
+    # Section de candidature directe depuis la lettre de motivation
+    if url.startswith("http"):
+        st.markdown('<hr style="margin: 18px 0 14px; border-color: var(--border, #E4DED3);">', unsafe_allow_html=True)
+        col_act1, col_act2 = st.columns([1.6, 1.2], vertical_alignment="center", gap="small")
+        with col_act1:
+            st.link_button(
+                "🚀 Postuler directement à l'offre ↗",
+                url,
+                type="primary",
+                use_container_width=True,
+            )
+        with col_act2:
+            current_st = job.get("status")
+            if current_st != STATUS_APPLIED:
+                if st.button(
+                    "✓ Marquer comme postulé",
+                    key=f"dialog_applied_{job_id}",
+                    use_container_width=True,
+                    icon=":material/check_circle:",
+                ):
+                    db = get_database()
+                    db.update_status(job_id, STATUS_APPLIED)
+                    job["status"] = STATUS_APPLIED
+                    bump_data_version()
+                    st.toast("✓ Statut mis à jour : Candidature marquée comme envoyée !")
+                    st.rerun()
+            else:
+                st.caption("✅ Candidature déjà enregistrée comme postulée")
 
 
 def render_job_card(db: Database, job: dict[str, Any], keywords: Sequence[str]) -> None:

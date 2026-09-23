@@ -256,7 +256,14 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
     st.caption(f"{len(jobs)} offres en base SQLite")
     
     if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", use_container_width=True):
-        bump_data_version()
+        try:
+            db = get_database()
+            db.engine.dispose()
+        except Exception:
+            pass
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        bump_data_version(sync_cloud=False)
         st.rerun()
 
     # Section Synchronisation Cloud
@@ -275,8 +282,15 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
         with c_sync1:
             if st.button("⬇️ Récupérer la dernière base distante", use_container_width=True, help="Force le téléchargement de la base depuis le bucket."):
                 with st.spinner("Téléchargement de la base distante en cours..."):
+                    try:
+                        db = get_database()
+                        db.engine.dispose()
+                    except Exception:
+                        pass
                     if download_database(force=True):
-                        bump_data_version()
+                        st.cache_resource.clear()
+                        st.cache_data.clear()
+                        bump_data_version(sync_cloud=False)
                         st.toast("Base locale mise à jour depuis le cloud !")
                         st.rerun()
                     else:

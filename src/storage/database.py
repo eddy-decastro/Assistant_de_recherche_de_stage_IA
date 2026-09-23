@@ -517,6 +517,16 @@ class Database:
             rows = session.execute(stmt).scalars().all()
             return [row.to_dict() for row in rows]
 
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        """Récupère une offre par son identifiant unique."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            return record.to_dict() if record else None
+
+    def get_job_by_id(self, job_id: str) -> dict[str, Any] | None:
+        """Alias pratique pour get_job."""
+        return self.get_job(job_id)
+
     def get_source_counts(self) -> list[tuple[str, int]]:
         """Compte les offres par plateforme source (ordre décroissant).
 

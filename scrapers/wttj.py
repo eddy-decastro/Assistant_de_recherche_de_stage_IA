@@ -19,11 +19,11 @@ import httpx
 from .base import BaseScraper
 from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
 
-ALGOLIA_HOST = "https://v3splegsrc-dsn.algolia.net"
+ALGOLIA_APP_ID = "CSEKHVMS53"
+ALGOLIA_API_KEY = "4bd8f6215d0cc52b26430765769e65a0"
+ALGOLIA_INDEX = "wttj_jobs_production_fr"
+ALGOLIA_HOST = f"https://{ALGOLIA_APP_ID.lower()}-dsn.algolia.net"
 ALGOLIA_QUERIES_ENDPOINT = f"{ALGOLIA_HOST}/1/indexes/*/queries"
-ALGOLIA_APP_ID = "V3SPLEGSRC"
-ALGOLIA_API_KEY = "603859ff57d97eabec2058e5f560e224"
-ALGOLIA_INDEX = "wttj_jobs_production"
 
 HITS_PER_PAGE = 50
 CONTRACT_FILTER = "internship"
@@ -86,17 +86,13 @@ class WelcomeToTheJungleScraper(BaseScraper):
     """Récupère les offres de stage WTTJ via l'index Algolia public.
 
     Capacités : l'index expose le classement natif d'Algolia (pertinence). Aucun
-    tri par date ni filtre temporel serveur n'est garanti (le champ de date et une
-    éventuelle réplique triée n'ont pas pu être vérifiés : la source est
-    injoignable dans l'environnement de développement — DNS). Le scraper reste donc
+    tri par date ni filtre temporel serveur n'est garanti. Le scraper reste donc
     conservateur : ``DATE_ORDER_RELIABLE`` et ``SERVER_WINDOW_FILTER`` à ``False``,
     la sélection fine revenant au filtre métier et au scoring en aval.
     """
 
     source = "wttj"
-    #: Non vérifié (Algolia renvoie son classement de pertinence) -> pire cas.
     DATE_ORDER_RELIABLE = False
-    #: Non vérifié : aucun filtre temporel serveur n'est demandé.
     SERVER_WINDOW_FILTER = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
@@ -106,9 +102,32 @@ class WelcomeToTheJungleScraper(BaseScraper):
                 "X-Algolia-Application-Id": ALGOLIA_APP_ID,
                 "X-Algolia-API-Key": ALGOLIA_API_KEY,
                 "Content-Type": "application/json",
+                "Referer": "https://www.welcometothejungle.com/fr/jobs",
+                "Origin": "https://www.welcometothejungle.com",
             }
         )
         self._sort_notice_logged = False
+
+    def _refresh_keys(self) -> bool:
+        """Tente de rafraîchir les clés Algolia depuis l'endpoint public /api/env."""
+        try:
+            from curl_cffi import requests as curl_requests
+            r = curl_requests.get("https://www.welcometothejungle.com/api/env", impersonate="chrome", timeout=10)
+            if r.status_code == 200:
+                import json
+                m = re.search(r'window\.env\s*=\s*(\{.*?\});?', r.text)
+                if m:
+                    env = json.loads(m.group(1))
+                    app_id = env.get("PUBLIC_ALGOLIA_APPLICATION_ID")
+                    api_key = env.get("PUBLIC_ALGOLIA_API_KEY_CLIENT")
+                    if app_id and api_key:
+                        self.client.headers["X-Algolia-Application-Id"] = app_id
+                        self.client.headers["X-Algolia-API-Key"] = api_key
+                        self._logger.info("WTTJ : clés Algolia rafraîchies avec succès depuis /api/env.")
+                        return True
+        except Exception as exc:
+            self._logger.debug("WTTJ : échec du rafraîchissement dynamique des clés : %s", exc)
+        return False
 
     # ------------------------------------------------------------------ #
     # Requête Algolia
@@ -122,6 +141,8 @@ class WelcomeToTheJungleScraper(BaseScraper):
         )
         payload = {"requests": [{"indexName": ALGOLIA_INDEX, "params": params}]}
         response = self.client.post(ALGOLIA_QUERIES_ENDPOINT, json=payload)
+        if response.status_code in (401, 403) and self._refresh_keys():
+            response = self.client.post(ALGOLIA_QUERIES_ENDPOINT, json=payload)
         response.raise_for_status()
         data = response.json()
         results = data.get("results") or []
@@ -134,18 +155,32 @@ class WelcomeToTheJungleScraper(BaseScraper):
     # ------------------------------------------------------------------ #
     def _to_raw_job(self, hit: dict[str, Any]) -> RawJob | None:
         title = _first_str(hit.get("name"), hit.get("title"))
-        company = _first_str(_nested_get(hit, "company", "name"), hit.get("company_name"))
+        company = _first_str(
+            _nested_get(hit, "organization", "name"),
+            _nested_get(hit, "company", "name"),
+            hit.get("company_name"),
+        )
         if not title or not company:
             return None
 
+        offices = hit.get("offices") or []
+        first_office = offices[0] if (isinstance(offices, list) and offices and isinstance(offices[0], dict)) else {}
         city = _first_str(
+            first_office.get("city"),
+            first_office.get("local_city"),
             _nested_get(hit, "office", "city"),
             _nested_get(hit, "office", "location"),
         )
-        country = _first_str(_nested_get(hit, "office", "country"))
+        country = _first_str(
+            first_office.get("country"),
+            _nested_get(hit, "office", "country"),
+        )
         location = ", ".join(part for part in (city, country) if part)
 
-        company_slug = _first_str(_nested_get(hit, "company", "slug"))
+        company_slug = _first_str(
+            _nested_get(hit, "organization", "slug"),
+            _nested_get(hit, "company", "slug"),
+        )
         job_slug = _first_str(hit.get("slug"))
         if company_slug and job_slug:
             url = f"{SITE_BASE}/fr/companies/{company_slug}/jobs/{job_slug}"
@@ -164,6 +199,7 @@ class WelcomeToTheJungleScraper(BaseScraper):
 
         description = strip_html(
             _first_str(
+                hit.get("summary"),
                 hit.get("description"),
                 hit.get("description_plain"),
                 hit.get("content"),
@@ -171,14 +207,18 @@ class WelcomeToTheJungleScraper(BaseScraper):
         )
 
         return RawJob(
-            id_externe=_first_str(hit.get("objectID"), hit.get("id"), url),
+            id_externe=_first_str(hit.get("objectID"), hit.get("id"), hit.get("slug"), url),
             source=self.source,
             title=title,
             company=company,
             location=location,
             url=url,
             description=description,
-            published_at=_parse_datetime(hit.get("published_at") or hit.get("created_at")),
+            published_at=_parse_datetime(
+                hit.get("published_at")
+                or hit.get("published_at_timestamp")
+                or hit.get("created_at")
+            ),
             is_internship=is_internship,
         )
 

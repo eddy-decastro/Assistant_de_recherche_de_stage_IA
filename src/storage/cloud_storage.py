@@ -190,14 +190,18 @@ def download_database(target_path: Path | str | None = None, force: bool = False
                 logger.info("Aucune base distante trouvée dans le bucket %s.", cfg["bucket_name"])
                 return False
 
-            remote_time = meta["last_modified"]
+            remote_time = meta.get("last_modified")
+            remote_size = meta.get("size_bytes", 0)
             if not force and dest.exists() and remote_time:
                 local_mtime = datetime.fromtimestamp(dest.stat().st_mtime, tz=timezone.utc)
-                if local_mtime > remote_time:
+                local_size = dest.stat().st_size
+                if (local_size == remote_size) and (local_mtime >= remote_time):
                     logger.info(
-                        "Base locale (%s) plus récente que distante (%s) : téléchargement évité.",
+                        "Base locale (%s, %d o) à jour avec distante (%s, %d o) : téléchargement évité.",
                         local_mtime,
+                        local_size,
                         remote_time,
+                        remote_size,
                     )
                     return False
 

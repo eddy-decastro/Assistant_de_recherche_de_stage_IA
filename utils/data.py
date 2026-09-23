@@ -94,14 +94,15 @@ def load_jobs(_db: Database, data_version: int) -> list[dict[str, Any]]:
     return _db.get_jobs()
 
 
-def bump_data_version() -> None:
-    """Invalide les données mises en cache et programme une synchronisation cloud."""
+def bump_data_version(sync_cloud: bool = True) -> None:
+    """Invalide les données mises en cache et programme éventuellement une synchronisation cloud."""
     st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1
-    try:
-        from src.storage.cloud_storage import trigger_debounced_upload
-        trigger_debounced_upload()
-    except Exception:
-        pass
+    if sync_cloud:
+        try:
+            from src.storage.cloud_storage import trigger_debounced_upload
+            trigger_debounced_upload()
+        except Exception:
+            pass
 
 
 def _set_status(db: Database, job_id: str, status: str) -> None:

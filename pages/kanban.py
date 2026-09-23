@@ -58,6 +58,33 @@ st.set_page_config(
 inject_styles()
 render_sidebar_task_badge()
 
+# Styles spécifiques à la vue Kanban : conteneur large et boutons de cartes compacts
+st.markdown(
+    """
+    <style>
+    /* Permettre aux 5 colonnes Kanban de respirer sur grand écran */
+    [data-testid="stMainBlockContainer"] {
+        max-width: 98% !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+    }
+    /* Boutons compacts et proportions harmonieuses dans les cartes Kanban */
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button,
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a {
+        height: 32px !important;
+        min-height: 32px !important;
+        padding: 0 8px !important;
+        font-size: 11.5px !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button p,
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a p {
+        font-size: 11.5px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 from utils.auth import require_auth, render_logout_button
 require_auth()
 render_logout_button()
@@ -130,12 +157,15 @@ def _render_kanban_card(job: dict[str, Any], db: Any) -> None:
         )
 
         # Bouton d'action et transition de statut
-        col_btn1, col_btn2 = st.columns([1, 1], gap="small")
-        with col_btn1:
-            if url.startswith("http"):
-                st.link_button("🚀 Postuler ↗", url, type="primary", use_container_width=True)
-        with col_btn2:
-            if st.button("✍️ Lettre", key=f"kanban_letter_{job_id}", use_container_width=True):
+        if url.startswith("http"):
+            col_btn1, col_btn2 = st.columns([1, 1], gap="small")
+            with col_btn1:
+                st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
+            with col_btn2:
+                if st.button("✍️ Lettre", key=f"kanban_letter_{job_id}", use_container_width=True):
+                    show_cover_letter_dialog(job)
+        else:
+            if st.button("✍️ Lettre de motivation", key=f"kanban_letter_{job_id}", use_container_width=True):
                 show_cover_letter_dialog(job)
 
         options = [status_code for status_code, _, _ in KANBAN_COLUMNS]

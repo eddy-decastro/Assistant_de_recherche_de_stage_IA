@@ -63,6 +63,7 @@ from src.constants import (  # noqa: E402
 )
 from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
 from src.ingestion.known_index import DatabaseKnownIndex, job_ids_for_jobs  # noqa: E402
+from src.matching.live_scorer import LiveRerankWorker, create_batch_callback  # noqa: E402
 from src.storage.cleanup import choose_keeper, find_duplicate_groups  # noqa: E402
 from src.storage.database import Database  # noqa: E402
 
@@ -181,6 +182,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--backfill-missing",
         action="store_true",
         help="Enrichit automatiquement les descriptions manquantes des candidats avant le reranking LLM.",
+    )
+    parser.add_argument(
+        "--live-scoring",
+        action="store_true",
+        default=True,
+        help="Active l'évaluation LLM au fil de l'eau en parallèle de la collecte (défaut : activé).",
+    )
+    parser.add_argument(
+        "--no-live-scoring",
+        action="store_false",
+        dest="live_scoring",
+        help="Désactive l'évaluation LLM au fil de l'eau (attend la fin de la collecte).",
     )
     return parser.parse_args(argv)
 
@@ -641,14 +654,40 @@ def main(argv: list[str] | None = None) -> None:
             # déduplication transverse entre passes et entre sources.
             known_index = DatabaseKnownIndex(db, scraper_config.enabled_sources)
             run_id = db.start_run(scraper_config.enabled_sources)
+        live_worker: LiveRerankWorker | None = None
+        on_batch_cb = None
+        should_rerank = bool(args.trigger_rerank or args.trigger_scoring)
+        if should_rerank and getattr(args, "live_scoring", True):
+            top_n = args.top_rerank or int(config.get("ranking", {}).get("top_n_rerank", 20))
+            live_worker = LiveRerankWorker(
+                db,
+                config,
+                max_jobs=top_n,
+                concurrency=args.concurrency or 1,
+                backfill_missing=args.backfill_missing,
+            )
+            if live_worker.available:
+                live_worker.start()
+                on_batch_cb = create_batch_callback(db, worker=live_worker)
+
         manager = ScraperManager(scraper_config, known_index=known_index)
-        result = manager.run(modes=modes)
+        result = manager.run(modes=modes, on_batch_collected=on_batch_cb)
+
+        if live_worker is not None and live_worker.available:
+            logger.info(" Fin de collecte : finalisation des notations en cours...")
+            live_worker.wait_completion(timeout=20.0)
+            logger.info(
+                " Notation live terminée       : %d offre(s) notée(s) en direct !",
+                live_worker.evaluated_count,
+            )
 
     # 2. Identifier les nouvelles offres AVANT insertion (pour le scoring ciblé).
     new_jobs = find_new_raw_jobs(result.jobs, db) if args.trigger_scoring else []
 
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
+    if args.dedupe:
+        _dedupe_jobs(db, dry_run=args.dry_run)
 
     # 4. Télémétrie : mémoire de collecte (toutes les cartes vues, y compris les
     #    rejets) puis une ligne par passe avec sa raison exacte d'arrêt.
@@ -712,7 +751,7 @@ def main(argv: list[str] | None = None) -> None:
             len(reset_ids),
         )
     rerank_count = 0
-    if args.trigger_rerank:
+    if args.trigger_rerank or args.trigger_scoring:
         rerank_count = _rerank_top(
             db,
             config,
@@ -720,10 +759,11 @@ def main(argv: list[str] | None = None) -> None:
             concurrency=args.concurrency,
             backfill_missing=args.backfill_missing,
         )
-        logger.info(
-            " Reranking LLM                : %d offre(s)",
-            rerank_count,
-        )
+        if rerank_count > 0:
+            logger.info(
+                " Reranking LLM (complément)   : %d offre(s)",
+                rerank_count,
+            )
 
     # 8. Top opportunités (offres fraîchement collectées).
     if result.jobs:

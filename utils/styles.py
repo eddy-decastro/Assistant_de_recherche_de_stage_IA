@@ -184,15 +184,25 @@ _CSS_CHROME = Template(
   font-weight: 550;
   height: 36px !important;
   min-height: 36px !important;
-  padding: 0 14px !important;
+  padding: 0 12px !important;
   text-decoration: none !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease !important;
 }
 [data-testid="stButton"] button p,
-[data-testid="stLinkButton"] a p { font-size: 12.5px; font-weight: 550; color: inherit !important; }
+[data-testid="stLinkButton"] a p {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: inherit !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
 [data-testid="stButton"] button:hover,
 [data-testid="stLinkButton"] a:hover {
   border-color: var(--border-2, #D9D1C2) !important;
@@ -212,11 +222,13 @@ _CSS_CHROME = Template(
   border-radius: 6px !important;
   color: #ffffff !important;
   font-weight: 600 !important;
-  font-size: 13px !important;
+  font-size: 12.5px !important;
   height: 36px !important;
   min-height: 36px !important;
-  padding: 0 18px !important;
-  width: auto !important;
+  padding: 0 12px !important;
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
   box-shadow: none !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -238,8 +250,11 @@ _CSS_CHROME = Template(
 [data-testid="stLinkButton"] a[data-testid="baseButton-primary"] p,
 [data-testid="stButton"] button[data-testid="baseButton-primary"] p {
   color: #ffffff !important;
-  font-size: 13px !important;
+  font-size: 12.5px !important;
   font-weight: 600 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 
 /* Accent terracotta sur les onglets et éléments actifs de la sidebar */

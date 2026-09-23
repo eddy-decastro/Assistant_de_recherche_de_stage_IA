@@ -288,6 +288,7 @@ class BaseScraper(ABC):
         validate_jobs: bool = False,
         modes: Sequence[str] | None = None,
         queries: Sequence[str] | None = None,
+        on_batch_collected: Any = None,
     ) -> ScrapeResult:
         """Exécute les passes demandées et retourne offres + télémétrie.
 
@@ -406,6 +407,11 @@ class BaseScraper(ABC):
                 result.found += report.cards_seen
                 result.rejected_bi += report.jobs_rejected
                 kept_per_mode[mode] += len(jobs)
+                if on_batch_collected is not None and jobs:
+                    try:
+                        on_batch_collected(jobs)
+                    except Exception as exc:  # pragma: no cover
+                        self._logger.warning("Erreur dans on_batch_collected : %s", exc)
             if plan.target_new:
                 reached = kept_per_mode[mode]
                 self._logger.info(
@@ -431,9 +437,16 @@ class BaseScraper(ABC):
         *,
         modes: Sequence[str] | None = None,
         queries: Sequence[str] | None = None,
+        on_batch_collected: Any = None,
     ) -> ScrapeResult:
         """Collecte hybride + filtre métier : chemin de production."""
-        return self.collect(known_index, validate_jobs=True, modes=modes, queries=queries)
+        return self.collect(
+            known_index,
+            validate_jobs=True,
+            modes=modes,
+            queries=queries,
+            on_batch_collected=on_batch_collected,
+        )
 
     # ------------------------------------------------------------------ #
     # Une passe complète pour une requête cible

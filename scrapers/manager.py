@@ -96,7 +96,11 @@ class ScraperManager:
                 best[key] = entry
         return list(best.values())
 
-    def run(self, modes: Sequence[str] | None = None) -> ScrapeResult:
+    def run(
+        self,
+        modes: Sequence[str] | None = None,
+        on_batch_collected: Any = None,
+    ) -> ScrapeResult:
         """Lance tous les scrapers activés et retourne les offres dédupliquées.
 
         La déduplication s'effectue sur l'URL canonique normalisée ; seules les
@@ -119,7 +123,11 @@ class ScraperManager:
 
             scraper = scraper_cls(self.config)
             try:
-                result = scraper.run(self.known_index, modes=modes)
+                result = scraper.run(
+                    self.known_index,
+                    modes=modes,
+                    on_batch_collected=on_batch_collected,
+                )
             except Exception:  # noqa: BLE001 — un scraper en erreur ne doit pas tuer le run
                 logger.exception(
                     "Source %s : erreur inattendue — les sources suivantes seront quand même exécutées.",

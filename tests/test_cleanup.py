@@ -20,8 +20,10 @@ from src.constants import STATUS_REJECTED
 from src.storage.cleanup import (
     canonical_url,
     choose_keeper,
+    companies_match,
     completeness,
     find_duplicate_groups,
+    normalize_company,
     normalize_text,
     title_similarity,
 )
@@ -64,6 +66,209 @@ def test_normalisation_et_similarite() -> None:
     assert title_similarity("Stage Data Scientist", "Alternance Marketing") < 0.5
     assert title_similarity("", "Stage") == 0.0
     print("  dédoublonnage : normalisation et similarité de titres OK")
+
+
+def test_normalize_company() -> None:
+    """Normalisation avancée du nom d'entreprise et rattachement des filiales."""
+    # Casse, accents et ponctuation
+    assert normalize_company("CRÉDIT AGRICOLE CIB!") == "credit agricole"
+    assert normalize_company("Groupe Crédit Agricole") == "credit agricole"
+    assert normalize_company("Crédit Agricole CIB") == "credit agricole"
+    assert normalize_company("Crédit Agricole Corporate and Investment Bank") == "credit agricole"
+
+    # Thales et filiales
+    assert normalize_company("Thales") == "thales"
+    assert normalize_company("Thales DIS") == "thales"
+    assert normalize_company("Thales DIS France SAS") == "thales"
+    assert normalize_company("Groupe Thales") == "thales"
+    assert normalize_company("Thales Alenia Space") == "thales"
+
+    # Airbus et filiales
+    assert normalize_company("Airbus") == "airbus"
+    assert normalize_company("Airbus Helicopters") == "airbus"
+    assert normalize_company("Airbus Helicopters France") == "airbus"
+    assert normalize_company("Airbus Defence and Space") == "airbus"
+    assert normalize_company("Airbus Group") == "airbus"
+
+    # Autres groupes et formes juridiques
+    assert normalize_company("Dassault Systèmes") == "dassault"
+    assert normalize_company("Capgemini Technology Services") == "capgemini"
+    assert normalize_company("BNP Paribas CIB") == "bnp paribas"
+    assert normalize_company("Société Générale CIB") == "societe generale"
+    assert normalize_company("TotalEnergies") == "total"
+    assert normalize_company("Total Energies") == "total"
+    assert normalize_company("SNCF Connect") == "sncf"
+
+    # Replis et cas limites (préservation si uniquement générique ou chiffres)
+    assert normalize_company("Services") == "services"
+    assert normalize_company("Solutions 30") == "solutions 30"
+    assert normalize_company("") == ""
+    print("  dédoublonnage : normalisation d'entreprise et filiales OK")
+
+
+def test_companies_match() -> None:
+    """Vérification de la correspondance d'entreprises (exacte ou inclusion de marque)."""
+    # Correspondance après normalisation
+    assert companies_match("Crédit Agricole CIB", "Groupe Crédit Agricole") is True
+    assert companies_match("Thales DIS", "Thales") is True
+    assert companies_match("Airbus Helicopters", "Airbus") is True
+
+    # Inclusion de marque (division non répertoriée formant un préfixe valide)
+    assert companies_match("Airbus", "Airbus Atlantic") is True
+    assert companies_match("Thales", "Thales Avionics") is True
+    assert companies_match("Orange", "Orange Bank") is True
+
+    # Non-correspondance (entreprises différentes ou collisions évitées)
+    assert companies_match("Doctolib", "Alan") is False
+    assert companies_match("Apple", "Pineapple") is False
+    assert companies_match("Car", "Carrefour") is False
+    assert companies_match("", "Thales") is False
+    print("  dédoublonnage : correspondance d'entreprises (exacte / inclusion) OK")
+
+
+def test_tokens_generiques_enrichis() -> None:
+    """Prise en compte des variantes fréquentes (PFE, fin d'études, césure, master, bac+5, etc.)."""
+    assert title_similarity("Stage PFE Data Scientist", "Data Scientist") == 1.0
+    assert title_similarity("Stage de fin d'études - Data Scientist", "Stage Data Scientist") == 1.0
+    assert title_similarity("Stage Césure - Data Scientist (6 mois)", "Data Scientist M/W/D") == 1.0
+    assert title_similarity("Stage Bac+5 Data Scientist", "Stage Data Scientist") == 1.0
+    assert title_similarity("Stage Bac5 Data Scientist", "Data Scientist") == 1.0
+    assert title_similarity("Stage Master Data Scientist", "Data Scientist") == 1.0
+    assert title_similarity("Internship Data Scientist", "Stage Data Scientist") == 1.0
+    assert title_similarity("Apprentissage Data Scientist", "Alternance Data Scientist") == 1.0
+
+    # Tolérance des variations de titre avec seuil assoupli à 0.70
+    sim_ia = title_similarity("Stage Data Scientist - NLP & LLM (F/H)", "Data Scientist - LLM (H/F)")
+    assert sim_ia >= 0.70, sim_ia
+    sim_dl = title_similarity(
+        "Stage R&D - Machine Learning & Deep Learning (F/H)",
+        "Stage Ingénieur R&D - Machine Learning",
+    )
+    assert sim_dl >= 0.70, sim_dl
+    print("  dédoublonnage : tokens génériques enrichis et seuil assoupli OK")
+
+
+def test_deduplication_multiplateformes() -> None:
+    """Regroupement multi-plateformes réaliste (LinkedIn, WTTJ, JobTeaser)."""
+    jobs = [
+        # Groupe 1 : Crédit Agricole (LinkedIn vs Welcome to the Jungle)
+        _job(
+            title="Stage Data Scientist - NLP & LLM (F/H)",
+            company="Crédit Agricole CIB",
+            url="https://www.linkedin.com/jobs/view/1001",
+            description="Mission complète en modélisation NLP et LLM." * 10,
+            final_score=70.0,
+        ),
+        _job(
+            title="Data Scientist - LLM (H/F)",
+            company="Groupe Crédit Agricole",
+            url="https://www.welcometothejungle.com/fr/companies/credit-agricole/jobs/2001",
+            description="Mission NLP courte.",
+            final_score=65.0,
+        ),
+        # Groupe 2 : Thales (JobTeaser vs LinkedIn avec Deep Learning ajouté)
+        _job(
+            title="Stage Ingénieur R&D - Machine Learning",
+            company="Thales",
+            url="https://www.jobteaser.com/fr/job-offers/3001",
+            description="Stage R&D Machine Learning et modèles de fondation.",
+            final_score=60.0,
+            rerank_score=88.0,
+        ),
+        _job(
+            title="Stage R&D - Machine Learning & Deep Learning (F/H)",
+            company="Thales DIS",
+            url="https://www.linkedin.com/jobs/view/3002",
+            description="Stage R&D Machine Learning et modèles de fondation.",
+            final_score=75.0,
+            rerank_score=None,
+        ),
+        # Groupe 3 : Airbus (Airbus Helicopters vs Airbus)
+        _job(
+            title="Stage Deep Learning Computer Vision",
+            company="Airbus Helicopters",
+            url="https://airbus.com/jobs/4001",
+            description="Vision par ordinateur PyTorch.",
+            final_score=80.0,
+        ),
+        _job(
+            title="Stage Deep Learning Computer Vision (6 mois)",
+            company="Airbus",
+            url="https://www.linkedin.com/jobs/view/4002",
+            description="Vision par ordinateur PyTorch.",
+            final_score=80.0,
+        ),
+        # Offres distinctes (ne doivent PAS être fusionnées)
+        _job(
+            title="Stage Data Scientist",
+            company="Doctolib",
+            url="https://doctolib.com/jobs/5001",
+            description="Data Science santé.",
+            final_score=85.0,
+        ),
+        _job(
+            title="Stage Juriste Droit des Affaires",
+            company="Groupe Crédit Agricole",
+            url="https://credit-agricole.com/jobs/6001",
+            description="Droit des sociétés.",
+            final_score=10.0,
+        ),
+    ]
+
+    groups = find_duplicate_groups(jobs)
+    assert len(groups) == 3, f"Attendu 3 groupes de doublons, obtenu {len(groups)}"
+
+    # Vérification groupe Crédit Agricole
+    ca_group = next(g for g in groups if any("Crédit Agricole" in j["company"] for j in g))
+    assert len(ca_group) == 2
+    keeper_ca, duplicates_ca = choose_keeper(ca_group)
+    assert keeper_ca["company"] == "Crédit Agricole CIB"
+    assert "complète" in keeper_ca["description"]
+    assert len(duplicates_ca) == 1
+
+    # Vérification groupe Thales (priorité à l'évaluation LLM existante)
+    thales_group = next(g for g in groups if any("Thales" in j["company"] for j in g))
+    assert len(thales_group) == 2
+    keeper_thales, duplicates_thales = choose_keeper(thales_group)
+    assert keeper_thales["rerank_score"] == 88.0
+    assert len(duplicates_thales) == 1
+
+    # Vérification groupe Airbus
+    airbus_group = next(g for g in groups if any("Airbus" in j["company"] for j in g))
+    assert len(airbus_group) == 2
+
+    print("  dédoublonnage : regroupement multi-plateformes réaliste OK")
+
+
+def test_choose_keeper_avance() -> None:
+    """Choix du keeper avec priorité description, rerank LLM existant et score R&D."""
+    # 1. Priorité à la longueur de la description
+    court = _job("T", "C", "u1", "court", rerank_score=95.0)
+    long_desc = _job("T", "C", "u2", "description très détaillée" * 20, rerank_score=None)
+    keeper1, _ = choose_keeper([court, long_desc])
+    assert keeper1["url"] == "u2"
+    # L'évaluation LLM du doublon court est préservée sur le keeper !
+    assert keeper1["rerank_score"] == 95.0
+
+    # 2. À longueur égale, priorité à l'offre avec rerank_score
+    non_evalue = _job("T", "C", "u1", "texte", rerank_score=None, final_score=90.0)
+    evalue = _job("T", "C", "u2", "texte", rerank_score=85.0, final_score=50.0)
+    keeper2, _ = choose_keeper([non_evalue, evalue])
+    assert keeper2["url"] == "u2"
+
+    # 3. À longueur égale et toutes deux évaluées, le score R&D le plus haut gagne
+    evalue_bas = _job("T", "C", "u1", "texte", rerank_score=65.0)
+    evalue_haut = _job("T", "C", "u2", "texte", rerank_score=89.0)
+    keeper3, _ = choose_keeper([evalue_bas, evalue_haut])
+    assert keeper3["url"] == "u2"
+
+    # 4. À longueur égale et aucune évaluée, final_score départage
+    score_bas = _job("T", "C", "u1", "texte", final_score=50.0)
+    score_haut = _job("T", "C", "u2", "texte", final_score=82.0)
+    keeper4, _ = choose_keeper([score_bas, score_haut])
+    assert keeper4["url"] == "u2"
+
+    print("  dédoublonnage : complétude avancée (longueur, rerank LLM, score R&D) OK")
 
 
 def test_url_canonique() -> None:
@@ -115,6 +320,7 @@ def test_completude() -> None:
     assert completeness(riche) > completeness(pauvre)
     assert completeness(juge) > completeness(riche)
     print("  dédoublonnage : clé de complétude OK")
+
 
 def test_revalidation_faux_stages() -> None:
     """La re-validation écarte les faux stages détectés dans le corps de la fiche."""
@@ -213,6 +419,11 @@ def test_base_rejet_et_suppression() -> None:
 
 if __name__ == "__main__":
     test_normalisation_et_similarite()
+    test_normalize_company()
+    test_companies_match()
+    test_tokens_generiques_enrichis()
+    test_deduplication_multiplateformes()
+    test_choose_keeper_avance()
     test_url_canonique()
     test_groupes_de_doublons()
     test_aucun_doublon()
