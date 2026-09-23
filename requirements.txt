@@ -34,5 +34,6 @@ pypdf
 reportlab
 
 # --- Synchronisation Cloud (Cloudflare R2 / S3) ---
-boto3tenacity
+boto3
+tenacity
 ruamel.yaml
