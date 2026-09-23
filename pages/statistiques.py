@@ -1046,7 +1046,8 @@ def render_rejections_explorer(db: Database) -> None:
 # --------------------------------------------------------------------------- #
 # Rendu principal : filtres d'entreprise et 5 onglets Streamlit
 # --------------------------------------------------------------------------- #
-jobs = load_jobs(db, 0)
+data_version = int(st.session_state.get("data_version", 0))
+jobs = load_jobs(db, data_version)
 
 company_counts: dict[str, int] = {}
 for j in jobs:
