@@ -29,6 +29,13 @@ logger = logging.getLogger("pipeline")
 
 def main(argv: list[str] | None = None) -> None:
     """Exécute l'intégralité de la chaîne de traitement (avec synchronisation Cloud automatique)."""
+    # Force l'encodage UTF-8 pour la console Windows (évite les crashs liés aux emojis)
+    if sys.stdout.encoding.lower() != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except AttributeError:
+            pass
+
     parser = argparse.ArgumentParser(description="Lancement du pipeline complet de scraping et scoring")
     parser.add_argument(
         "--no-sync",
