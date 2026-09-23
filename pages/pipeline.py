@@ -103,31 +103,36 @@ def run_pipeline(action: PipelineAction) -> None:
 
 def save_default_settings(queries: list[str], sources: list[str], max_offers: int) -> None:
     """Met à jour config.yaml de manière atomique en préservant les commentaires."""
+    from ruamel.yaml import YAML
+    yaml = YAML()
+    yaml.preserve_quotes = True
+
     config_file = Path(DEFAULT_CONFIG_PATH)
-    raw = config_file.read_text(encoding="utf-8")
-    sources_yaml = "\n".join(f'    - "{s}"' for s in sources)
-    queries_yaml = "\n".join(f'    - "{q}"' for q in queries)
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = yaml.load(f)
 
-    pat_src = r'(enabled_sources:\s*\n)(?:[ \t]*-[ \t]*[^\n]*\n)+'
-    pat_queries = r'(target_queries:\s*\n)(?:[ \t]*-[ \t]*[^\n]*\n)+'
-    pat_max = r'(max_offers_per_source:\s*)\d+'
+        if 'scraping' not in data:
+            data['scraping'] = {}
+        
+        data['scraping']['enabled_sources'] = sources
+        data['scraping']['target_queries'] = queries
+        data['scraping']['max_offers_per_source'] = max_offers
 
-    c1, n1 = re.subn(pat_src, rf'\g<1>{sources_yaml}\n', raw)
-    c2, n2 = re.subn(pat_queries, rf'\g<1>{queries_yaml}\n', c1)
-    c3, n3 = re.subn(pat_max, rf'\g<1>{max_offers}', c2)
-
-    if n1 and n2 and n3:
         tmp = config_file.with_suffix(".tmp")
-        tmp.write_text(c3, encoding="utf-8")
+        with open(tmp, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f)
+            
         tmp.replace(config_file)
         load_config.cache_clear()
-    else:
+    except Exception as e:
+        logger.error(f"Échec de la sauvegarde des paramètres via ruamel.yaml: {e}")
         from src.config import save_config
         cfg = load_config()
-        cfg.setdefault("scrapers", {})
-        cfg["scrapers"]["enabled_sources"] = sources
-        cfg["scrapers"]["target_queries"] = queries
-        cfg["scrapers"]["max_offers_per_source"] = max_offers
+        cfg.setdefault("scraping", {})
+        cfg["scraping"]["enabled_sources"] = sources
+        cfg["scraping"]["target_queries"] = queries
+        cfg["scraping"]["max_offers_per_source"] = max_offers
         save_config(cfg)
 
 

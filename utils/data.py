@@ -281,19 +281,24 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     selected_comps_raw = getattr(filters, "selected_companies", ())
     excluded_comps = {c.strip().lower() for c in exclude_comps_raw if c and c.strip()}
     selected_comps = {c.strip().lower() for c in selected_comps_raw if c and c.strip()}
+    
+    # Pré-calcul pour les vérifications de sous-chaînes (>= 3 chars)
+    excluded_comps_sub = [c for c in excluded_comps if len(c) >= 3]
+    selected_comps_sub = [c for c in selected_comps if len(c) >= 3]
+    
     selected: list[dict[str, Any]] = []
     for job in jobs:
         # Les offres écartées par la re-validation métier ne polluent pas le flux :
         # elles n'apparaissent que si l'utilisateur coche explicitement « Rejeté ».
-        if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in set(filters.statuses):
+        if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in statuses:
             continue
         company = (job.get("company") or "").strip()
         comp_lower = company.lower()
         if exclude_dassault and "dassault" in comp_lower:
             continue
-        if excluded_comps and (comp_lower in excluded_comps or any(ec in comp_lower for ec in excluded_comps if len(ec) >= 3)):
+        if excluded_comps and (comp_lower in excluded_comps or any(ec in comp_lower for ec in excluded_comps_sub)):
             continue
-        if selected_comps and not (comp_lower in selected_comps or any(sc in comp_lower for sc in selected_comps if len(sc) >= 3)):
+        if selected_comps and not (comp_lower in selected_comps or any(sc in comp_lower for sc in selected_comps_sub)):
             continue
         if filters.min_score and effective_score(job) < filters.min_score:
             continue

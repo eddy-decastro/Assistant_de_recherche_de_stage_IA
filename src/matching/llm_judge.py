@@ -18,6 +18,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception, RetryCallState
 
 from src.config import PROJECT_ROOT, load_config
 from src.constants import (
@@ -287,6 +288,18 @@ def get_global_rate_limiter(rpm: int = 14) -> GeminiRateLimiter:
         if _GLOBAL_RATE_LIMITER is None or _GLOBAL_RATE_LIMITER.rpm != rpm:
             _GLOBAL_RATE_LIMITER = GeminiRateLimiter(rpm)
         return _GLOBAL_RATE_LIMITER
+def _is_api_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, APIError):
+        return exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()
+    return False
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    exc = retry_state.outcome.exception()
+    delay = retry_state.next_action.sleep if retry_state.next_action else 0
+    logger.warning(
+        "Quota/charge Gemini atteint (%s). Pause automatique %.1fs (Essai %d/5)...",
+        type(exc).__name__, delay, retry_state.attempt_number
+    )
 
 
 class LLMJudge:
@@ -340,56 +353,29 @@ class LLMJudge:
     # ------------------------------------------------------------------ #
     # Appel API
     # ------------------------------------------------------------------ #
+    @retry(
+        wait=wait_exponential(multiplier=2, min=4, max=60),
+        stop=stop_after_attempt(5),
+        retry=retry_if_exception(_is_api_retryable),
+        after=_log_retry,
+        reraise=True
+    )
     def _post_chat(self, user_content: str) -> str:
         """Appelle l'API Gemini et retourne le contenu texte (avec retries défensifs)."""
-        # Silence les avertissements AFC verbeux du SDK google_genai
         logging.getLogger("google_genai.models").setLevel(logging.ERROR)
-
         client = self._client or genai.Client(api_key=self.api_key)
-        last_error = None
-
-        for attempt in range(4):
-            # Régulation de débit avant chaque requête (respecte les 14 RPM)
-            self.rate_limiter.wait_for_slot()
-            try:
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=user_content,
-                    config=types.GenerateContentConfig(
-                        system_instruction=get_system_prompt(),
-                        temperature=self.temperature,
-                        response_mime_type="application/json"
-                    )
-                )
-                return response.text
-            except APIError as exc:
-                last_error = exc
-                # Si erreur de quota (429) ou surcharge temporaire (503)
-                if attempt < 3 and (exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()):
-                    delay = 5.0 * (attempt + 1)
-                    match = re.search(r"retry in (\d+(?:\.\d+)?)s", str(exc), re.IGNORECASE)
-                    if match:
-                        suggested = float(match.group(1))
-                        delay = max(suggested + 1.5, delay)
-
-                    logger.warning(
-                        "Quota/charge Gemini atteint (%s). Pause automatique de %.1fs avant nouvel essai (%d/3)...",
-                        exc.code, delay, attempt + 1
-                    )
-                    self.rate_limiter.report_429(delay)
-                    time.sleep(delay)
-                    continue
-                raise
-            except Exception as exc:
-                last_error = exc
-                if attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))
-                    continue
-                raise
-
-        if last_error:
-            raise last_error
-        return ""
+        
+        self.rate_limiter.wait_for_slot()
+        response = client.models.generate_content(
+            model=self.model,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=get_system_prompt(),
+                temperature=self.temperature,
+                response_mime_type="application/json"
+            )
+        )
+        return response.text
 
     # ------------------------------------------------------------------ #
     # Parsing / normalisation

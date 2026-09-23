@@ -228,6 +228,8 @@ def download_database(target_path: Path | str | None = None, force: bool = False
     return False
 
 
+_TIMER_LOCK = threading.Lock()
+
 def upload_database(db_path: Path | str | None = None) -> bool:
     """Téléverse la base SQLite locale vers le bucket distant après checkpoint WAL.
 
@@ -244,7 +246,11 @@ def upload_database(db_path: Path | str | None = None) -> bool:
         logger.warning("Fichier SQLite introuvable pour upload : %s", src)
         return False
 
-    with _SYNC_LOCK:
+    if not _SYNC_LOCK.acquire(blocking=False):
+        logger.info("Un transfert est déjà en cours, upload ignoré.")
+        return False
+        
+    try:
         checkpoint_sqlite_wal(src)
         cfg = get_cloud_config()
         try:
@@ -263,6 +269,8 @@ def upload_database(db_path: Path | str | None = None) -> bool:
         except Exception as exc:
             logger.error("Échec du téléversement de la base vers le stockage distant : %s", exc)
             return False
+    finally:
+        _SYNC_LOCK.release()
 
 
 def trigger_debounced_upload(db_path: Path | str | None = None) -> None:
@@ -274,7 +282,7 @@ def trigger_debounced_upload(db_path: Path | str | None = None) -> None:
     def _task() -> None:
         upload_database(db_path)
 
-    with _SYNC_LOCK:
+    with _TIMER_LOCK:
         if _PENDING_TIMER and _PENDING_TIMER.is_alive():
             _PENDING_TIMER.cancel()
         _PENDING_TIMER = threading.Timer(_DEBOUNCE_DELAY_SECONDS, _task)
