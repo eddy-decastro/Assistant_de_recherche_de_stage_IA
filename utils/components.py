@@ -748,6 +748,7 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         )
         hide_processed = st.toggle(
             "Masquer les offres traitées",
+            value=True,
             help="Prioritaire sur le filtre de statut : ne conserve que les offres au statut NOUVEAU.",
         )
 
