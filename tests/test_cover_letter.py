@@ -58,7 +58,7 @@ def test_generator_mock_client() -> None:
     mock_response.text = "EDDY\nÉlève-ingénieur\n\nObjet : Candidature au stage\n\nMadame, Monsieur..."
     mock_client.models.generate_content.return_value = mock_response
 
-    generator = CoverLetterGenerator(api_key="valid-key", client=mock_client)
+    generator = CoverLetterGenerator(api_key="valid-key", deepseek_api_key="", client=mock_client)
     result = generator.generate(SAMPLE_JOB, cv_text="CV mock")
 
     assert "Objet : Candidature" in result
@@ -191,28 +191,24 @@ def test_generator_fallback_on_503_error() -> None:
     assert generator.last_source == "fallback"
 
 
-def test_generator_deepseek_fallback_on_gemini_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Vérifie que le générateur bascule sur l'IA DeepSeek si Gemini renvoie une erreur 503."""
-    mock_client = MagicMock()
-    mock_client.models.generate_content.side_effect = APIError(
-        503,
-        {"error": {"code": 503, "message": "High demand"}},
-    )
+def test_generator_gemini_fallback_on_deepseek_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Vérifie que le générateur bascule sur Gemini si DeepSeek renvoie une erreur."""
+    # Simuler une erreur de DeepSeek
+    def mock_post(*args, **kwargs):
+        raise Exception("DeepSeek API down")
+    monkeypatch.setattr("requests.post", mock_post)
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "choices": [
-            {"message": {"content": "Objet : Candidature DeepSeek\n\nMadame, Monsieur,\nRédigé par DeepSeek."}}
-        ]
-    }
-    monkeypatch.setattr("requests.post", lambda *args, **kwargs: mock_resp)
+    # Simuler le succès de Gemini
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = "Objet : Candidature Gemini\n\nMadame, Monsieur,\nRédigé par Gemini."
+    mock_client.models.generate_content.return_value = mock_response
 
     generator = CoverLetterGenerator(api_key="valid-key", client=mock_client, deepseek_api_key="mock-ds-key")
     result = generator.generate(SAMPLE_JOB)
 
-    assert "Candidature DeepSeek" in result
-    assert generator.last_source == "deepseek"
+    assert "Candidature Gemini" in result
+    assert generator.last_source == "gemini"
 
 
 
