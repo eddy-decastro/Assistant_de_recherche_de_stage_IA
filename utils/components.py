@@ -379,7 +379,8 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         pdf_filename = "Lettre de motivation Eddy De Castro.pdf"
 
     pdf_bytes = generate_cover_letter_pdf(edited, job=job)
-    escaped_json = json.dumps(edited)
+    # Fix: escape single quotes for insertion in HTML inline script
+    escaped_json = json.dumps(edited).replace("'", "&#39;")
     copy_btn_id = f"copy_btn_{job_id}"
 
     c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.1, 1.1], gap="small")

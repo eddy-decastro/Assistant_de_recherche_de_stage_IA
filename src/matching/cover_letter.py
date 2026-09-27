@@ -510,7 +510,14 @@ class CoverLetterGenerator:
 
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
 
-        # Niveau 1 : Tentative via Google Gemini si configuré
+        # Niveau 1 : DeepSeek V3 (prioritaire)
+        if self.deepseek_api_key:
+            ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
+            if ds_result and not ds_result.startswith("⚠️"):
+                self.last_source = "deepseek"
+                return ds_result
+
+        # Niveau 2 : Google Gemini (secours)
         if self.api_key:
             client = self._client or genai.Client(api_key=self.api_key)
             fallback_models: list[str] = []
@@ -545,18 +552,10 @@ class CoverLetterGenerator:
                         return self._postprocess_letter(raw_text)
                 except APIError as exc:
                     self.last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
-                    # En cas de 404, 429 ou 503 (surcharge), bascule instantanément vers le modèle suivant
                     continue
                 except Exception as exc:
                     self.last_error = f"⚠️ Erreur : {exc}"
                     continue
-
-        # Niveau 2 : Deuxième IA indépendante de secours (DeepSeek V3)
-        if self.deepseek_api_key:
-            ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
-            if ds_result and not ds_result.startswith("⚠️"):
-                self.last_source = "deepseek"
-                return ds_result
 
         # Niveau 3 : Moteur algorithmique déterministe de secours (zéro API, haute fidélité)
         if allow_fallback:
