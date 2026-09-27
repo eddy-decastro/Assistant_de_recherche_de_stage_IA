@@ -168,20 +168,36 @@ def _render_kanban_card(job: dict[str, Any], db: Any) -> None:
             if st.button("✍️ Lettre de motivation", key=f"kanban_letter_{job_id}", use_container_width=True):
                 show_cover_letter_dialog(job)
 
+        # Actions rapides Kanban
+        st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--sc-border-muted);'/>", unsafe_allow_html=True)
         options = [status_code for status_code, _, _ in KANBAN_COLUMNS]
         idx = options.index(current_status) if current_status in options else 0
-        new_status = st.selectbox(
-            "Changer statut",
-            options=options,
-            format_func=lambda s: STATUS_LABELS.get(s, s),
-            index=idx,
-            key=f"kanban_status_{job_id}",
-            label_visibility="collapsed",
-        )
-        if new_status != current_status:
-            db.update_status(job_id, new_status)
-            bump_data_version()
-            st.rerun()
+        
+        c_left, c_mid, c_right = st.columns([1, 1, 1], gap="small")
+        if idx > 0:
+            prev_s = options[idx - 1]
+            if c_left.button("⬅️", help=f"Retour à {STATUS_LABELS.get(prev_s, prev_s)}", key=f"kb_prev_{job_id}", use_container_width=True):
+                db.update_status(job_id, prev_s)
+                import utils.data
+                utils.data.bump_data_version()
+                st.rerun()
+                
+        if current_status not in (STATUS_IGNORED, STATUS_REJECTED):
+            if c_mid.button("🗑️", help="Archiver / Ignorer", key=f"kb_ign_{job_id}", use_container_width=True):
+                db.update_status(job_id, STATUS_IGNORED)
+                import utils.data
+                utils.data.bump_data_version()
+                st.rerun()
+                
+        # On peut avancer jusqu'à "Entretien" (index 2). Si on est à "Ignoré" on peut recommencer.
+        if idx < 2 or current_status in (STATUS_IGNORED, STATUS_REJECTED):
+            next_s = options[idx + 1] if idx < 2 else STATUS_NEW
+            label_next = STATUS_LABELS.get(next_s, next_s)
+            if c_right.button("➡️", help=f"Avancer à {label_next}", key=f"kb_next_{job_id}", use_container_width=True):
+                db.update_status(job_id, next_s)
+                import utils.data
+                utils.data.bump_data_version()
+                st.rerun()
 
 
 def main() -> None:
