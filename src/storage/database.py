@@ -41,6 +41,7 @@ from src.constants import (
     STATUS_INTERVIEW,
     STATUS_NEW,
     STATUS_REJECTED,
+    STATUS_EXCLUDED,
     SUB_SCORE_KEYS,
     TIER_ESN,
     VALID_STATUSES,
@@ -106,7 +107,7 @@ def _encode_json_list(value: Any) -> str:
 
 
 def _decode_sub_scores(value: Any) -> dict[str, int]:
-    """Décode la colonne ``sub_scores`` (JSON) en dict complet ``{clé: 1-5}``."""
+    """Décode la colonne ``sub_scores`` (JSON) en préservant les clés d'origine (v1 ou v3)."""
     if value is None or value == "":
         return {}
     raw = value if isinstance(value, dict) else None
@@ -116,21 +117,20 @@ def _decode_sub_scores(value: Any) -> dict[str, int]:
             raw = parsed if isinstance(parsed, dict) else {}
         except (json.JSONDecodeError, TypeError):
             return {}
-    return {key: coerce_sub_score(raw.get(key, DEFAULT_SUB_SCORE)) for key in SUB_SCORE_KEYS}
+    return {str(k): coerce_sub_score(v) for k, v in raw.items()}
 
 
 def _encode_sub_scores(value: Any) -> str | None:
-    """Sérialise un dict de sous-scores en JSON (``None`` ⇒ ``None``)."""
+    """Sérialise un dict de sous-scores en JSON sans forcer ni écraser les clés."""
     if not value:
         return None
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        normalized = {
-            key: coerce_sub_score(value.get(key, DEFAULT_SUB_SCORE)) for key in SUB_SCORE_KEYS
-        }
+        normalized = {str(k): coerce_sub_score(v) for k, v in value.items()}
         return json.dumps(normalized, ensure_ascii=False)
     return None
+
 
 
 class Job(Base):
@@ -173,17 +173,54 @@ class Job(Base):
     match_reasons = Column(Text, nullable=True)   # JSON : liste de chaînes
     red_flags = Column(Text, nullable=True)       # JSON : liste de chaînes
     tech_stack = Column(Text, nullable=True)      # JSON : liste de chaînes
-    sub_scores = Column(Text, nullable=True)      # JSON : dict des 4 sous-scores (1-5)
+    sub_scores = Column(Text, nullable=True)      # JSON : dict des sous-scores
     hard_cap_triggered = Column(String(200), nullable=True)  # verrou bloquant déclenché
     # Raisonnement produit AVANT le score par le juge LLM (traçabilité de la décision).
     reasoning = Column(Text, nullable=True)
+
+    # --- Grille v3 (LLM Judge, planchers & exclusions) ---
+    contract_type = Column(String(50), nullable=True)
+    structure_type = Column(String(50), nullable=True)
+    category_confidence = Column(String(20), nullable=True)
+    rd_nature = Column(Integer, default=0, nullable=True)
+    duration_months = Column(Integer, nullable=True)
+    is_cesure = Column(Integer, default=0, nullable=True)
+    quality_score = Column(Float, nullable=True)
+    floor_value = Column(Integer, nullable=True)
+    floor_reason = Column(String(200), nullable=True)
+    cap_applied = Column(String(50), nullable=True)
+    exclusion_reason = Column(String(300), nullable=True)
+    scaleup_suggested = Column(Integer, default=0, nullable=True)
+    signals_json = Column(Text, nullable=True)
+    company_note_json = Column(Text, nullable=True)
+    grading_version = Column(String(10), default="v3", nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         data = {column.name: getattr(self, column.name) for column in self.__table__.columns}
         for name in _JSON_COLUMNS:
             data[name] = _decode_json_list(data.get(name))
         data["sub_scores"] = _decode_sub_scores(data.get("sub_scores"))
+        if data.get("signals_json"):
+            try:
+                data["signals"] = json.loads(data["signals_json"])
+            except Exception:
+                data["signals"] = {}
+        else:
+            data["signals"] = {}
+        if data.get("company_note_json"):
+            try:
+                data["company_note"] = json.loads(data["company_note_json"])
+            except Exception:
+                data["company_note"] = {}
+        else:
+            data["company_note"] = {}
+        # Normalisation booléenne
+        data["rd_nature"] = bool(data.get("rd_nature"))
+        data["is_cesure"] = bool(data.get("is_cesure"))
+        data["scaleup_suggested"] = bool(data.get("scaleup_suggested"))
+        data["grading_version"] = data.get("grading_version") or "v1"
         return data
+
 
 
 def make_job_id(title: str, company: str, url: str) -> str:
@@ -325,6 +362,22 @@ class Database:
                 "canonical_url": "VARCHAR(2000)",
                 "published_at": "DATETIME",
                 "applied_at": "DATETIME",
+                # Grille v3 (LLM Judge, planchers & exclusions)
+                "contract_type": "VARCHAR(50)",
+                "structure_type": "VARCHAR(50)",
+                "category_confidence": "VARCHAR(20)",
+                "rd_nature": "INTEGER DEFAULT 0",
+                "duration_months": "INTEGER",
+                "is_cesure": "INTEGER DEFAULT 0",
+                "quality_score": "FLOAT",
+                "floor_value": "INTEGER",
+                "floor_reason": "VARCHAR(200)",
+                "cap_applied": "VARCHAR(50)",
+                "exclusion_reason": "VARCHAR(300)",
+                "scaleup_suggested": "INTEGER DEFAULT 0",
+                "signals_json": "TEXT",
+                "company_note_json": "TEXT",
+                "grading_version": "VARCHAR(10) DEFAULT 'v1'",
             },
             "scrape_query_stats": {
                 # Objectif de nouvelles offres fixé à la source pour la passe
@@ -332,6 +385,7 @@ class Database:
                 # Rattrapage). ``0`` = aucun objectif.
                 "target_new": "INTEGER NOT NULL DEFAULT 0",
             },
+
         }
         with self.engine.begin() as conn:
             for table, columns in expected.items():
@@ -556,6 +610,22 @@ class Database:
         sub_scores: Mapping[str, int] | None = None,
         hard_cap_triggered: str | None = None,
         reasoning: str | None = None,
+        *,
+        contract_type: str | None = None,
+        structure_type: str | None = None,
+        category_confidence: str | None = None,
+        rd_nature: bool | int | None = None,
+        duration_months: int | None = None,
+        is_cesure: bool | int | None = None,
+        quality_score: float | None = None,
+        floor_value: int | None = None,
+        floor_reason: str | None = None,
+        cap_applied: str | None = None,
+        exclusion_reason: str | None = None,
+        scaleup_suggested: bool | int | None = None,
+        signals_json: str | dict | None = None,
+        company_note_json: str | dict | None = None,
+        grading_version: str = "v3",
     ) -> bool:
         """Enregistre l'analyse fine (étape 2) d'une offre. False si introuvable.
 
@@ -568,7 +638,6 @@ class Database:
             if record is None:
                 return False
             record.rerank_score = float(rerank_score)
-            
             record.verdict = verdict
             record.match_reasons = _encode_json_list(match_reasons)
             record.red_flags = _encode_json_list(red_flags)
@@ -576,8 +645,118 @@ class Database:
             record.sub_scores = _encode_sub_scores(sub_scores)
             record.hard_cap_triggered = hard_cap_triggered or None
             record.reasoning = (reasoning or "").strip() or None
+
+            # v3 fields
+            if contract_type is not None:
+                record.contract_type = contract_type
+            if structure_type is not None:
+                record.structure_type = structure_type
+            if category_confidence is not None:
+                record.category_confidence = category_confidence
+            if rd_nature is not None:
+                record.rd_nature = 1 if rd_nature else 0
+            if duration_months is not None:
+                record.duration_months = duration_months
+            if is_cesure is not None:
+                record.is_cesure = 1 if is_cesure else 0
+            if quality_score is not None:
+                record.quality_score = float(quality_score)
+            if floor_value is not None:
+                record.floor_value = int(floor_value)
+            if floor_reason is not None:
+                record.floor_reason = floor_reason
+            if cap_applied is not None:
+                record.cap_applied = cap_applied
+            if exclusion_reason is not None:
+                record.exclusion_reason = exclusion_reason
+            if scaleup_suggested is not None:
+                record.scaleup_suggested = 1 if scaleup_suggested else 0
+            if signals_json is not None:
+                if isinstance(signals_json, (dict, list)):
+                    record.signals_json = json.dumps(signals_json, ensure_ascii=False)
+                else:
+                    record.signals_json = str(signals_json)
+            if company_note_json is not None:
+                if isinstance(company_note_json, (dict, list)):
+                    record.company_note_json = json.dumps(company_note_json, ensure_ascii=False)
+                else:
+                    record.company_note_json = str(company_note_json)
+            if grading_version is not None:
+                record.grading_version = grading_version
+
+            if exclusion_reason or verdict == "EXCLU":
+                record.status = STATUS_EXCLUDED
+
             session.commit()
             return True
+
+    def get_v1_jobs(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Retourne les offres évaluées avec l'ancienne grille (grading_version IS NULL ou != 'v3')."""
+        with self.SessionLocal() as session:
+            stmt = (
+                select(Job)
+                .where(
+                    Job.rerank_score.isnot(None),
+                    or_(Job.grading_version.is_(None), Job.grading_version != "v3"),
+                )
+                .order_by(Job.rerank_score.desc())
+            )
+            if limit:
+                stmt = stmt.limit(limit)
+            rows = session.execute(stmt).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def recompute_scores(self, config: dict[str, Any] | None = None) -> int:
+        """Recalcule en code pur les notes finales, planchers et plafonds de toutes les offres v3 sans appel LLM.
+
+        Retourne le nombre d'offres mises à jour.
+        """
+        from src.matching.llm_judge import compute_final_score, verdict_from_score
+        from src.config import load_config
+
+        cfg = config or load_config()
+        updated_count = 0
+
+        with self.SessionLocal() as session:
+            stmt = select(Job).where(Job.grading_version == "v3")
+            rows = session.execute(stmt).scalars().all()
+
+            for job in rows:
+                job_dict = job.to_dict()
+                parsed = {
+                    "contract_type": job.contract_type or "AUTRE",
+                    "duration_months": job.duration_months,
+                    "is_cesure": bool(job.is_cesure),
+                    "structure_type": job.structure_type or "INCONNU",
+                    "category_confidence": job.category_confidence or "MOYENNE",
+                    "rd_nature": bool(job.rd_nature),
+                    "sub_scores": job_dict.get("sub_scores") or {},
+                    "signals": job_dict.get("signals") or {},
+                    "company_note": job_dict.get("company_note") or {},
+                    "hard_cap_triggered": job.cap_applied or job.hard_cap_triggered,
+                    "red_flags": job_dict.get("red_flags") or [],
+                }
+                breakdown = compute_final_score(parsed, job_dict, cfg)
+                job.quality_score = float(breakdown.quality_score)
+                job.rerank_score = float(breakdown.final_score)
+                job.floor_value = breakdown.floor_value
+                job.floor_reason = breakdown.floor_reason
+                job.cap_applied = breakdown.cap_applied
+                job.exclusion_reason = breakdown.exclusion_reason
+                job.scaleup_suggested = 1 if breakdown.scaleup_suggested else 0
+
+                if breakdown.excluded:
+                    job.verdict = "EXCLU"
+                    job.status = STATUS_EXCLUDED
+                else:
+                    job.verdict = verdict_from_score(breakdown.final_score, cfg)
+                    if job.status == STATUS_EXCLUDED:
+                        job.status = STATUS_NEW
+
+                updated_count += 1
+
+            session.commit()
+        return updated_count
 
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Top des offres NON encore évaluées par le juge LLM.

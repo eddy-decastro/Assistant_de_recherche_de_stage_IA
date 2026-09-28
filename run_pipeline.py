@@ -42,6 +42,22 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Désactive la synchronisation Cloud (R2) avant et après le scraping",
     )
+    parser.add_argument(
+        "--regrade-v1",
+        action="store_true",
+        help="Réévalue les offres v1 avec le nouveau juge LLM v3.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Plafond pour --regrade-v1 (défaut : 20 offres).",
+    )
+    parser.add_argument(
+        "--recompute-scores",
+        action="store_true",
+        help="Recalcule en code pur les notes finales, planchers et plafonds de toutes les offres v3 sans appel LLM.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -61,6 +77,24 @@ def main(argv: list[str] | None = None) -> None:
             print(" ✅ Base locale synchronisée avec succès depuis le Cloud.")
         except Exception as e:
             logger.warning(f"Impossible de synchroniser depuis le Cloud: {e}")
+
+    if args.recompute_scores:
+        print("\n" + "=" * 60)
+        print(" 🔄 RECALCUL DES NOTES V3 (Code pur sans appel LLM)")
+        print("=" * 60)
+        run_scrapers_main(["--recompute-scores"])
+        if sync_enabled:
+            upload_database()
+        return
+
+    if args.regrade_v1:
+        print("\n" + "=" * 60)
+        print(f" 🧠 RÉ-ÉVALUATION DES OFFRES V1 (Gemini v3, limite={args.limit})")
+        print("=" * 60)
+        run_scrapers_main(["--regrade-v1", "--limit", str(args.limit)])
+        if sync_enabled:
+            upload_database()
+        return
 
     print("\n" + "=" * 60)
     print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & JobTeaser)")

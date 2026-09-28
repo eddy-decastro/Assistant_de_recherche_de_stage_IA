@@ -36,6 +36,7 @@ STATUS_INTERVIEW = "ENTRETIEN"
 STATUS_IGNORED = "IGNORÉ"
 # Offre écartée par la re-validation métier sur texte complet (faux stage, BI…).
 STATUS_REJECTED = "REJETÉ"
+STATUS_EXCLUDED = "EXCLU"
 
 VALID_STATUSES = {
     STATUS_NEW,
@@ -43,6 +44,7 @@ VALID_STATUSES = {
     STATUS_INTERVIEW,
     STATUS_IGNORED,
     STATUS_REJECTED,
+    STATUS_EXCLUDED,
 }
 
 # Ordre d'affichage dans le dashboard : statuts de travail (hors flux par défaut
@@ -50,7 +52,7 @@ VALID_STATUSES = {
 STATUS_ORDER = [STATUS_NEW, STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED]
 
 # Options proposées par le sélecteur de statut (le rejet est opt-in).
-STATUS_OPTIONS = [*STATUS_ORDER, STATUS_REJECTED]
+STATUS_OPTIONS = [*STATUS_ORDER, STATUS_REJECTED, STATUS_EXCLUDED]
 
 # --- Verdicts du juge LLM (étape 2 : reranking) ---
 VERDICT_EXCELLENT = "EXCELLENT"
@@ -129,7 +131,7 @@ SUB_SCORE_SHORT_LABELS = {
     "engineering_practice": "Ingénierie",
     "option_value": "Tremplin",
     "career_leverage": "Carrière",
-    "pfe_compatibility": "PFE",
+    "pfe_compatibility": "Calendrier PFE",
 }
 
 # --- Énumérations et règles du juge v3 ---

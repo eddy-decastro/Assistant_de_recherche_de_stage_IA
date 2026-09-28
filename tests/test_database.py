@@ -21,6 +21,7 @@ from src.constants import (
     STATUS_INTERVIEW,
     STATUS_NEW,
     STATUS_REJECTED,
+    STATUS_EXCLUDED,
     TIER_1,
 )
 from src.storage.database import Database, SQLITE_BUSY_TIMEOUT_MS, make_job_id
@@ -562,5 +563,106 @@ def test_applied_at_tracking_and_regions() -> None:
     print("[OK] applied_at tracking et normalisation régionale")
 
 
+def test_scoring_v3_database() -> None:
+    """Valide les nouveaux champs v3, l'exclusion, get_v1_jobs et recompute_scores."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = Path(tmp_dir) / "test_v3.db"
+        db = Database(db_path)
+        try:
+            # 1. Insertion job v1
+            job_v1 = {
+                "id": "v1_job",
+                "title": "Stage ML v1",
+                "company": "Owkin",
+                "url": "http://test.com/v1",
+                "status": STATUS_NEW,
+                "rerank_score": 70.0,
+                "grading_version": "v1",
+                "sub_scores": '{"supervision": 4, "modeling_depth": 3}',
+            }
+            db.upsert_job(job_v1)
+
+            # Vérifier get_v1_jobs
+            v1_jobs = db.get_v1_jobs()
+            assert len(v1_jobs) == 1
+            assert v1_jobs[0]["id"] == "v1_job"
+            # Vérifier que les anciennes clés sont préservées
+            assert v1_jobs[0]["sub_scores"]["supervision"] == 4
+            assert v1_jobs[0]["sub_scores"]["modeling_depth"] == 3
+
+            # 2. Insertion job v3 avec update_rerank
+            job_v3 = {
+                "id": "v3_job",
+                "title": "Stage Deep Learning v3",
+                "company": "Doctolib",
+                "url": "http://test.com/v3",
+                "status": STATUS_NEW,
+            }
+            db.upsert_job(job_v3)
+
+            ok = db.update_rerank(
+                "v3_job",
+                rerank_score=75.0,
+                verdict="BON",
+                sub_scores={"technical_depth": 4, "target_alignment": 4, "learning_environment": 3, "logistics": 4},
+                contract_type="STAGE",
+                structure_type="SCALEUP_IA",
+                category_confidence="HAUTE",
+                rd_nature=True,
+                duration_months=6,
+                is_cesure=False,
+                quality_score=72.0,
+                floor_value=70,
+                floor_reason="Plancher scale-up 70",
+                cap_applied=None,
+                exclusion_reason=None,
+                scaleup_suggested=False,
+                signals_json={"encadrant_explicite": {"present": True, "evidence": "Dr. Dupont"}},
+                company_note_json={"known": True, "note": "Top", "confidence": "HAUTE"},
+                grading_version="v3",
+            )
+            assert ok is True
+
+            fetched_v3 = db.get_job("v3_job")
+            assert fetched_v3["grading_version"] == "v3"
+            assert fetched_v3["quality_score"] == 72.0
+            assert fetched_v3["floor_value"] == 70
+            assert fetched_v3["rd_nature"] is True
+            assert fetched_v3["is_cesure"] is False
+            assert fetched_v3["signals"]["encadrant_explicite"]["present"] is True
+
+            # 3. Offre exclue
+            job_exclu = {
+                "id": "exclu_job",
+                "title": "Stage Alternance v3",
+                "company": "Total",
+                "url": "http://test.com/exclu",
+                "status": STATUS_NEW,
+            }
+            db.upsert_job(job_exclu)
+            db.update_rerank(
+                "exclu_job",
+                rerank_score=0.0,
+                verdict="EXCLU",
+                exclusion_reason="Contrat incompatible: ALTERNANCE",
+                contract_type="ALTERNANCE",
+                grading_version="v3",
+            )
+            fetched_exclu = db.get_job("exclu_job")
+            assert fetched_exclu["status"] == STATUS_EXCLUDED
+            assert fetched_exclu["exclusion_reason"] == "Contrat incompatible: ALTERNANCE"
+
+            # 4. recompute_scores
+            recomputed = db.recompute_scores()
+            assert recomputed >= 1
+            fetched_v3_recomp = db.get_job("v3_job")
+            assert fetched_v3_recomp["rerank_score"] >= 70
+
+        finally:
+            db.engine.dispose()
+    print("[OK] test_scoring_v3_database : colonnes, exclusion, v1_jobs et recompute")
+
+
 if __name__ == "__main__":
     main()
+    test_scoring_v3_database()
