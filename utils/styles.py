@@ -192,7 +192,7 @@ _CSS_CHROME = Template(
   box-sizing: border-box !important;
   max-width: 100% !important;
   overflow: hidden !important;
-  transition: background-color .15s ease, border-color .15s ease, color .15s ease !important;
+  transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
 }
 [data-testid="stButton"] button p,
 [data-testid="stLinkButton"] a p {
@@ -208,6 +208,7 @@ _CSS_CHROME = Template(
   border-color: var(--border-2, #D9D1C2) !important;
   background: var(--chip, #EFEAE0) !important;
   color: var(--text, #1C1B19) !important;
+  transform: scale(1.03) !important;
 }
 [data-testid="stButton"] button:hover p,
 [data-testid="stLinkButton"] a:hover p { color: var(--text, #1C1B19) !important; }
@@ -371,14 +372,15 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
   background: var(--surface, #FFFDF9);
   border: 1px solid var(--border, #E4DED3) !important;
   border-radius: 8px !important;
-  box-shadow: none !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.02) !important;
   padding: 10px 14px 14px;
   margin-bottom: 0.9rem;
-  transition: border-color .15s ease;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
 }
 div[data-testid="stVerticalBlockBorderWrapper"]:hover {
   border-color: var(--border-2, #D9D1C2) !important;
-  box-shadow: none !important;
+  box-shadow: 0 8px 16px rgba(0,0,0,0.08) !important;
+  transform: translateY(-2px);
 }
 
 /* Carte intérieure (contenu HTML) */

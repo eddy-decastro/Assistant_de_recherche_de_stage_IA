@@ -274,11 +274,11 @@ def _rejection_block(job: dict[str, Any]) -> str:
     )
 
 
-def job_card_html(job: dict[str, Any], keywords: Sequence[str]) -> str:
+def job_card_html(job: dict[str, Any], keywords: Sequence[str], compact: bool = False) -> str:
     """Carte d'offre autonome : en-tête, jauge de score, badges, accordéon, CTA."""
     url = str(job.get("url") or "")
     technologies = detected_technologies(job, keywords)
-    head = (
+    html = (
         '<div class="sc-card">'
         '<div class="sc-card-head">'
         f'<div><h3 class="sc-card-title">{_esc(job.get("title"))}</h3>{_meta_html(job)}</div>'
@@ -288,13 +288,16 @@ def job_card_html(job: dict[str, Any], keywords: Sequence[str]) -> str:
         f"{_badges_html(job)}"
         f"{_subscores_strip(job)}"
         f"{_chips_html(technologies)}"
-        '<details class="sc-details">'
-        '<summary><span class="sc-chev">›</span>Détails &amp; évaluation</summary>'
-        f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_reasoning_block(job)}{_subscores_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
-        "</details>"
-        "</div>"
     )
-    return head
+    if not compact:
+        html += (
+            '<details class="sc-details">'
+            '<summary><span class="sc-chev">▶</span>Détails &amp; évaluation</summary>'
+            f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_reasoning_block(job)}{_subscores_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
+            "</details>"
+        )
+    html += "</div>"
+    return html
 
 @st.dialog("Lettre de motivation personnalisée", width="large")
 def show_cover_letter_dialog(job: dict[str, Any]) -> None:
@@ -598,13 +601,35 @@ def render_job_card(db: Database, job: dict[str, Any], keywords: Sequence[str]) 
                 )
 
 
+
+def render_compact_card_with_select(db, job, keywords):
+    """Rend une carte d'offre compacte (liste de gauche) avec un bouton de sélection."""
+    import streamlit as st
+    with st.container(border=True):
+        st.markdown(job_card_html(job, keywords, compact=True), unsafe_allow_html=True)
+        st.markdown('<div class="sc-card-actions-divider"></div>', unsafe_allow_html=True)
+        job_id = str(job.get("id"))
+        is_selected = st.session_state.get("selected_job_id") == job_id
+        label = "👁️ Sélectionnée" if is_selected else "🔍 Voir détails"
+        
+        # Un seul bouton pour la carte compacte
+        if st.button(label, key=f"select_{job_id}", use_container_width=True, type="primary" if is_selected else "secondary"):
+            st.session_state.selected_job_id = job_id
+            st.rerun()
+
+def render_job_detail_pane(db, job, keywords):
+    """Rend le panneau de détails complet (à droite)."""
+    import streamlit as st
+    st.markdown("### Détails de l'offre")
+    render_job_card(db, job, keywords)
+
 def render_stream(
-    db: Database,
-    jobs: list[dict[str, Any]],
-    filters: Filters,
-    keywords: Sequence[str],
+    db,
+    jobs,
+    filters,
+    keywords,
 ) -> None:
-    """Rend le flux d'offres, en vue unifiée ou groupée par plateforme."""
+    import streamlit as st
     if not jobs:
         st.markdown(
             '<div class="sc-empty">Aucune offre ne correspond aux filtres courants.<br>'
@@ -612,26 +637,51 @@ def render_stream(
             unsafe_allow_html=True,
         )
         return
+        
     note = "tri par score R&D décroissant"
     note += " · filtres actifs" if not filters.is_default() else " · aucun filtre"
     st.markdown(
         f'<div class="sc-stream"><span class="sc-stream-count">{len(jobs)} offre(s)</span>'
-        f'<span class="sc-stream-note">{_esc(note)}</span></div>',
+        f'<span class="sc-stream-note">{note}</span></div>',
         unsafe_allow_html=True,
     )
-    if filters.group_by_source:
-        for label, group in group_jobs_by_source(jobs):
-            st.markdown(
-                f'<div class="sc-group"><span class="sc-group-name">{_esc(label)}</span>'
-                f'<span class="sc-group-count">{len(group)} offre(s)</span></div>',
-                unsafe_allow_html=True,
-            )
-            for job in group:
-                render_job_card(db, job, keywords)
-    else:
-        for job in jobs:
-            render_job_card(db, job, keywords)
-
+    
+    # SPLIT PANE
+    if "selected_job_id" not in st.session_state:
+        st.session_state.selected_job_id = None
+        
+    valid_ids = {str(j["id"]) for j in jobs}
+    if st.session_state.selected_job_id not in valid_ids and jobs:
+        st.session_state.selected_job_id = str(jobs[0]["id"])
+        
+    col_list, col_detail = st.columns([1.1, 1.4], gap="medium")
+    
+    with col_list:
+        with st.container(height=900, border=False):
+            if filters.group_by_source:
+                from utils.data import group_jobs_by_source
+                for label, group in group_jobs_by_source(jobs):
+                    st.markdown(
+                        f'<div class="sc-group"><span class="sc-group-name">{label}</span>'
+                        f'<span class="sc-group-count">{len(group)} offre(s)</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for job in group:
+                        render_compact_card_with_select(db, job, keywords)
+            else:
+                for job in jobs:
+                    render_compact_card_with_select(db, job, keywords)
+                    
+    with col_detail:
+        with st.container(height=900, border=False):
+            if st.session_state.selected_job_id:
+                try:
+                    selected_job = next(j for j in jobs if str(j["id"]) == st.session_state.selected_job_id)
+                    render_job_detail_pane(db, selected_job, keywords)
+                except StopIteration:
+                    st.info("Offre introuvable.")
+            else:
+                st.info("👈 Sélectionnez une offre à gauche pour voir les détails.")
 
 # --------------------------------------------------------------------------- #
 # Bandeau KPI & en-tête
