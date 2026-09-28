@@ -43,6 +43,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scrapers.base import describe_rejection  # noqa: E402
+from scrapers.cache import DiskCache  # noqa: E402
 from scrapers.known import NullKnownIndex  # noqa: E402
 from scrapers.manager import ScraperManager  # noqa: E402
 from scrapers.models import (  # noqa: E402
@@ -726,7 +727,11 @@ def main(argv: list[str] | None = None) -> None:
         if telemetry.enabled:
             # Mémoire de collecte préchargée : elle porte l'arrêt anticipé et la
             # déduplication transverse entre passes et entre sources.
-            known_index = DatabaseKnownIndex(db, scraper_config.enabled_sources)
+            known_index = DatabaseKnownIndex(
+                db,
+                scraper_config.enabled_sources,
+                filter_version=scraper_config.filter_fingerprint(),
+            )
             run_id = db.start_run(scraper_config.enabled_sources)
         live_worker: LiveRerankWorker | None = None
         on_batch_cb = None
@@ -744,7 +749,9 @@ def main(argv: list[str] | None = None) -> None:
                 live_worker.start()
                 on_batch_cb = create_batch_callback(db, worker=live_worker)
 
-        manager = ScraperManager(scraper_config, known_index=known_index)
+        manager = ScraperManager(
+            scraper_config, known_index=known_index, detail_cache=DiskCache()
+        )
         result = manager.run(modes=modes, on_batch_collected=on_batch_cb)
 
         if live_worker is not None and live_worker.available:

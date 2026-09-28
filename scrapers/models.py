@@ -8,6 +8,7 @@ Ce module définit :
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from collections.abc import Mapping
@@ -57,11 +58,14 @@ EXCLUSION_KEYWORDS: list[str] = [
     "community manager",
 ]
 
-# Requêtes principales envoyées aux sources.
+# Requêtes principales envoyées aux sources. Pas de « Stage » dans les requêtes :
+# chaque source filtre déjà le contrat côté serveur (LinkedIn ``f_JT=I``, WTTJ
+# ``contract_type:internship``, JobTeaser ``contract=internship``) et le mot
+# écarterait les annonces rédigées en anglais (« Machine Learning Intern »).
 TARGET_QUERIES: list[str] = [
-    "Stage Data Scientist",
-    "Stage Machine Learning",
-    "Stage Recherche IA",
+    "Data Scientist",
+    "Machine Learning",
+    "Recherche IA",
 ]
 
 # Signaux positifs exigés pour considérer une offre comme "Data Science / ML".
@@ -125,6 +129,41 @@ POSITIVE_DS_ML_KEYWORDS: list[str] = [
     "time series",
     "reconstruction 3d",
 ]
+
+# Signaux positifs FAIBLES : sous-ensemble de ``POSITIVE_DS_ML_KEYWORDS`` trop
+# générique pour qualifier une offre à lui seul (« modèle économique »,
+# « recherche de partenaires », « outils d'IA »…). Un signal faible compte s'il
+# figure dans le TITRE ; dans la description, il en faut au moins
+# ``MIN_WEAK_SIGNALS_IN_DESCRIPTION`` distincts. Les autres mots-clés positifs
+# sont « forts » et suffisent n'importe où.
+WEAK_DS_ML_KEYWORDS: list[str] = [
+    "ia",
+    "ai",
+    "ds",
+    "recherche",
+    "research",
+    "r&d",
+    "r & d",
+    "statistiques",
+    "statistique",
+    "optimisation",
+    "modélisation",
+    "modèle",
+    "modèles",
+    "quantitative",
+    "analyse de données",
+    "deep tech",
+    "diffusion",
+    "nerf",
+    "biomédical",
+]
+MIN_WEAK_SIGNALS_IN_DESCRIPTION = 2
+
+#: Version de la LOGIQUE du filtre métier (``scrapers.base.screen_rejection``). À
+#: incrémenter à chaque changement de règle dans le code : combinée aux listes de
+#: mots-clés, elle forme l'empreinte ``ScraperConfig.filter_fingerprint`` qui rend
+#: les anciens rejets de ``seen_jobs`` à nouveau évaluables.
+FILTER_LOGIC_VERSION = "2"
 
 # User-Agent moderne partagé par tous les scrapers.
 DEFAULT_USER_AGENT = (
@@ -232,6 +271,8 @@ class SeenEntry(BaseModel):
     title: str = ""
     decision: str
     rejection_reason: str | None = None
+    #: Empreinte du filtre métier ayant produit un rejet (``None`` sinon).
+    filter_version: str | None = None
 
 
 class CardEntry(BaseModel):
@@ -498,6 +539,16 @@ class ScraperConfig(BaseModel):
     positive_ds_ml_keywords: list[str] = Field(
         default_factory=lambda: list(POSITIVE_DS_ML_KEYWORDS)
     )
+    #: Sous-ensemble des mots-clés positifs jugés trop génériques (voir
+    #: ``WEAK_DS_ML_KEYWORDS``).
+    weak_ds_ml_keywords: list[str] = Field(default_factory=lambda: list(WEAK_DS_ML_KEYWORDS))
+    #: Récupérer la description complète pendant la collecte pour les sources dont
+    #: la page de liste n'en fournit pas (LinkedIn) : le filtre métier, le scoring
+    #: et le juge LLM travaillent alors sur l'offre entière, pas sur son seul titre.
+    enrich_descriptions: bool = True
+    #: Plafond d'appels « page détail » par source et par run (garde-fou anti-429).
+    #: Au-delà, les offres restantes sont filtrées sur leur titre seul.
+    max_detail_fetches_per_source: int = 200
     request_timeout_seconds: float = 30.0
     user_agent: str = DEFAULT_USER_AGENT
     enabled_sources: list[Source] = Field(
@@ -555,6 +606,22 @@ class ScraperConfig(BaseModel):
             except ValidationError as exc:
                 _logger.warning("scrapers.passes.%s invalide (%s) ; mode ignoré.", mode, exc)
         return normalized or default_passes()
+
+    def filter_fingerprint(self) -> str:
+        """Empreinte courte du filtre métier (logique + listes de mots-clés).
+
+        Archivée avec chaque rejet dans ``seen_jobs.filter_version`` : quand les
+        mots-clés ou les règles changent, l'empreinte change et les offres rejetées
+        par l'ancien filtre cessent d'être « connues » — elles sont réévaluées
+        automatiquement au run suivant.
+        """
+        parts = [
+            FILTER_LOGIC_VERSION,
+            "|".join(sorted(k.casefold().strip() for k in self.exclusion_keywords)),
+            "|".join(sorted(k.casefold().strip() for k in self.positive_ds_ml_keywords)),
+            "|".join(sorted(k.casefold().strip() for k in self.weak_ds_ml_keywords)),
+        ]
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:12]
 
     @property
     def per_query_quota(self) -> int:

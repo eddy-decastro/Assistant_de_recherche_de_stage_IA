@@ -33,8 +33,10 @@ try:
 except ImportError:
     CurlRequestsError = None  # curl_cffi absent : le guard ne sera jamais atteint
 
+from .cache import DiskCache
 from .known import KnownIndex, NullKnownIndex
 from .models import (
+    MIN_WEAK_SIGNALS_IN_DESCRIPTION,
     PASS_FRESHNESS,
     SEEN_DUPLICATE,
     SEEN_KNOWN,
@@ -163,38 +165,96 @@ def describe_rejection(title: str, description: str, config: ScraperConfig) -> s
             if _contains_keyword(combined, marker):
                 return f"contrat incompatible (« {marker} »), non annoncé comme un stage"
 
+    return _business_rejection(title_low, description_low, config, where="la fiche")
+
+
+def _split_positive_keywords(config: ScraperConfig) -> tuple[list[str], list[str]]:
+    """Sépare les mots-clés positifs en signaux ``(forts, faibles)``."""
+    weak_set = {keyword.casefold().strip() for keyword in config.weak_ds_ml_keywords}
+    strong: list[str] = []
+    weak: list[str] = []
+    for keyword in config.positive_ds_ml_keywords:
+        (weak if keyword.casefold().strip() in weak_set else strong).append(keyword)
+    return strong, weak
+
+
+def _business_rejection(
+    title_low: str, description_low: str, config: ScraperConfig, *, where: str
+) -> str:
+    """Règles métier communes (exclusions puis signal DS/ML) sur texte normalisé.
+
+    1. **Exclusion dans le titre** : rédhibitoire (« Stage Data Analyst Power BI ») ;
+    2. **Exclusion dans la description** : rédhibitoire seulement si le vocabulaire
+       exclu y est *au moins aussi présent* que les signaux DS/ML forts (titre +
+       description). Une offre de Data Scientist qui cite « Tableau » dans sa stack
+       ou « nos data analysts » reste retenue ; une offre dont le corps ne parle que
+       de Power BI et de reporting est écartée ;
+    3. **Signal DS/ML** : un signal fort n'importe où, OU un signal faible dans le
+       titre, OU au moins ``MIN_WEAK_SIGNALS_IN_DESCRIPTION`` signaux faibles
+       distincts dans la description.
+    """
     for keyword in config.exclusion_keywords:
-        if _contains_keyword(combined, keyword):
+        if _contains_keyword(title_low, keyword):
             return f"orientation BI / reporting (« {keyword} »)"
 
-    if not any(_contains_keyword(combined, keyword) for keyword in config.positive_ds_ml_keywords):
-        return "aucun signal Data Science / ML dans la fiche"
+    strong, weak = _split_positive_keywords(config)
+    combined = f"{title_low}\n{description_low}".strip()
+    strong_hits = [keyword for keyword in strong if _contains_keyword(combined, keyword)]
 
-    return ""
+    if description_low:
+        excluded_hits = [
+            keyword
+            for keyword in config.exclusion_keywords
+            if _contains_keyword(description_low, keyword)
+        ]
+        if excluded_hits and len(excluded_hits) >= len(strong_hits):
+            return (
+                f"orientation BI / reporting (« {excluded_hits[0]} » dans la description, "
+                f"{len(excluded_hits)} terme(s) exclu(s) pour {len(strong_hits)} signal(aux) "
+                "DS/ML fort(s))"
+            )
+
+    if strong_hits:
+        return ""
+    if any(_contains_keyword(title_low, keyword) for keyword in weak):
+        return ""
+    weak_in_description = {
+        keyword.casefold() for keyword in weak if _contains_keyword(description_low, keyword)
+    }
+    if len(weak_in_description) >= MIN_WEAK_SIGNALS_IN_DESCRIPTION:
+        return ""
+    return f"aucun signal Data Science / ML dans {where}"
 
 
 def screen_rejection(title: str, description: str, config: ScraperConfig) -> str:
-    """Motif de rejet d'une offre selon le filtre de page de liste (``""`` = retenue).
+    """Motif de rejet d'une offre selon le filtre de collecte (``""`` = retenue).
 
-    Implémente **exactement** les règles historiques de ``is_valid_job`` (exclusion
-    BI/reporting prioritaire, puis exigence d'au moins un signal Data Science / ML)
-    tout en retournant le motif : c'est ce motif qui est archivé dans la mémoire de
-    collecte (``seen_jobs.rejection_reason``) pour l'observabilité.
+    Applique les règles métier communes (voir :func:`_business_rejection`) et
+    retourne le motif : c'est lui qui est archivé dans la mémoire de collecte
+    (``seen_jobs.rejection_reason``) pour l'observabilité.
 
-    À ne pas confondre avec :func:`describe_rejection`, plus strict, réservé à la
-    re-validation sur fiche complète (``--revalidate``).
+    À ne pas confondre avec :func:`describe_rejection`, plus strict (marqueurs de
+    contrat), réservé à la re-validation sur fiche complète (``--revalidate``).
     """
     title_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
     description_low = re.sub(r"\s+", " ", (description or "").casefold()).strip()
+    return _business_rejection(title_low, description_low, config, where="l'annonce")
 
+
+def title_exclusion(title: str, config: ScraperConfig) -> str:
+    """Pré-filtre sur le TITRE seul (``""`` = à approfondir).
+
+    Utilisé pour les sources dont la page de liste n'expose pas la description
+    (LinkedIn) : seules les exclusions explicites du titre écartent la carte avant
+    la récupération de la fiche ; l'exigence d'un signal DS/ML est différée jusqu'à
+    ce que la description soit connue (sinon un « Stagiaire – équipe Pricing » qui
+    fait du ML serait perdu).
+    """
+    title_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
     for keyword in config.exclusion_keywords:
-        if _contains_keyword(title_low, keyword) or _contains_keyword(description_low, keyword):
+        if _contains_keyword(title_low, keyword):
             return f"orientation BI / reporting (« {keyword} »)"
-
-    combined = f"{title_low} {description_low}".strip()
-    if any(_contains_keyword(combined, keyword) for keyword in config.positive_ds_ml_keywords):
-        return ""
-    return "aucun signal Data Science / ML dans l'annonce"
+    return ""
 
 
 class BaseScraper(ABC):
@@ -217,10 +277,23 @@ class BaseScraper(ABC):
     #: Filtre temporel serveur disponible ? LinkedIn : OUI (``f_TPR=r604800``
     #: ramène 100 % de cartes de la semaine, vérifié par sonde).
     SERVER_WINDOW_FILTER: ClassVar[bool] = False
+    #: La page de liste fournit-elle une description ? Sinon (LinkedIn), la carte
+    #: n'est pré-filtrée que sur son titre, puis la fiche détail est récupérée
+    #: (``_fetch_detail``) avant d'appliquer le filtre métier complet.
+    LIST_HAS_DESCRIPTION: ClassVar[bool] = True
+    #: Échecs consécutifs de fiche détail désactivant l'enrichissement du run.
+    MAX_CONSECUTIVE_DETAIL_FAILURES: ClassVar[int] = 3
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         self.config = config or ScraperConfig()
         self._logger = logging.getLogger(f"scrapers.{self.source}")
+        #: Cache disque des descriptions (injecté par l'orchestrateur ; ``None`` =
+        #: aucun cache, comportement des tests).
+        self.detail_cache: DiskCache | None = None
+        self._detail_calls = 0
+        self._detail_failures = 0
+        self._detail_disabled_reason = ""
+        self._filter_version = self.config.filter_fingerprint()
         self.client = httpx.Client(
             headers={
                 "User-Agent": self.config.user_agent,
@@ -254,6 +327,86 @@ class BaseScraper(ABC):
     def validate(self, job: RawJob) -> bool:
         """Filtre complet : offre de stage + anti-BI + signal DS/ML."""
         return self.validation_reason(job) == ""
+
+    # ------------------------------------------------------------------ #
+    # Filtre en deux temps : titre, puis fiche détail (sources sans description)
+    # ------------------------------------------------------------------ #
+    def _fetch_detail(self, job: RawJob) -> tuple[str, int]:
+        """Description complète d'une offre : ``(texte, appels HTTP réseau)``.
+
+        À surcharger par les sources dont la liste n'expose pas la description.
+        Les erreurs réseau/HTTP sont laissées remonter (voir ``_screen_job``).
+        """
+        return "", 0
+
+    def _disable_detail(self, reason: str) -> None:
+        if not self._detail_disabled_reason:
+            self._detail_disabled_reason = reason
+            self._logger.warning(
+                "%s : enrichissement des descriptions suspendu pour ce run (%s) — "
+                "les offres restantes sont filtrées sur leur titre seul.",
+                self.source,
+                reason,
+            )
+
+    def _try_fetch_detail(self, job: RawJob) -> tuple[str, int]:
+        """Récupère la fiche détail sans jamais interrompre la passe."""
+        if self._detail_disabled_reason:
+            return "", 0
+        if self._detail_calls >= self.config.max_detail_fetches_per_source:
+            self._disable_detail(
+                f"plafond de {self.config.max_detail_fetches_per_source} fiche(s) détail atteint"
+            )
+            return "", 0
+        try:
+            description, calls = self._fetch_detail(job)
+        except httpx.HTTPStatusError as exc:
+            status = getattr(exc.response, "status_code", 0)
+            self._detail_calls += 1
+            if status == 429:
+                self._disable_detail("HTTP 429 sur les fiches détail")
+                return "", 1
+            self._detail_failures += 1
+            self._logger.debug("%s : fiche détail %s en échec (HTTP %s).", self.source, job.url, status)
+        except Exception as exc:  # noqa: BLE001 — une fiche ne doit jamais tuer la passe
+            self._detail_calls += 1
+            self._detail_failures += 1
+            self._logger.debug("%s : fiche détail %s en échec (%s).", self.source, job.url, exc)
+        else:
+            self._detail_calls += calls
+            self._detail_failures = 0
+            return description, calls
+        if self._detail_failures >= self.MAX_CONSECUTIVE_DETAIL_FAILURES:
+            self._disable_detail(f"{self._detail_failures} échecs consécutifs")
+        return "", 1
+
+    def _screen_job(self, job: RawJob) -> tuple[str, RawJob, int, bool]:
+        """Filtre métier d'une carte inédite : ``(motif, offre, appels HTTP, définitif)``.
+
+        Pour une source sans description en liste, la carte est d'abord pré-filtrée
+        sur son titre (exclusions explicites), puis la fiche détail est récupérée et
+        le filtre complet est appliqué sur le texte entier. Si la fiche n'a pas pu
+        être lue, le filtre retombe sur le titre seul et le rejet éventuel est
+        marqué **non définitif** : il sera réévalué au run suivant.
+        """
+        if not job.is_internship:
+            return "contrat incompatible (hors stage)", job, 0, True
+        needs_detail = (
+            not self.LIST_HAS_DESCRIPTION
+            and self.config.enrich_descriptions
+            and not (job.description or "").strip()
+        )
+        if not needs_detail:
+            return screen_rejection(job.title, job.description, self.config), job, 0, True
+
+        pre_rejection = title_exclusion(job.title, self.config)
+        if pre_rejection:
+            return pre_rejection, job, 0, True
+        description, calls = self._try_fetch_detail(job)
+        if description:
+            job = job.model_copy(update={"description": description})
+        rejection = screen_rejection(job.title, job.description, self.config)
+        return rejection, job, calls, bool(description)
 
     # ------------------------------------------------------------------ #
     # Source : une page de résultats
@@ -425,6 +578,15 @@ class BaseScraper(ABC):
                     else " (objectif non atteint : voir les motifs d'arrêt ci-dessus)",
                 )
         self._log_reports(result.query_reports)
+        if self._detail_calls:
+            self._logger.info(
+                "%s : %d fiche(s) détail récupérée(s) pour filtrer sur la description complète%s.",
+                self.source,
+                self._detail_calls,
+                f" (enrichissement suspendu : {self._detail_disabled_reason})"
+                if self._detail_disabled_reason
+                else "",
+            )
         return result
 
     def fetch(self, known_index: KnownIndex | None = None) -> ScrapeResult:
@@ -648,7 +810,10 @@ class BaseScraper(ABC):
                     continue
                 new_keys_in_page += 1
 
-                rejection = self.validation_reason(job) if validate else ""
+                rejection, final = "", True
+                if validate:
+                    rejection, job, detail_calls, final = self._screen_job(job)
+                    counters["http_requests"] += detail_calls
                 if rejection:
                     counters["jobs_rejected"] += 1
                     decision = (
@@ -664,6 +829,9 @@ class BaseScraper(ABC):
                             title=title,
                             decision=decision,
                             rejection_reason=rejection,
+                            # Sans empreinte, le rejet sera réévalué au run suivant
+                            # (fiche détail illisible : décision prise sur le titre).
+                            filter_version=self._filter_version if final else None,
                         )
                     )
                     continue

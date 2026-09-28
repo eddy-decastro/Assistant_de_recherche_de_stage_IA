@@ -42,6 +42,7 @@ def entries_to_rows(
                 "title": entry.title,
                 "decision": entry.decision,
                 "rejection_reason": entry.rejection_reason,
+                "filter_version": entry.filter_version,
                 "job_id": lookup.get(canonical),
             }
         )
@@ -60,8 +61,16 @@ class DatabaseKnownIndex(InMemoryKnownIndex):
     * ``persist`` écrit enfin les observations du run en lot (upsert idempotent).
     """
 
-    def __init__(self, db: Database, sources: Iterable[str] | None = None) -> None:
-        pairs, urls = db.load_seen_index(sources)
+    def __init__(
+        self,
+        db: Database,
+        sources: Iterable[str] | None = None,
+        *,
+        filter_version: str | None = None,
+    ) -> None:
+        # ``filter_version`` : les rejets d'un ancien filtre ne sont pas préchargés,
+        # ils seront donc réévalués par le filtre courant (voir ``load_seen_index``).
+        pairs, urls = db.load_seen_index(sources, filter_version=filter_version)
         super().__init__(pairs, urls)
         self.db = db
         logger.info(

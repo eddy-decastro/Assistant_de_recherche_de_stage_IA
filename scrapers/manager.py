@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 from .base import BaseScraper
+from .cache import DiskCache
 from .jobteaser import JobTeaserScraper
 from .known import KnownIndex, NullKnownIndex
 from .linkedin import LinkedInGuestScraper
@@ -61,11 +63,14 @@ class ScraperManager:
         self,
         config: ScraperConfig | None = None,
         known_index: KnownIndex | None = None,
+        detail_cache: DiskCache | None = None,
     ) -> None:
         self.config = config or ScraperConfig()
         #: Mémoire de collecte partagée par toutes les sources (arrêt anticipé et
         #: déduplication transverse). ``NullKnownIndex`` = mode dégradé sans mémoire.
         self.known_index: KnownIndex = known_index or NullKnownIndex()
+        #: Cache disque des fiches détail, partagé avec ``backfill_descriptions``.
+        self.detail_cache = detail_cache
 
     @staticmethod
     def _normalize_url(url: str) -> str:
@@ -122,6 +127,7 @@ class ScraperManager:
                 continue
 
             scraper = scraper_cls(self.config)
+            scraper.detail_cache = self.detail_cache
             try:
                 result = scraper.run(
                     self.known_index,
