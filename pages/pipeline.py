@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
-from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc
+from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc, is_reranked
 from utils.styles import inject_styles
 from utils.task_manager import (
     get_active_task,
@@ -250,16 +250,56 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
     is_task_running = bool(active_task and active_task.get("status") == "running")
 
     distribution = source_distribution(jobs)
-    
-    st.markdown("### État de la base SQLite")
+    v1_jobs = [j for j in jobs if j.get("grading_version") == "v1" or (is_reranked(j) and not j.get("grading_version"))]
+    v3_jobs = [j for j in jobs if j.get("grading_version") == "v3"]
+
+    st.markdown("### État de la base SQLite &amp; Grille de scoring", unsafe_allow_html=True)
     st.markdown(
         '<div class="sc-kv">'
         + "".join(f"<div>{_esc(label)} <b>{count}</b></div>" for label, count, _ in distribution)
+        + f"<div>Évaluées v3 <b>{len(v3_jobs)}</b></div>"
+        + f"<div>Évaluées v1 <b>{len(v1_jobs)}</b></div>"
         + "</div>",
         unsafe_allow_html=True,
     )
-    st.caption(f"{len(jobs)} offres en base SQLite")
-    
+    st.caption(f"{len(jobs)} offres en base SQLite · <b>{len(v3_jobs)}</b> offres en grille v3 · <b>{len(v1_jobs)}</b> offres en grille v1 à réévaluer")
+
+    st.markdown("#### Maintenance du scoring v3")
+    col_v3_recomp, col_v3_regrade = st.columns([1.2, 1.8], gap="medium")
+
+    with col_v3_recomp:
+        st.markdown("**Recalcul déterministe (Gratuit)**")
+        st.caption("Recalcule instantanément les planchers, bonus et plafonds en code pur pour toutes les offres v3 sans aucun appel LLM.")
+        if st.button("Recalculer les notes (code pur, gratuit)", use_container_width=True, icon=":material/calculate:"):
+            with st.spinner("Recalcul en cours..."):
+                db = get_database()
+                cfg = load_config()
+                nb_recomputed = db.recompute_scores(cfg)
+                bump_data_version(sync_cloud=False)
+                st.success(f"{nb_recomputed} offres recalculées avec succès !")
+                st.rerun()
+
+    with col_v3_regrade:
+        st.markdown("**Réévaluation des offres v1 par Gemini**")
+        st.caption("Re-soumet les offres évaluées en v1 au juge LLM Gemini pour les faire basculer sur la grille v3 avec sous-scores et citations.")
+        col_regrade_limit, col_regrade_btn = st.columns([1, 1.5], vertical_alignment="bottom")
+        with col_regrade_limit:
+            regrade_limit = st.number_input("Limite (max 50)", min_value=1, max_value=50, value=min(20, max(1, len(v1_jobs)) if v1_jobs else 20), step=5)
+        with col_regrade_btn:
+            if st.button("Réévaluer les offres v1", disabled=is_task_running or len(v1_jobs) == 0, use_container_width=True, icon=":material/refresh:"):
+                cmd = [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--no-collect", "--regrade-v1", "--limit", str(regrade_limit)]
+                ok, msg = start_background_task(
+                    key="regrade_v1",
+                    name=f"Réévaluation de {regrade_limit} offres v1 vers v3",
+                    command=cmd,
+                    description="Réévaluation ciblée des offres v1 par Gemini",
+                )
+                if ok:
+                    st.toast(f"Tâche de réévaluation lancée pour {regrade_limit} offres !")
+                    st.rerun()
+                else:
+                    st.warning(msg)
+
     if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", use_container_width=True):
         try:
             db = get_database()

@@ -24,14 +24,19 @@ def _badge(label: str, tone: str | None = None, dot: str | None = None, extra_cl
 
 
 def score_html(job: dict[str, Any]) -> str:
-    """Jauge de score épurée : « 84 / 100 » + libellé d'alignement."""
+    """Jauge de score épurée : « 84 / 100 » + libellé d'alignement (+ note de qualité si v3)."""
     score = effective_score(job)
     label, tone = score_alignment(score)
     origin = "rerank LLM" if is_reranked(job) else "score hybride"
+    quality_score = job.get("quality_score")
+    quality_html = ""
+    if is_reranked(job) and quality_score is not None:
+        quality_html = f'<span class="sc-quality-sub" style="display:block;font-size:11px;color:var(--text-muted,#6B7280);margin-top:2px;">qualité : {float(quality_score):.0f}</span>'
     return (
         f'<div class="sc-score-box {tone_class(tone)}">'
         f'<span class="sc-score" title="Score R&D ({origin})"><b>{score:.0f}</b><span>/100</span></span>'
         f'<span class="sc-align">{_esc(label)}</span>'
+        f'{quality_html}'
         f"</div>"
     )
 
@@ -53,19 +58,80 @@ def _meta_html(job: dict[str, Any]) -> str:
 
 
 def _badges_html(job: dict[str, Any]) -> str:
-    """Ligne de badges : plateforme, contrat, typologie d'entreprise, verdict LLM."""
+    """Ligne de badges : plateforme, contrat, structure_type, planchers, plafonds, flags, verdict."""
     badges = [_badge(source_label(job.get("source")), dot=source_color(job.get("source")))]
     contract = contract_label(job)
     if contract:
         badges.append(_badge(contract))
-    tier = job.get("company_tier")
-    if tier in (TIER_1, TIER_ESN):
-        badges.append(_badge(TIER_LABELS.get(tier, str(tier)), "positive" if tier == TIER_1 else "alert"))
+
+    # Catégorie d'entreprise v3 (ou tier hérité)
+    st_type = job.get("structure_type")
+    if st_type:
+        st_lbl = STRUCTURE_TYPE_LABELS.get(st_type, st_type)
+        st_tone = STRUCTURE_TYPE_TONES.get(st_type, "mute")
+        badges.append(_badge(st_lbl, st_tone))
+    else:
+        tier = job.get("company_tier")
+        if tier in (TIER_1, TIER_ESN):
+            badges.append(_badge(TIER_LABELS.get(tier, str(tier)), "positive" if tier == TIER_1 else "alert"))
+
+    # Plancher v3 appliqué
+    floor_reason = job.get("floor_reason")
+    floor_val = job.get("floor_value")
+    if floor_reason:
+        badges.append(_badge(floor_reason, "positive"))
+    elif floor_val:
+        badges.append(_badge(f"plancher {floor_val}", "positive"))
+
+    # Plafond v3 / verrou bloquant
+    cap = job.get("cap_applied") or job.get("hard_cap_triggered")
+    if cap:
+        cap_str = str(cap).upper()
+        cap_lbl = HARD_CAP_LABELS.get(cap_str, f"plafond {cap_str}")
+        badges.append(_badge(cap_lbl, "alert"))
+
+    # Scale-up suggérée (LLM non confirmé en liste)
+    if job.get("scaleup_suggested"):
+        badges.append(_badge("scale-up suggérée (à confirmer)", "warn"))
+
+    # Flags d'attention
+    job_flags = job.get("flags") or []
+    for flag in job_flags:
+        f_str = str(flag).upper()
+        f_lbl = FLAG_LABELS.get(f_str, f_str)
+        f_tone = FLAG_TONES.get(f_str, "warn")
+        badges.append(_badge(f_lbl, f_tone))
+
     if is_reranked(job):
         verdict = job.get("verdict")
         extra = f"sc-badge-verdict sc-badge-{verdict.lower()}" if verdict else ""
         badges.append(_badge(VERDICT_LABELS.get(verdict, verdict or "Évalué"), VERDICT_TONES.get(verdict, "mute"), extra_cls=extra))
+    elif job.get("status") == STATUS_EXCLUDED or job.get("exclusion_reason"):
+        badges.append(_badge("EXCLU", "alert"))
     return f'<div class="sc-badges">{"".join(badges)}</div>'
+
+
+def _signals_html(job: dict[str, Any]) -> str:
+    """Chips compacts pour les signaux qualitatifs actifs avec citation vérifiée au survol."""
+    signals = job.get("signals") or {}
+    if not isinstance(signals, dict) or not signals:
+        return ""
+    signal_defs = [
+        ("encadrant_explicite", "Encadrant +6", "positive"),
+        ("donnees_reelles_explicites", "Données réelles +3", "positive"),
+        ("suite_explicite", "Débouché / Thèse +3", "positive"),
+        ("donnees_benchmark_seulement", "Benchmark seul -5", "alert"),
+    ]
+    chips = []
+    for key, label, tone in signal_defs:
+        data = signals.get(key)
+        if isinstance(data, dict) and data.get("present"):
+            evidence = str(data.get("evidence") or data.get("citation") or "").strip()
+            title_attr = f' title="Citation vérifiée : {_esc(evidence)}"' if evidence else ' title="Signal vérifié dans l\'offre"'
+            chips.append(f'<span class="sc-chip {tone_class(tone)}"{title_attr}>{label}</span>')
+    if not chips:
+        return ""
+    return f'<div class="sc-chips sc-signals-chips">{"".join(chips)}</div>'
 
 
 def _chips_html(technologies: Sequence[str]) -> str:
@@ -215,9 +281,35 @@ def _subscores_block(job: dict[str, Any]) -> str:
         if hard_cap
         else ""
     )
+
+    # Détail des signaux qualitatifs et citations vérifiées
+    signals = job.get("signals") or {}
+    signals_html = ""
+    if isinstance(signals, dict) and signals:
+        signal_rows = []
+        for sig_name, sig_label in (
+            ("encadrant_explicite", "Encadrant explicite (+6)"),
+            ("donnees_reelles_explicites", "Données réelles (+3)"),
+            ("suite_explicite", "Débouché / Thèse (+3)"),
+            ("donnees_benchmark_seulement", "Benchmark seul (-5)"),
+        ):
+            s_data = signals.get(sig_name)
+            if isinstance(s_data, dict) and s_data.get("present"):
+                ev = s_data.get("evidence") or s_data.get("citation") or ""
+                tone = "alert" if "benchmark" in sig_name else "positive"
+                signal_rows.append(
+                    f'<li><span class="sc-badge {tone_class(tone)}">{_esc(sig_label)}</span> '
+                    f'<em>« {_esc(ev)} »</em></li>'
+                )
+        if signal_rows:
+            signals_html = (
+                '<div class="sc-section sc-section--sub">Signaux qualitatifs vérifiés</div>'
+                f'<ul class="sc-list">{"".join(signal_rows)}</ul>'
+            )
+
     return (
         '<div class="sc-block"><div class="sc-section">Grille d\'évaluation</div>'
-        f'<div class="sc-badges">{badges}</div>{cap_html}</div>'
+        f'<div class="sc-badges">{badges}</div>{cap_html}{signals_html}</div>'
     )
 
 
@@ -287,6 +379,7 @@ def job_card_html(job: dict[str, Any], keywords: Sequence[str], compact: bool = 
         f"{_hard_cap_banner(job)}"
         f"{_badges_html(job)}"
         f"{_subscores_strip(job)}"
+        f"{_signals_html(job)}"
         f"{_chips_html(technologies)}"
     )
     if not compact:
@@ -802,6 +895,16 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
             value=True,
             help="Prioritaire sur le filtre de statut : ne conserve que les offres au statut NOUVEAU.",
         )
+        hide_excluded = st.toggle(
+            "Masquer les offres exclues",
+            value=True,
+            help="Masque les offres qui ne sont pas des stages ou ne respectent pas les critères minimaux (contrat, durée).",
+        )
+        hide_defense_ethics = st.toggle(
+            "Masquer Défense et Éthique",
+            value=True,
+            help="Masque les offres relevant du secteur Défense/Armement ou nécessitant un examen éthique.",
+        )
 
         with st.expander("Critères avancés"):
             statuses = st.multiselect(
@@ -816,6 +919,18 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
                 options=list(TIER_LABELS.keys()),
                 default=list(TIER_LABELS.keys()),
                 format_func=lambda tier: TIER_LABELS[tier],
+            )
+            structure_types = st.multiselect(
+                "Catégorie d'entreprise",
+                options=list(STRUCTURE_TYPES),
+                default=list(STRUCTURE_TYPES),
+                format_func=lambda s: STRUCTURE_TYPE_LABELS.get(s, s),
+            )
+            flags = st.multiselect(
+                "Signaux d'attention / Flags",
+                options=list(FLAGS),
+                default=[],
+                format_func=lambda f: FLAG_LABELS.get(f, f),
             )
             exclude_esn = st.toggle(
                 "Exclure les ESN",
@@ -865,6 +980,10 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         selected_companies=tuple(selected_companies),
         limit=limit,
         group_by_source=display_mode == DISPLAY_GROUPED,
+        structure_types=tuple(structure_types),
+        flags=tuple(flags),
+        hide_excluded=hide_excluded,
+        hide_defense_ethics=hide_defense_ethics,
     )
 
 

@@ -49,9 +49,10 @@ render_logout_button()
 st.markdown("<h1>Paramètres &amp; Profil</h1>", unsafe_allow_html=True)
 st.caption("Personnalisez votre CV, vos critères de scraping et pilotez la ré-évaluation par Gemini.")
 
-tab_cv, tab_scraping, tab_rerank = st.tabs([
+tab_cv, tab_scraping, tab_v3, tab_rerank = st.tabs([
     "📄 Mon CV & Profil",
     "🔍 Recherches & Scraping",
+    "⚖️ Grille de scoring v3",
     "🔄 Re-notation des offres",
 ])
 
@@ -313,8 +314,164 @@ with tab_scraping:
             st.success("Paramètres enregistrés avec succès dans `config.yaml` !")
 
 
+def save_scoring_v3_settings(
+    min_duration: int,
+    scaleup_floor: int,
+    rd_floor: int,
+    labo_floor: int,
+    min_tech_depth: int,
+    trust_scaleup: bool,
+    encadrant_bonus: int,
+    donnees_bonus: int,
+    suite_bonus: int,
+    bonus_cap: int,
+    benchmark_penalty: int,
+    hard_caps: dict[str, int],
+) -> None:
+    """Met à jour les paramètres de scoring v3 dans config.yaml en préservant les commentaires."""
+    from ruamel.yaml import YAML
+    from src.config import DEFAULT_CONFIG_PATH
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    config_file = Path(DEFAULT_CONFIG_PATH)
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = yaml.load(f)
+        if 'scoring_v3' not in data:
+            data['scoring_v3'] = {}
+        data['scoring_v3']['min_duration_months'] = int(min_duration)
+        if 'floors' not in data['scoring_v3']:
+            data['scoring_v3']['floors'] = {}
+        data['scoring_v3']['floors']['scaleup'] = int(scaleup_floor)
+        data['scoring_v3']['floors']['rd'] = int(rd_floor)
+        data['scoring_v3']['floors']['labo_public'] = int(labo_floor)
+        data['scoring_v3']['floors']['min_technical_depth'] = int(min_tech_depth)
+        data['scoring_v3']['floors']['trust_llm_scaleup'] = bool(trust_scaleup)
+
+        if 'bonuses' not in data['scoring_v3']:
+            data['scoring_v3']['bonuses'] = {}
+        data['scoring_v3']['bonuses']['encadrant'] = int(encadrant_bonus)
+        data['scoring_v3']['bonuses']['donnees'] = int(donnees_bonus)
+        data['scoring_v3']['bonuses']['suite'] = int(suite_bonus)
+        data['scoring_v3']['bonuses']['bonus_cap'] = int(bonus_cap)
+        data['scoring_v3']['bonuses']['benchmark_penalty'] = int(benchmark_penalty)
+
+        if 'hard_caps' not in data['scoring_v3']:
+            data['scoring_v3']['hard_caps'] = {}
+        for k, v in hard_caps.items():
+            data['scoring_v3']['hard_caps'][k] = int(v)
+
+        tmp = config_file.with_suffix(".tmp")
+        with open(tmp, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f)
+        tmp.replace(config_file)
+        load_config.cache_clear()
+    except Exception as e:
+        cfg = load_config()
+        cfg.setdefault('scoring_v3', {})
+        cfg['scoring_v3']['min_duration_months'] = int(min_duration)
+        cfg['scoring_v3'].setdefault('floors', {})
+        cfg['scoring_v3']['floors']['scaleup'] = int(scaleup_floor)
+        cfg['scoring_v3']['floors']['rd'] = int(rd_floor)
+        cfg['scoring_v3']['floors']['labo_public'] = int(labo_floor)
+        cfg['scoring_v3']['floors']['min_technical_depth'] = int(min_tech_depth)
+        cfg['scoring_v3']['floors']['trust_llm_scaleup'] = bool(trust_scaleup)
+        cfg['scoring_v3'].setdefault('bonuses', {})
+        cfg['scoring_v3']['bonuses']['encadrant'] = int(encadrant_bonus)
+        cfg['scoring_v3']['bonuses']['donnees'] = int(donnees_bonus)
+        cfg['scoring_v3']['bonuses']['suite'] = int(suite_bonus)
+        cfg['scoring_v3']['bonuses']['bonus_cap'] = int(bonus_cap)
+        cfg['scoring_v3']['bonuses']['benchmark_penalty'] = int(benchmark_penalty)
+        cfg['scoring_v3'].setdefault('hard_caps', {})
+        for k, v in hard_caps.items():
+            cfg['scoring_v3']['hard_caps'][k] = int(v)
+        save_config(cfg)
+
+
 # =========================================================================== #
-# ONGLET 3 : RE-NOTATION & NOTATION DES OFFRES
+# ONGLET 3 : GRILLE DE SCORING V3
+# =========================================================================== #
+with tab_v3:
+    st.markdown("### Configuration de la grille de notation v3", unsafe_allow_html=True)
+    st.caption("Ajustez les planchers par catégorie, les bonus de signaux et les plafonds éthiques stricts.")
+
+    cfg_v3 = load_config().get("scoring_v3", {})
+    floors_v3 = cfg_v3.get("floors", {})
+    bonuses_v3 = cfg_v3.get("bonuses", {})
+    caps_v3 = cfg_v3.get("hard_caps", {})
+
+    with st.form("form_scoring_v3"):
+        st.markdown("#### 1. Planchers par Catégorie (Floor)")
+        st.caption("Les planchers ne s'appliquent qu'aux offres ayant une profondeur technique ≥ seuil.")
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            val_scaleup_floor = st.number_input("Plancher Scale-up (Next40/FT120) :", min_value=50, max_value=90, value=int(floors_v3.get("scaleup", 70)))
+            val_min_tech = st.number_input("Profondeur technique minimale pour plancher :", min_value=1, max_value=5, value=int(floors_v3.get("min_technical_depth", 3)))
+        with col_f2:
+            val_rd_floor = st.number_input("Plancher Grand Groupe R&D / Labo privé :", min_value=40, max_value=80, value=int(floors_v3.get("rd", 60)))
+            val_trust_scaleup = st.checkbox("Faire confiance au LLM pour le plancher Scale-up hors liste", value=bool(floors_v3.get("trust_llm_scaleup", False)))
+        with col_f3:
+            val_labo_floor = st.number_input("Plancher Laboratoire Public :", min_value=30, max_value=70, value=int(floors_v3.get("labo_public", 50)))
+            val_min_duration = st.number_input("Durée minimale requise (mois) :", min_value=1, max_value=12, value=int(cfg_v3.get("min_duration_months", 4)))
+
+        st.markdown("---")
+        st.markdown("#### 2. Bonus & Pénalités Qualitatifs")
+        st.caption("Les bonus ne s'appliquent que si la citation extraite est rigoureusement vérifiée dans le texte de l'offre.")
+        col_b1, col_b2, col_b3 = st.columns(3)
+        with col_b1:
+            val_encadrant = st.number_input("Bonus Encadrant explicite :", min_value=0, max_value=15, value=int(bonuses_v3.get("encadrant", 6)))
+            val_bonus_cap = st.number_input("Plafond total des bonus cumulés :", min_value=0, max_value=20, value=int(bonuses_v3.get("bonus_cap", 10)))
+        with col_b2:
+            val_donnees = st.number_input("Bonus Données réelles explicites :", min_value=0, max_value=10, value=int(bonuses_v3.get("donnees", 3)))
+            val_penalty = st.number_input("Pénalité Données de benchmark seul :", min_value=0, max_value=15, value=int(bonuses_v3.get("benchmark_penalty", 5)))
+        with col_b3:
+            val_suite = st.number_input("Bonus Débouché / Thèse explicite :", min_value=0, max_value=10, value=int(bonuses_v3.get("suite", 3)))
+
+        st.markdown("---")
+        st.markdown("#### 3. Plafonds Éthiques Stricts (Hard Caps)")
+        st.caption("Ces plafonds s'appliquent APRÈS les planchers et l'emportent toujours (priorité éthique).")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            cap_defense = st.number_input("Plafond Défense / Armement :", min_value=0, max_value=50, value=int(caps_v3.get("DEFENSE", 10)))
+            cap_trading = st.number_input("Plafond Trading / Finance :", min_value=0, max_value=50, value=int(caps_v3.get("TRADING", 25)))
+        with col_c2:
+            cap_bi = st.number_input("Plafond BI / Reporting :", min_value=0, max_value=50, value=int(caps_v3.get("BI_REPORTING", 30)))
+            cap_esn = st.number_input("Plafond ESN en régie :", min_value=0, max_value=50, value=int(caps_v3.get("ESN_REGIE", 35)))
+        with col_c3:
+            cap_supervision = st.number_input("Plafond Encadrement absent :", min_value=0, max_value=50, value=int(caps_v3.get("ENCADREMENT_ABSENT", 35)))
+            cap_shallow = st.number_input("Plafond IA superficielle :", min_value=0, max_value=60, value=int(caps_v3.get("SHALLOW_AI", 40)))
+
+        submit_v3 = st.form_submit_button("Enregistrer les réglages de la grille v3", type="primary", icon=":material/save:")
+
+    if submit_v3:
+        hard_caps_dict = {
+            "DEFENSE": int(cap_defense),
+            "TRADING": int(cap_trading),
+            "BI_REPORTING": int(cap_bi),
+            "ESN_REGIE": int(cap_esn),
+            "ENCADREMENT_ABSENT": int(cap_supervision),
+            "SHALLOW_AI": int(cap_shallow),
+        }
+        save_scoring_v3_settings(
+            min_duration=int(val_min_duration),
+            scaleup_floor=int(val_scaleup_floor),
+            rd_floor=int(val_rd_floor),
+            labo_floor=int(val_labo_floor),
+            min_tech_depth=int(val_min_tech),
+            trust_scaleup=bool(val_trust_scaleup),
+            encadrant_bonus=int(val_encadrant),
+            donnees_bonus=int(val_donnees),
+            suite_bonus=int(val_suite),
+            bonus_cap=int(val_bonus_cap),
+            benchmark_penalty=int(val_penalty),
+            hard_caps=hard_caps_dict,
+        )
+        bump_data_version()
+        st.success("Paramètres de notation v3 sauvegardés avec succès dans `config.yaml` !")
+
+
+# =========================================================================== #
+# ONGLET 4 : RE-NOTATION & NOTATION DES OFFRES
 # =========================================================================== #
 with tab_rerank:
     st.markdown("### Notation &amp; Ré-évaluation des offres par Gemini", unsafe_allow_html=True)
