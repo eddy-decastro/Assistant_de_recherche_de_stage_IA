@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -15,26 +16,50 @@ _model_lock = threading.Lock()
 from src.config import load_config
 from src.constants import TIER_1, TIER_ESN, TIER_NEUTRAL
 
+SHORT_OR_GENERIC_COMPANIES: set[str] = {
+    "nw",
+    "tse",
+    "bump",
+    "positive",
+    "swan",
+    "homa",
+    "iten",
+    "mwm",
+    "dust",
+    "waat",
+    "jimmy",
+    "alma",
+    "malt",
+    "qair",
+    "yubo",
+}
+
+COMPANY_ALIASES: dict[str, list[str]] = {
+    "nw": ["nw", "nw groupe", "nw storm"],
+    "tse": ["tse", "tse energy", "tse energie"],
+    "bump": ["bump", "bump charge"],
+    "positive": ["positive company", "positive technologies"],
+    "swan": ["swan", "swan.io", "swan banking"],
+    "homa": ["homa", "homa games"],
+    "iten": ["iten", "iten batteries"],
+    "mwm": ["mwm", "mwm music"],
+    "dust": ["dust", "dust.tt"],
+    "waat": ["waat", "waat recharge"],
+}
+
+
+def _normalize_name(text: str) -> str:
+    """Normalise un texte : minuscules, suppression des accents et compactage des espaces."""
+    decomposed = unicodedata.normalize("NFKD", str(text or "").strip().casefold())
+    ascii_clean = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", ascii_clean).strip()
+
 
 def _contains_keyword(text: str, keyword: str) -> bool:
-    """Recherche un mot-clé avec frontières de mot (insensible à la casse).
-
-    Les expressions multi-mots sont cherchées en sous-chaîne ; les tokens
-    simples utilisent une frontière de mot pour éviter les faux positifs
-    (ex. ``rag`` dans ``courage``).
-    """
-    kw = keyword.casefold()
-    lowered = text.casefold()
-    # On applique les frontières de mots même pour les expressions multi-mots
-    # (ex: éviter de matcher "deep learning" dans "notdeep learning")
-    # Pour supporter l'alphabet français, on exclut les lettres accentuées communes.
-    # On utilise \w pour inclure les lettres accentuées si le flag re.IGNORECASE ou re.UNICODE est actif (défaut).
-    # Mais (?<!\w) fonctionne bien avec re.UNICODE.
+    """Recherche un mot-clé avec frontières de mot (insensible à la casse et aux accents)."""
+    kw = _normalize_name(keyword)
+    lowered = _normalize_name(text)
     return re.search(rf"(?<![\w]){re.escape(kw)}(?![\w])", lowered) is not None
-
-
-
-
 
 
 class Scorer:
@@ -47,14 +72,10 @@ class Scorer:
             "weights", {"semantic": 0.60, "company": 0.25, "keywords": 0.15}
         )
         self.model_name = scoring.get("model_name", "all-MiniLM-L6-v2")
-        # Fenêtre de contexte (tokens) — ``None`` = fenêtre native du modèle. Mesuré
-        # sur la base réelle (68 fiches, verdicts du juge LLM) : l'écart 128 / 256 est
-        # dans le bruit à n=30 (rho +0,01 contre +0,09, erreur type ~0,19), la fenêtre
-        # native est donc conservée ; le levier reste pilotable si la base grossit.
         self.max_seq_length = scoring.get("max_seq_length")
         self.keywords = scoring.get("excellence_keywords", [])
+        self.penalty_keywords = scoring.get("penalty_keywords", ["n8n", "make.com", "zapier"])
         
-        # Load from config
         self.keywords_saturation = scoring.get("keywords_saturation", 5)
         
         tier_scores = scoring.get("tier_company_score", {})
@@ -94,66 +115,85 @@ class Scorer:
         embedding = self._model.encode(
             text, normalize_embeddings=True, show_progress_bar=False
         )
-        # Les vecteurs sont normalisés : le produit scalaire = similarité cosinus.
         similarity = float(embedding @ self._cv_embedding)
         return max(0.0, min(1.0, similarity)) * 100.0
 
     # ------------------------------------------------------------------ #
     # Sous-scores
     # ------------------------------------------------------------------ #
-    # Nombre de mots-clés « cœur » suffisant pour saturer le sous-score. Une
-    # proportion linéaire sur toute la liste (3/19 = 15,8 %) rendait ce terme quasi
-    # constant, donc non discriminant : il ne distinguait pas une offre
-    # PyTorch+GNN d'une offre sans aucune compétence clé.
-    # (defined via config, read into self.keywords_saturation)
-
     def keywords_score(self, text: str) -> float:
-        """Sous-score mots-clés d'excellence (0-100) à courbe saturante.
-
-        ``min(n / KEYWORDS_SATURATION, 1) × 100`` : détecter 5 mots-clés clés suffit
-        à atteindre 100. Allonger la liste dans config.yaml n'écrase donc plus
-        mécaniquement le score des offres les plus exigeantes.
-
-        Les mots-clés sont cherchés avec frontières de mot pour éviter les faux
-        positifs (ex. « RAG » dans « cou**rag**e » ou « f**rag**ile »).
-        """
+        """Sous-score mots-clés d'excellence avec pénalités no-code (0-100)."""
         if not self.keywords:
             return 0.0
-        lowered = text.casefold()
-        saturation = self.keywords_saturation
         found_count = len([kw for kw in self.keywords if _contains_keyword(text, kw)])
-        return min(found_count / saturation, 1.0) * 100.0
+        base_score = min(found_count / self.keywords_saturation, 1.0) * 100.0
+
+        # Pénalités (n8n, make.com, zapier)
+        penalty_count = sum(1 for kw in self.penalty_keywords if _contains_keyword(text, kw))
+        malus = penalty_count * 15.0
+        return max(0.0, base_score - malus)
 
     def company_score(self, tier: int) -> float:
         return self.tier_company_score.get(tier, self.tier_company_score[TIER_NEUTRAL])
 
     def determine_tier(self, company: str) -> int:
         """Détermine la typologie d'entreprise à partir des listes de config.yaml."""
-        name = (company or "").strip().casefold()
-        if not name:
+        raw_name = (company or "").strip()
+        if not raw_name:
             return TIER_NEUTRAL
 
         companies = self.config.get("companies", {})
-        tier_1 = [str(c).strip().casefold() for c in companies.get("tier_1", [])]
-        esn = [str(c).strip().casefold() for c in companies.get("esn", [])]
-
-        for entry in tier_1:
-            if self._name_matches(name, entry):
-                return TIER_1
-        for entry in esn:
-            if self._name_matches(name, entry):
+        excluded_defense = companies.get("excluded_defense", [])
+        for entry in excluded_defense:
+            if self._name_matches(raw_name, str(entry)):
                 return TIER_ESN
+
+        esn = companies.get("esn", [])
+        for entry in esn:
+            if self._name_matches(raw_name, str(entry)):
+                return TIER_ESN
+
+        dual_use = companies.get("dual_use", [])
+        for entry in dual_use:
+            if self._name_matches(raw_name, str(entry)):
+                return TIER_NEUTRAL
+
+        tier_1 = companies.get("tier_1", [])
+        for entry in tier_1:
+            if self._name_matches(raw_name, str(entry)):
+                return TIER_1
+
+        scaleup = companies.get("scaleup", [])
+        for entry in scaleup:
+            if self._name_matches(raw_name, str(entry)):
+                return TIER_1
+
+        rd_groups = companies.get("rd_groups", [])
+        for entry in rd_groups:
+            if self._name_matches(raw_name, str(entry)):
+                return TIER_1
+
         return TIER_NEUTRAL
 
     @staticmethod
     def _name_matches(name: str, entry: str) -> bool:
-        if not entry:
+        if not entry or not name:
             return False
-        if name == entry:
+        norm_name = _normalize_name(name)
+        norm_entry = _normalize_name(entry)
+        if not norm_name or not norm_entry:
+            return False
+        if norm_name == norm_entry:
             return True
-        # Utilisation de frontières de mot pour éviter les correspondances
-        # partielles ("Atos" dans "Pathos", "Cap" dans "Capgemini").
-        return _contains_keyword(name, entry)
+
+        # Noms courts ou mots génériques : correspondance exacte ou alias stricts
+        if norm_entry in SHORT_OR_GENERIC_COMPANIES:
+            aliases = COMPANY_ALIASES.get(norm_entry, [norm_entry])
+            norm_aliases = [_normalize_name(a) for a in aliases]
+            return norm_name in norm_aliases
+
+        # Cas général : recherche avec frontières de mot
+        return _contains_keyword(norm_name, norm_entry)
 
     # ------------------------------------------------------------------ #
     # Score final
@@ -178,3 +218,4 @@ class Scorer:
         scored["semantic_score"] = round(semantic, 2)
         scored["final_score"] = round(final, 2)
         return scored
+

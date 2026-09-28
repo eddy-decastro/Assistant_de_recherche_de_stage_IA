@@ -133,6 +133,41 @@ scrapers:
   - foundation models
   - nerf
   - gaussian splatting
+scoring_v3:
+  min_duration_months: 4
+  exclusion_contract_keywords:
+  - cdi
+  - cdd
+  - alternance
+  - apprentissage
+  - contrat de professionnalisation
+  - contrat pro
+  - freelance
+  - vie
+  floors:
+    scaleup: 70
+    rd: 60
+    labo_public: 50
+    min_technical_depth: 3
+    trust_llm_scaleup: false
+  bonuses:
+    encadrant_explicite: 6
+    donnees_reelles_explicites: 3
+    suite_explicite: 3
+    bonus_cap: 10
+    benchmark_penalty: 5
+  hard_caps:
+    DEFENSE: 10
+    TRADING: 25
+    BI_REPORTING: 30
+    ESN_REGIE: 35
+    ENCADREMENT_ABSENT: 35
+    SHALLOW_AI: 40
+  verdict_thresholds:
+    excellent: 85
+    good: 70
+    mixed: 50
+
 scoring:
   model_name: all-MiniLM-L6-v2
   max_seq_length: 256
@@ -141,39 +176,6 @@ scoring:
     semantic: 0.6
     company: 0.25
     keywords: 0.15
-  hard_caps:
-  - keywords:
-    - alternance
-    - contrat pro
-    - apprentissage
-    - durée
-    - 5 mois
-    - césure
-    - cesure
-    - cursus
-    max_score: 15
-  - keywords:
-    - reporting
-    - dashboard
-    - dashboards
-    - power bi
-    - qlik
-    - business intelligence
-    - analyst
-    - support
-    - excel
-    - tableau
-    max_score: 20
-  - keywords:
-    - superficiel
-    - superficielle
-    - prompt engineering
-    - wrapper
-    - langchain
-    - sans modélisation
-    - sans modelisation
-    - automatisation
-    max_score: 40
   keywords_saturation: 5
   tier_company_score:
     tier_1: 100.0
@@ -183,6 +185,10 @@ scoring:
     max_tech_chips: 6
     qualified_score: 65.0
     excerpt_length: 280
+  penalty_keywords:
+  - n8n
+  - make.com
+  - zapier
   excellence_keywords:
   - PyTorch
   - TensorFlow
@@ -203,11 +209,217 @@ scoring:
   - SQL
   - PostgreSQL
   - MLOps
+  - uncertainty quantification
+  - quantification d'incertitude
+  - conformal prediction
+  - prédiction conforme
+  - calibration
+  - robustness
+  - robustesse
+  - adversarial
+  - anomaly detection
+  - détection d'anomalies
+  - drift
+  - LLM evaluation
+  - évaluation de modèles
+  - trustworthy AI
+  - IA de confiance
+  - explicabilité
 companies:
-  tier_1:
+  scaleup:
+  # Next40 2026
+  - Alan
+  - Alice & Bob
+  - Alma
+  - AMI Labs
+  - Aqemia
+  - Aura Aero
+  - Back Market
+  - Blablacar
+  - Chapsvision
+  - Contentsquare
+  - Descartes Underwriting
   - Doctolib
+  - EcoVadis
+  - Ekimetrics
+  - Electra
+  - Exotec
+  - Flying Whales
+  - Foodles
+  - H Company
+  - Hublo
+  - Innovafeed
+  - Ledger
+  - Legalplace
+  - Malt
+  - Medadom
+  - Mistral AI
+  - NW
+  - Pasqal
+  - Payfit
+  - Pennylane
+  - Pigment
+  - Qonto
+  - Quobly
+  - Shift Technology
+  - Spendesk
+  - Swile
+  - Tissium
+  - Verkor
+  - Voodoo
+  - Wandercraft
+  # FT120 2026 (complément)
+  - 360Learning
+  - 52 Entertainment
+  - Acheel
+  - Adikteev
+  - Agicap
+  - Agryco
+  - Akeneo
+  - Akur8
+  - Animaj
+  - Bigblue
+  - Bump
+  - Chargemap
+  - ClubFunding
+  - CorWave
+  - Crème de la Crème
+  - Deepki
+  - Elicit Plant
+  - Energy Pool
+  - Exotrail
+  - Fairmat
+  - Flowdesk
+  - FoodFlow
+  - FreelanceRepublik
+  - GitGuardian
+  - Gradium
+  - GravitHy
+  - Greenly
+  - HelloCSE
+  - Homa
+  - HomeExchange
+  - iSupplier
+  - ITEN
+  - Jimmy
+  - La Fourche
+  - Latitude
+  - LeHibou
+  - Libon
+  - Locala
+  - Metron
+  - Mistertemp'
+  - Moon Surgical
+  - MWM
+  - MyLight150
+  - MyUnisoft
+  - Naboo
+  - Ornikar
+  - Ouihelp
+  - Papernest
+  - Partoo
+  - Pixmania
+  - Planity
+  - Positive
+  - Qair
+  - Resilience Care
+  - Scintil Photonics
+  - Sekoia
+  - Seyna
+  - Shares
+  - Shippeo
+  - Shopopop
+  - SparingVision
+  - Spore.Bio
+  - Step Pharma
+  - Stockly
+  - Stoïk
+  - Stych
+  - Superprof
+  - Swan
+  - Sweep
+  - TSE
+  - Unseenlabs
+  - Upsun
+  - Verley
+  - Vestiaire Collective
+  - Voltalis
+  - Waat
+  - Weezevent
+  - Yespark
+  - Yubo
+  - Zeplug
+  # Cibles perso
+  - Owkin
+  - Bioptimus
+  - Gleamer
+  - Therapixel
+  - Nabla
+  - Iktos
+  - Giskard
+  - Hugging Face
+  - Dataiku
+  - LightOn
+  - Photoroom
+  - Dust
+  - Poolside
+  - Kyutai
+  rd_groups:
+  - Dassault Systèmes
+  - EDF R&D
+  - EDF
+  - Air Liquide
+  - Schneider Electric
+  - Michelin
+  - Saint-Gobain
+  - Sanofi
+  - Servier
+  - Orange Innovation
+  - Orange Labs
+  - Naver Labs Europe
+  - Valeo.ai
+  - TotalEnergies OneTech
+  - IRT SystemX
+  excluded_defense:
+  - Helsing
   - Mistral AI
   - Mistral
+  - Dassault Aviation
+  - MBDA
+  - Naval Group
+  - KNDS
+  dual_use:
+  - Thales
+  - Thales Research & Technology
+  - Safran
+  - Safran Tech
+  - Airbus
+  - CEA
+  review_ethics:
+  - Chapsvision
+  - Unseenlabs
+  esn:
+  - Alten
+  - Capgemini
+  - Sopra Steria
+  - Accenture
+  - Atos
+  - Devoteam
+  - Sogeti
+  - Apside
+  - Astek
+  - Amaris
+  - Inetum
+  - Orange Business
+  - CGI
+  - NTT Data
+  - SQLI
+  - Extia
+  - Aubay
+  - Modis
+  - Capgemini Engineering
+  tier_1:
+  - Doctolib
   - Datadog
   - Hugging Face
   - Alan
@@ -236,37 +448,25 @@ companies:
   - Therapanacea
   - Guerbet
   - Inria
-  - CEA
   - CNRS
   - Inserm
   - Institut Curie
   - Institut Pasteur
   - IRT SystemX
   - Valeo.ai
-  - Safran Tech
-  - Thales Research & Technology
   - EDF R&D
+  - EDF
   - TotalEnergies OneTech
-  esn:
-  - Alten
-  - Capgemini
-  - Sopra Steria
-  - Accenture
-  - Atos
-  - Devoteam
-  - Sogeti
-  - Apside
-  - Astek
-  - Amaris
-  - Inetum
-  - Orange Business
-  - CGI
-  - NTT Data
-  - SQLI
-  - Extia
-  - Aubay
-  - Modis
-  - Capgemini Engineering
+  - Dassault Systèmes
+  - Air Liquide
+  - Schneider Electric
+  - Michelin
+  - Saint-Gobain
+  - Sanofi
+  - Servier
+  - Orange Innovation
+  - Orange Labs
+  - Naver Labs Europe
 database:
   path: data/stage_copilot.db
 ranking:
@@ -274,13 +474,15 @@ ranking:
 llm:
   provider: google
   base_url: ''
-  model: gemini-flash-lite-latest
+  model: gemini-3.8-flash
   cover_letter_model: gemini-3-flash-preview
   temperature: 0.0
   timeout_seconds: 60
   tier: free
-  rate_limit_rpm: 14
+  rate_limit_rpm: 15
+  rate_limit_rpd: 1500
   concurrency: 1
+  fallback_provider: null
 candidate:
   name: "Eddy DE CASTRO"
   title: "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action"
