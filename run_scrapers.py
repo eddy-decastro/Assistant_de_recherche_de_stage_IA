@@ -52,7 +52,7 @@ from scrapers.models import (  # noqa: E402
     ScrapeResult,
     ScraperConfig,
 )
-from src.config import load_config  # noqa: E402
+from src.config import load_config, load_cv_text  # noqa: E402
 from src.constants import (  # noqa: E402
     RUN_OK,
     RUN_PARTIAL,
@@ -348,8 +348,7 @@ def _rerank_top(
             except Exception as exc:
                 logger.warning("Erreur lors de l'enrichissement préalable : %s", exc)
 
-    cv_path = Path(config.get("scoring", {}).get("cv_path", "data/cv_eddy.txt"))
-    cv_text = cv_path.read_text(encoding="utf-8") if cv_path.exists() else ""
+    cv_text = load_cv_text(config if isinstance(config, dict) else None)
 
     llm_cfg = config.get("llm", {}) if isinstance(config, dict) else getattr(config, "llm", {})
     tier = str(llm_cfg.get("tier", "free")).casefold()
