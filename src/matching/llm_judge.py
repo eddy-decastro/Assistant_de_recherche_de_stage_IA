@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,14 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 
 from src.config import PROJECT_ROOT, load_config
 from src.constants import (
+    BENCHMARK_PENALTY,
+    CONTRACT_TYPES,
     DEFAULT_SUB_SCORE,
+    FLAGS,
+    HARD_CAP_RULES,
+    MAX_BONUS_TOTAL,
+    SIGNAL_BONUSES,
+    STRUCTURE_TYPES,
     SUB_SCORE_KEYS,
     SUB_SCORE_WEIGHTS,
     VERDICT_EXCELLENT,
@@ -32,8 +41,9 @@ from src.constants import (
     coerce_sub_score,
     first_number,
 )
+from src.matching.scorer import Scorer
 
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -48,14 +58,26 @@ _VERDICT_ALIASES = {
     "HORSSUJET": VERDICT_OFF_TOPIC,
 }
 
-# Plafonds stricts autorisés par la grille de cadrage
-HARD_CAP_RULES: dict[str, int] = {
-    "ALTERNANCE": 15,
-    "NOT_A_PFE": 15,
-    "BI_REPORTING": 30,
-    "FINANCE": 50,
-    "SHALLOW_AI": 40,
-}
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+_PHONE_RE = re.compile(r"(?:(?:\+|00)33|0)\s*[1-9](?:[\s.-]*\d{2}){4}")
+_URL_RE = re.compile(r"https?://(?:www\.)?(?:linkedin\.com|github\.com)[^\s)]+", re.IGNORECASE)
+
+logger = logging.getLogger("src.matching.llm_judge")
+
+
+@dataclass
+class ScoreBreakdown:
+    """Résultat détaillé et déterministe du calcul de score v3."""
+    quality_score: int
+    final_score: int
+    floor_value: int | None
+    floor_reason: str | None
+    cap_applied: str | None
+    cap_value: int | None
+    excluded: bool
+    exclusion_reason: str | None
+    scaleup_suggested: bool
+
 
 def get_system_prompt() -> str:
     prompt_path = PROJECT_ROOT / "data" / "prompt_rerank.txt"
@@ -64,10 +86,8 @@ def get_system_prompt() -> str:
     return "Tu es un évaluateur d'offres de stage."
 
 
-
 def load_env_file(path: str | Path | None = None) -> None:
     """Charge les variables d'un fichier .env ou de st.secrets dans os.environ (sans écraser l'existant)."""
-    # 1. Si exécuté dans Streamlit (Streamlit Community Cloud)
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
@@ -77,7 +97,6 @@ def load_env_file(path: str | Path | None = None) -> None:
     except Exception:
         pass
 
-    # 2. Depuis le fichier .env local
     env_path = Path(path) if path else (PROJECT_ROOT / ".env")
     if not env_path.exists():
         return
@@ -92,153 +111,336 @@ def load_env_file(path: str | Path | None = None) -> None:
             os.environ[key] = value
 
 
-def verdict_from_score(score: float) -> str:
-    """Déduit un verdict (fallback) à partir d'un score 0-100.
-
-    Bandes alignées sur la grille du juge : EXCELLENT ≥ 85, BON ≥ 65, MITIGÉ ≥ 40,
-    HORS_SUJET en deçà.
-    """
-    if score >= 85:
+def verdict_from_score(score: float, config: dict[str, Any] | None = None) -> str:
+    """Déduit un verdict à partir d'un score 0-100 et des seuils config."""
+    cfg = (config or load_config()).get("scoring_v3", {}).get("verdict_thresholds", {})
+    t_exc = float(cfg.get("excellent", 85))
+    t_good = float(cfg.get("good", 70))
+    t_mixed = float(cfg.get("mixed", 50))
+    if score >= t_exc:
         return VERDICT_EXCELLENT
-    if score >= 65:
+    if score >= t_good:
         return VERDICT_GOOD
-    if score >= 40:
+    if score >= t_mixed:
         return VERDICT_MIXED
     return VERDICT_OFF_TOPIC
 
 
-def calculate_score_from_sub_scores(sub_scores: dict[str, int] | None) -> int:
-    """Calcule la note globale 0-100 à partir des 5 sous-scores (échelle 1-5).
-
-    Pondérations :
-    - modeling_depth : 30%
-    - mentorship_team : 25%
-    - engineering_practice : 20%
-    - option_value : 15%
-    - logistics : 10%
-
-    Formule de conversion linéaire :
-    W = sum(poids * sous_score) dans [1.0, 5.0]
-    score = (W - 1.0) / 4.0 * 100.0 (arrondi à l'entier le plus proche dans [0, 100]).
-    """
-    if not sub_scores:
-        return 0
-    weighted_sum = sum(
-        SUB_SCORE_WEIGHTS.get(key, 0.20) * coerce_sub_score(sub_scores.get(key, DEFAULT_SUB_SCORE))
-        for key in SUB_SCORE_KEYS
-    )
-    score = (weighted_sum - 1.0) / 4.0 * 100.0
-    return max(0, min(100, int(round(score))))
+def normalize_text_for_evidence(text: str) -> str:
+    """Normalise un texte : minuscules, sans accents, ponctuation remplacée par espaces."""
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", str(text).casefold())
+    ascii_clean = "".join(c for c in decomposed if not unicodedata.combining(c))
+    cleaned = re.sub(r"[^\w\s]", " ", ascii_clean)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _as_str_list(value: Any) -> list[str]:
-    """Normalise une valeur hétérogène en liste de chaînes non vides."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value if str(item).strip()]
-    return [str(value)]
+_GLOBAL_CITATION_STATS = {"checked": 0, "verified": 0, "rejected": 0}
 
 
-# --- Verrous bloquants (hard caps) ------------------------------------------- #
-# Le prompt instruit le LLM de spécifier hard_cap_triggered ("NONE", "ALTERNANCE", etc.)
-# Le code applique un plafonnement strict et déterministe.
+def verify_citation(citation: str | None, full_text: str, tolerance: float = 0.8) -> bool:
+    """Vérifie si une citation apparaît dans le texte de l'offre (tolérance 80% des mots)."""
+    global _GLOBAL_CITATION_STATS
+    if not citation or not full_text:
+        return False
+    norm_cit = normalize_text_for_evidence(citation)
+    if not norm_cit or norm_cit in ("non precise", "non", "null", "none"):
+        return False
 
-#: Préfixes de négation courants dans les réponses LLM.
-_NEGATION_PREFIXES: tuple[str, ...] = (
-    "aucun ", "aucune ", "pas de ", "pas d'", "non ", "sans ",
-    "no ", "none ", "n/a", "not ", "rien",
-)
+    norm_doc = normalize_text_for_evidence(full_text)
+    _GLOBAL_CITATION_STATS["checked"] += 1
+
+    # 1. Correspondance exacte en sous-chaîne
+    if norm_cit in norm_doc:
+        _GLOBAL_CITATION_STATS["verified"] += 1
+        return True
+
+    words_cit = norm_cit.split()
+    if not words_cit:
+        _GLOBAL_CITATION_STATS["rejected"] += 1
+        return False
+
+    if len(words_cit) <= 2:
+        ok = norm_cit in norm_doc
+        if ok:
+            _GLOBAL_CITATION_STATS["verified"] += 1
+        else:
+            _GLOBAL_CITATION_STATS["rejected"] += 1
+        return ok
+
+    # 2. Fenêtre glissante avec tolérance 80%
+    words_doc = norm_doc.split()
+    doc_len = len(words_doc)
+    cit_len = len(words_cit)
+    required_matches = int(math.ceil(tolerance * cit_len))
+    target_set = set(words_cit)
+    window_size = cit_len + 6
+
+    for i in range(max(1, doc_len - window_size + 1)):
+        window = set(words_doc[i : i + window_size])
+        if len(target_set.intersection(window)) >= required_matches:
+            _GLOBAL_CITATION_STATS["verified"] += 1
+            return True
+
+    _GLOBAL_CITATION_STATS["rejected"] += 1
+    logger.info("Citation non vérifiée : %r", citation)
+    return False
 
 
-def _normalize_hard_cap(value: Any) -> str | None:
-    """Normalise ``hard_cap_triggered`` en chaîne canonique, ou ``None`` si aucun verrou."""
-    text = str(value or "").strip()
-    if not text or text.casefold() in ("null", "none", "aucun", "aucune", "n/a"):
-        return None
-    lowered = text.casefold()
-    if any(lowered.startswith(prefix) for prefix in _NEGATION_PREFIXES):
-        return None
-    upper = text.upper()
-    if upper in HARD_CAP_RULES:
-        return upper
+def is_title_excluded_contract(title: str, exclusion_keywords: list[str]) -> tuple[bool, str | None]:
+    """Exclusion AVANT appel LLM si le titre contient un mot exclu SANS mention de stage."""
+    norm_title = normalize_text_for_evidence(title)
+    if "stage" in norm_title or "intern" in norm_title or "pfe" in norm_title:
+        return False, None
+    for kw in exclusion_keywords:
+        norm_kw = normalize_text_for_evidence(kw)
+        if norm_kw and re.search(rf"(?<![\w]){re.escape(norm_kw)}(?![\w])", norm_title):
+            return True, f"Titre contient '{kw}' sans mention de stage"
+    return False, None
+
+
+def anonymize_cv(cv_text: str) -> str:
+    """Retire les coordonnées personnelles du texte du CV avant transmission au LLM."""
+    if not cv_text:
+        return ""
+    text = _EMAIL_RE.sub("[EMAIL_MASQUÉ]", cv_text)
+    text = _PHONE_RE.sub("[TÉLÉPHONE_MASQUÉ]", text)
+    text = _URL_RE.sub("[PROFIL_MASQUÉ]", text)
     return text
 
 
-def hard_cap_max(reason: str | None) -> int | None:
-    """Plafond associé à un verrou bloquant (``None`` = pas de plafond)."""
-    if not reason:
-        return None
-    upper = reason.strip().upper()
-    if upper in HARD_CAP_RULES:
-        return HARD_CAP_RULES[upper]
-    if upper == "NONE":
-        return None
-    lowered = reason.casefold()
-    for cap_name, max_score in HARD_CAP_RULES.items():
-        if cap_name.lower() in lowered:
-            return max_score
-    config = load_config()
-    hard_caps_list = config.get("scoring", {}).get("hard_caps", [])
-    for cap in hard_caps_list:
-        keywords = cap.get("keywords", [])
-        max_score = cap.get("max_score", 100)
-        for keyword in keywords:
-            if re.search(rf"(?<![\w]){re.escape(keyword.casefold())}(?![\w])", lowered):
-                return max_score
-    return None
+def compute_final_score(
+    parsed: dict[str, Any],
+    job: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> ScoreBreakdown:
+    """Calcule la note finale pure et testable sans effet de bord ni appel réseau."""
+    cfg = config or load_config()
+    scoring_v3 = cfg.get("scoring_v3", {})
+    min_duration = int(scoring_v3.get("min_duration_months", 4))
+    floors_cfg = scoring_v3.get("floors", {})
+    scaleup_floor = int(floors_cfg.get("scaleup", 70))
+    rd_floor = int(floors_cfg.get("rd", 60))
+    labo_public_floor = int(floors_cfg.get("labo_public", 50))
+    min_tech_depth = int(floors_cfg.get("min_technical_depth", 3))
+    trust_llm_scaleup = bool(floors_cfg.get("trust_llm_scaleup", False))
 
+    bonuses_cfg = scoring_v3.get("bonuses", {})
+    bonus_cap = int(bonuses_cfg.get("bonus_cap", MAX_BONUS_TOTAL))
+    benchmark_penalty = int(bonuses_cfg.get("benchmark_penalty", BENCHMARK_PENALTY))
 
-def _key_signature(name: Any) -> str:
-    """Signature insensible à la casse, aux accents et aux séparateurs d'une clé.
+    companies_cfg = cfg.get("companies", {})
+    scaleup_list = companies_cfg.get("scaleup", [])
+    rd_groups_list = companies_cfg.get("rd_groups", [])
+    excluded_defense_list = companies_cfg.get("excluded_defense", [])
 
-    ``"modeling_depth"``, ``"modelingDepth"`` et ``"Modeling Depth"`` produisent la
-    même signature (``modelingdepth``).
-    """
-    decomposed = unicodedata.normalize("NFKD", str(name or "").casefold())
-    ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return re.sub(r"[^a-z0-9]", "", ascii_only)
+    doc_text = f"{job.get('title', '')}\n{job.get('description', '')}"
 
+    # 1. Vérification d'exclusion amont (titre)
+    exclusion_kws = scoring_v3.get("exclusion_contract_keywords", [])
+    title_excluded, title_reason = is_title_excluded_contract(job.get("title", ""), exclusion_kws)
+    if title_excluded:
+        return ScoreBreakdown(
+            quality_score=0,
+            final_score=0,
+            floor_value=None,
+            floor_reason=None,
+            cap_applied=None,
+            cap_value=None,
+            excluded=True,
+            exclusion_reason=title_reason,
+            scaleup_suggested=False,
+        )
 
-#: Correspondance signature -> clé canonique des sous-scores (tolérance de forme).
-_SUB_SCORE_ALIASES: dict[str, str] = {_key_signature(key): key for key in SUB_SCORE_KEYS}
+    # 2. Vérification d'exclusion aval (LLM)
+    contract_type = str(parsed.get("contract_type") or "AUTRE").upper()
+    if contract_type in ("ALTERNANCE", "CDI_CDD"):
+        return ScoreBreakdown(
+            quality_score=0,
+            final_score=0,
+            floor_value=None,
+            floor_reason=None,
+            cap_applied=None,
+            cap_value=None,
+            excluded=True,
+            exclusion_reason=f"Type de contrat incompatible ({contract_type})",
+            scaleup_suggested=False,
+        )
 
+    is_cesure = bool(parsed.get("is_cesure", False))
+    if is_cesure:
+        return ScoreBreakdown(
+            quality_score=0,
+            final_score=0,
+            floor_value=None,
+            floor_reason=None,
+            cap_applied=None,
+            cap_value=None,
+            excluded=True,
+            exclusion_reason="Stage de césure / court hors PFE",
+            scaleup_suggested=False,
+        )
 
-def _normalize_sub_scores(value: Any) -> dict[str, int]:
-    """Normalise ``sub_scores`` en dict complet ``{clé: entier 1-5}``.
+    duration = parsed.get("duration_months")
+    if duration is not None:
+        try:
+            d_val = int(duration)
+            if d_val < min_duration:
+                return ScoreBreakdown(
+                    quality_score=0,
+                    final_score=0,
+                    floor_value=None,
+                    floor_reason=None,
+                    cap_applied=None,
+                    cap_value=None,
+                    excluded=True,
+                    exclusion_reason=f"Durée inférieure au seuil minimal ({d_val} mois < {min_duration} mois)",
+                    scaleup_suggested=False,
+                )
+        except (ValueError, TypeError):
+            pass
 
-    Les clés sont comparées **après normalisation** (casse, accents, séparateurs) :
-    un modèle qui répond ``modelingDepth``, ``modeling depth`` ou
-    ``Modeling-Depth`` est compris, sans perdre l'information. Champ manquant,
-    JSON non-dictionnaire ou valeur inexploitable ⇒ valeur neutre
-    (``DEFAULT_SUB_SCORE``) : l'interface reste stable.
-    """
-    if not isinstance(value, dict):
-        return {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}
-    provided: dict[str, Any] = {}
-    for raw_key, raw_value in value.items():
-        canonical = _SUB_SCORE_ALIASES.get(_key_signature(raw_key))
-        if canonical is not None and canonical not in provided:
-            provided[canonical] = raw_value
-    return {
-        key: coerce_sub_score(provided.get(key, DEFAULT_SUB_SCORE)) for key in SUB_SCORE_KEYS
-    }
+    # 3. Note de qualité
+    sub_scores_raw = parsed.get("sub_scores") or {}
+    sub_scores: dict[str, int] = {}
+    for key in SUB_SCORE_KEYS:
+        val = sub_scores_raw.get(key)
+        sub_scores[key] = coerce_sub_score(val) if val is not None else DEFAULT_SUB_SCORE
 
+    weighted_sum = sum(SUB_SCORE_WEIGHTS[k] * sub_scores[k] for k in SUB_SCORE_KEYS)
+    q_base = (weighted_sum - 1.0) / 4.0 * 100.0
 
-logger = logging.getLogger("src.matching.llm_judge")
+    # Signaux & bonus
+    signals = parsed.get("signals") or {}
+    total_bonus = 0
+    penalty = 0
 
+    for sig_name in ("encadrant_explicite", "donnees_reelles_explicites", "suite_explicite"):
+        sig_data = signals.get(sig_name) or {}
+        if sig_data.get("present"):
+            ev = sig_data.get("evidence")
+            if verify_citation(ev, doc_text):
+                total_bonus += SIGNAL_BONUSES.get(sig_name, 0)
+            else:
+                red_flags = parsed.setdefault("red_flags", [])
+                tag = f"[CITATION_NON_VERIFIEE] {sig_name}"
+                if tag not in red_flags:
+                    red_flags.append(tag)
+
+    total_bonus = min(total_bonus, bonus_cap)
+
+    # Signal négatif données de benchmark seulement
+    bench_data = signals.get("donnees_benchmark_seulement") or {}
+    if bench_data.get("present"):
+        ev = bench_data.get("evidence")
+        if verify_citation(ev, doc_text):
+            penalty += benchmark_penalty
+        else:
+            red_flags = parsed.setdefault("red_flags", [])
+            tag = "[CITATION_NON_VERIFIEE] donnees_benchmark_seulement"
+            if tag not in red_flags:
+                red_flags.append(tag)
+
+    quality = max(0, min(100, int(round(q_base + total_bonus - penalty))))
+
+    # 4. Plancher (Floor)
+    company_name = job.get("company", "")
+    structure_type = str(parsed.get("structure_type") or "INCONNU").upper()
+    rd_nature = bool(parsed.get("rd_nature", False))
+
+    in_scaleup_list = any(Scorer._name_matches(company_name, str(c)) for c in scaleup_list)
+    in_rd_groups = any(Scorer._name_matches(company_name, str(c)) for c in rd_groups_list)
+
+    floor_val: int | None = None
+    floor_reason: str | None = None
+    scaleup_suggested = False
+
+    if structure_type == "SCALEUP_IA" and not in_scaleup_list:
+        scaleup_suggested = True
+
+    # Détermination de l'éligibilité au plancher (par ordre de priorité)
+    if in_scaleup_list and structure_type != "ESN_CONSEIL":
+        floor_val = scaleup_floor
+        floor_reason = f"Plancher scale-up {scaleup_floor}"
+    elif (
+        in_rd_groups
+        or structure_type in ("GRAND_GROUPE_RD", "LABO_PRIVE")
+        or (rd_nature and structure_type not in ("LABO_PUBLIC", "ESN_CONSEIL", "STARTUP_PETITE"))
+    ):
+        floor_val = rd_floor
+        floor_reason = f"Plancher grand groupe R&D / labo privé {rd_floor}"
+    elif structure_type == "LABO_PUBLIC":
+        floor_val = labo_public_floor
+        floor_reason = f"Plancher labo public {labo_public_floor}"
+    elif scaleup_suggested and trust_llm_scaleup:
+        floor_val = scaleup_floor
+        floor_reason = f"Plancher scale-up LLM {scaleup_floor}"
+
+    # Le plancher ne s'applique que si technical_depth >= min_tech_depth
+    tech_depth = sub_scores.get("technical_depth", DEFAULT_SUB_SCORE)
+    applied_floor: int | None = None
+    if floor_val is not None:
+        if tech_depth >= min_tech_depth:
+            applied_floor = floor_val
+        else:
+            floor_reason = f"Plancher non accordé (profondeur technique {tech_depth} < {min_tech_depth})"
+            floor_val = None
+
+    score_after_floor = max(quality, applied_floor) if applied_floor is not None else quality
+
+    # 5. Plafonds (Caps)
+    cap_applied: str | None = None
+    cap_val: int | None = None
+
+    # Plafond DEFENSE automatique par liste
+    in_excluded_defense = any(Scorer._name_matches(company_name, str(c)) for c in excluded_defense_list)
+    if in_excluded_defense:
+        cap_applied = "DEFENSE"
+        cap_val = HARD_CAP_RULES.get("DEFENSE", 10)
+
+    # Plafond déclenché par le LLM
+    llm_cap_raw = str(parsed.get("hard_cap_triggered") or "").strip().upper()
+    if llm_cap_raw in HARD_CAP_RULES and llm_cap_raw != "NONE":
+        evidence = parsed.get("hard_cap_evidence")
+        # Les plafonds DEFENSE / TRADING dus à une liste n'ont pas besoin de citation
+        needs_citation = not (llm_cap_raw == "DEFENSE" and in_excluded_defense)
+        cit_ok = verify_citation(evidence, doc_text) if needs_citation else True
+
+        if cit_ok:
+            candidate_val = HARD_CAP_RULES[llm_cap_raw]
+            if cap_val is None or candidate_val < cap_val:
+                cap_applied = llm_cap_raw
+                cap_val = candidate_val
+        else:
+            red_flags = parsed.setdefault("red_flags", [])
+            tag = f"[CITATION_NON_VERIFIEE] {llm_cap_raw}"
+            if tag not in red_flags:
+                red_flags.append(tag)
+
+    final_score = min(score_after_floor, cap_val) if cap_val is not None else score_after_floor
+
+    return ScoreBreakdown(
+        quality_score=quality,
+        final_score=final_score,
+        floor_value=floor_val,
+        floor_reason=floor_reason,
+        cap_applied=cap_applied,
+        cap_value=cap_val,
+        excluded=False,
+        exclusion_reason=None,
+        scaleup_suggested=scaleup_suggested,
+    )
 
 class GeminiRateLimiter:
     """Régulateur de débit global thread-safe pour l'API Gemini.
 
-    - Respecte le plafond RPM (ex: 14 requêtes/minute en Free Tier).
+    - Respecte le plafond RPM (ex: 15 requêtes/minute en Free Tier).
     - En cas d'erreur 429, bloque TOUS les threads pour la durée exacte
       demandée par l'API (retry-after jusqu'à 65s).
     """
 
-    def __init__(self, rpm: int = 14) -> None:
+    def __init__(self, rpm: int = 15) -> None:
         self.rpm = max(1, rpm)
         self.interval = 60.0 / self.rpm
         self._lock = threading.Lock()
@@ -282,16 +484,19 @@ _GLOBAL_RATE_LIMITER: GeminiRateLimiter | None = None
 _LIMITER_LOCK = threading.Lock()
 
 
-def get_global_rate_limiter(rpm: int = 14) -> GeminiRateLimiter:
+def get_global_rate_limiter(rpm: int = 15) -> GeminiRateLimiter:
     global _GLOBAL_RATE_LIMITER
     with _LIMITER_LOCK:
         if _GLOBAL_RATE_LIMITER is None or _GLOBAL_RATE_LIMITER.rpm != rpm:
             _GLOBAL_RATE_LIMITER = GeminiRateLimiter(rpm)
         return _GLOBAL_RATE_LIMITER
+
+
 def _is_api_retryable(exc: BaseException) -> bool:
     if isinstance(exc, APIError):
         return exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()
     return False
+
 
 def _log_retry(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception()
@@ -302,8 +507,30 @@ def _log_retry(retry_state: RetryCallState) -> None:
     )
 
 
+def _as_str_list(value: Any) -> list[str]:
+    """Normalise une valeur hétérogène en liste de chaînes non vides."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _normalize_sub_scores(value: Any) -> dict[str, int]:
+    """Normalise les 4 sous-scores v3."""
+    if not isinstance(value, dict):
+        return {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}
+    result = {}
+    for key in SUB_SCORE_KEYS:
+        val = value.get(key)
+        result[key] = coerce_sub_score(val) if val is not None else DEFAULT_SUB_SCORE
+    return result
+
+
 class LLMJudge:
-    """Étape 2 : ré-évaluation fine d'une offre via l'API Gemini."""
+    """Étape 2 : ré-évaluation fine d'une offre via l'API Gemini (Grille v3)."""
 
     def __init__(
         self,
@@ -317,7 +544,7 @@ class LLMJudge:
         self.model = str(llm_cfg.get("model", DEFAULT_MODEL))
         self.temperature = float(llm_cfg.get("temperature", 0.0))
         self.tier = str(llm_cfg.get("tier", "free")).casefold()
-        default_rpm = 14 if self.tier == "free" else 120
+        default_rpm = 15 if self.tier == "free" else 120
         self.rpm = int(llm_cfg.get("rate_limit_rpm", default_rpm))
         self.rate_limiter = rate_limiter or get_global_rate_limiter(self.rpm)
         self._client = client  # injectable pour mock
@@ -338,16 +565,21 @@ class LLMJudge:
     # ------------------------------------------------------------------ #
     def _build_content(self, job: dict[str, Any], cv_text: str | None = None) -> str:
         description = (job.get("description") or "").strip()[:12000]
+        raw_tier = job.get("company_tier")
+        tier_label_map = {1: "tier_1", 2: "neutre", 3: "esn"}
+        tier_label = tier_label_map.get(raw_tier, "neutre" if raw_tier != 1 else "tier_1")
+        
         user_content = (
             "<offre>\n"
             f"Titre : {job.get('title', '')}\n"
-            f"Entreprise : {job.get('company', '')} (typologie tier {job.get('company_tier', '?')})\n"
+            f"Entreprise : {job.get('company', '')} (typologie tier {tier_label})\n"
             f"Localisation : {job.get('location', '')}\n\n"
             f"Description :\n{description or '(description indisponible)'}\n"
             "</offre>"
         )
         if cv_text:
-            user_content += f"\n\n<cv_candidat>\n{cv_text[:6000]}\n</cv_candidat>"
+            anonymized = anonymize_cv(cv_text)
+            user_content += f"\n\n<cv_candidat>\n{anonymized[:6000]}\n</cv_candidat>"
         return user_content
 
     # ------------------------------------------------------------------ #
@@ -378,10 +610,10 @@ class LLMJudge:
         return response.text
 
     # ------------------------------------------------------------------ #
-    # Parsing / normalisation
+    # Parsing / normalisation v3
     # ------------------------------------------------------------------ #
     def _parse_response(self, content: str | None, job: dict[str, Any]) -> dict[str, Any]:
-        """Parse la réponse JSON du LLM en structure normalisée et fiable."""
+        """Parse la réponse JSON du LLM en structure normalisée v3 avec compute_final_score."""
         cleaned = _CODE_FENCE_RE.sub("", content or "").strip()
         try:
             data = json.loads(cleaned)
@@ -391,79 +623,185 @@ class LLMJudge:
             return self._fallback(job, reason="Réponse LLM invalide (JSON non-objet).")
 
         info_level = str(data.get("information_level") or "").strip().upper()
+        if info_level not in ("COMPLET", "PARTIEL", "INSUFFISANT"):
+            info_level = "PARTIEL" if data.get("sub_scores") else "INSUFFISANT"
+
+        contract_type = str(data.get("contract_type") or "AUTRE").strip().upper()
+        if contract_type not in CONTRACT_TYPES:
+            contract_type = "AUTRE"
+
+        duration_months = data.get("duration_months")
+        if duration_months is not None:
+            try:
+                duration_months = int(duration_months)
+            except (ValueError, TypeError):
+                duration_months = None
+
+        is_cesure = bool(data.get("is_cesure", False))
+
+        structure_type = str(data.get("structure_type") or "INCONNU").strip().upper()
+        if structure_type not in STRUCTURE_TYPES:
+            structure_type = "INCONNU"
+
+        cat_conf = str(data.get("category_confidence") or "MOYENNE").strip().upper()
+        if cat_conf not in ("HAUTE", "MOYENNE", "FAIBLE"):
+            cat_conf = "MOYENNE"
+
+        rd_nature = bool(data.get("rd_nature", False))
+
+        # Sous-scores
         raw_sub = data.get("sub_scores")
         if info_level == "INSUFFISANT" or raw_sub is None:
-            sub_scores = None
-            score = 0
+            sub_scores = {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS}
         else:
             sub_scores = _normalize_sub_scores(raw_sub)
-            score = calculate_score_from_sub_scores(sub_scores)
 
-        # Si le score calculé est 0 et qu'un rerank_score explicite était fourni dans une réponse d'ancien format
-        if score == 0 and data.get("rerank_score") is not None and info_level != "INSUFFISANT":
-            score = self._coerce_score(data.get("rerank_score"), job)
+        # Signaux
+        raw_signals = data.get("signals")
+        signals = {}
+        if isinstance(raw_signals, dict):
+            for sig_key in ("encadrant_explicite", "donnees_reelles_explicites", "suite_explicite", "donnees_benchmark_seulement"):
+                sig_item = raw_signals.get(sig_key)
+                if isinstance(sig_item, dict):
+                    signals[sig_key] = {
+                        "present": bool(sig_item.get("present", False)),
+                        "evidence": str(sig_item.get("evidence") or "").strip(),
+                    }
+                else:
+                    signals[sig_key] = {"present": False, "evidence": "non précisé"}
+        else:
+            signals = {
+                sig_key: {"present": False, "evidence": "non précisé"}
+                for sig_key in ("encadrant_explicite", "donnees_reelles_explicites", "suite_explicite", "donnees_benchmark_seulement")
+            }
 
-        hard_cap = _normalize_hard_cap(data.get("hard_cap_triggered"))
-        cap = hard_cap_max(hard_cap)
-        if cap is not None:
-            score = min(score, cap)
+        # Company note
+        raw_note = data.get("company_note")
+        if isinstance(raw_note, dict):
+            company_note = {
+                "known": bool(raw_note.get("known", False)),
+                "note": str(raw_note.get("note") or "").strip()[:200],
+                "confidence": str(raw_note.get("confidence") or "MOYENNE").upper(),
+            }
+        else:
+            company_note = {"known": False, "note": "", "confidence": "FAIBLE"}
 
-        verdict = verdict_from_score(score)
+        # Flags autorisés
+        raw_flags = _as_str_list(data.get("flags"))
+        valid_flags = [f.upper() for f in raw_flags if f.upper() in FLAGS]
+
+        raw_red_flags = _as_str_list(data.get("red_flags"))
+        red_flags_list = list(raw_red_flags)
+
+        parsed_struct = {
+            "information_level": info_level,
+            "contract_type": contract_type,
+            "contract_evidence": data.get("contract_evidence"),
+            "duration_months": duration_months,
+            "is_cesure": is_cesure,
+            "structure_type": structure_type,
+            "category_confidence": cat_conf,
+            "rd_nature": rd_nature,
+            "sub_scores": sub_scores,
+            "signals": signals,
+            "company_note": company_note,
+            "hard_cap_triggered": data.get("hard_cap_triggered"),
+            "hard_cap_evidence": data.get("hard_cap_evidence"),
+            "flags": valid_flags,
+            "red_flags": red_flags_list,
+            "match_reasons": _as_str_list(data.get("match_reasons")),
+            "tech_stack": _as_str_list(data.get("tech_stack_detected")),
+            "questions_entretien": _as_str_list(data.get("questions_entretien")),
+            "evidence": data.get("evidence") if isinstance(data.get("evidence"), dict) else {},
+        }
+
+        # Calcul déterministe via compute_final_score
+        breakdown = compute_final_score(parsed_struct, job, self.config)
+
+        if breakdown.excluded:
+            verdict = "EXCLU"
+            score = 0.0
+        elif info_level == "INSUFFISANT":
+            verdict = VERDICT_OFF_TOPIC
+            score = float(breakdown.final_score)
+        else:
+            verdict = verdict_from_score(breakdown.final_score, self.config)
+            score = float(breakdown.final_score)
 
         reasoning_text = str(data.get("reasoning") or "").strip()
-        questions = _as_str_list(data.get("questions_entretien"))
+        questions = parsed_struct["questions_entretien"]
         if questions:
             q_formatted = "\n\n💡 Questions clés pour l'entretien :\n" + "\n".join(f"• {q}" for q in questions)
             combined_reasoning = (reasoning_text + q_formatted).strip()
         else:
             combined_reasoning = reasoning_text
 
-        raw_flags = _as_str_list(data.get("flags"))
-        raw_red_flags = _as_str_list(data.get("red_flags"))
-        flags_formatted = [f"[{f}]" for f in raw_flags if f and f != "NONE"]
+        # Formatage des red flags avec flags
+        flags_formatted = [f"[{f}]" for f in valid_flags if f and f != "NONE"]
         combined_red_flags = flags_formatted + [
-            r for r in raw_red_flags if not any(r.startswith(f) for f in flags_formatted)
+            r for r in parsed_struct["red_flags"] if not any(r.startswith(f) for f in flags_formatted)
         ]
 
         return {
             "rerank_score": score,
+            "quality_score": breakdown.quality_score,
+            "final_score": breakdown.final_score,
+            "floor_value": breakdown.floor_value,
+            "floor_reason": breakdown.floor_reason,
+            "cap_applied": breakdown.cap_applied,
+            "cap_value": breakdown.cap_value,
+            "excluded": breakdown.excluded,
+            "exclusion_reason": breakdown.exclusion_reason,
+            "scaleup_suggested": breakdown.scaleup_suggested,
+            "contract_type": contract_type,
+            "structure_type": structure_type,
+            "category_confidence": cat_conf,
+            "rd_nature": rd_nature,
+            "duration_months": duration_months,
+            "is_cesure": is_cesure,
+            "signals": signals,
+            "company_note": company_note,
+            "grading_version": "v3",
             "verdict": verdict,
-            "sub_scores": sub_scores if sub_scores is not None else {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS},
-            "hard_cap_triggered": hard_cap,
+            "sub_scores": sub_scores,
+            "hard_cap_triggered": breakdown.cap_applied,
             "hard_cap_evidence": data.get("hard_cap_evidence"),
             "reasoning": combined_reasoning,
-            "flags": raw_flags,
-            "match_reasons": _as_str_list(data.get("match_reasons")),
+            "flags": valid_flags,
+            "match_reasons": parsed_struct["match_reasons"],
             "red_flags": combined_red_flags,
-            "tech_stack": _as_str_list(data.get("tech_stack_detected")),
+            "tech_stack": parsed_struct["tech_stack"],
             "questions_entretien": questions,
-            "evidence": data.get("evidence") if isinstance(data.get("evidence"), dict) else {},
-            "information_level": info_level or None,
+            "evidence": parsed_struct["evidence"],
+            "information_level": info_level,
         }
-
-    @staticmethod
-    def _coerce_score(value: Any, job: dict[str, Any]) -> int:
-        """Convertit une valeur en entier borné 0-100, sinon retombe sur final_score."""
-        number = first_number(value)
-        if number is None:
-            number = first_number(job.get("final_score"))
-        if number is None:
-            return 0
-        return max(0, min(100, int(round(number))))
 
     def _fallback(
         self, job: dict[str, Any], reason: str = "", is_api_error: bool = False
     ) -> dict[str, Any]:
-        """Fallback défensif : réutilise le score initial ou signale l'erreur API.
-
-        Si is_api_error est True (ex: quota 429 ou panne réseau), rerank_score est None
-        afin de ne pas corrompre l'offre avec une fausse note 0.0 et de permettre
-        sa réévaluation future.
-        """
-        score = None if is_api_error else self._coerce_score(job.get("final_score"), job)
-        verdict = None if is_api_error else verdict_from_score(score or 0.0)
+        """Fallback défensif : réutilise le score initial ou signale l'erreur API."""
+        score = None if is_api_error else 0.0
+        verdict = None if is_api_error else VERDICT_OFF_TOPIC
         return {
             "rerank_score": score,
+            "quality_score": 0,
+            "final_score": score,
+            "floor_value": None,
+            "floor_reason": None,
+            "cap_applied": None,
+            "cap_value": None,
+            "excluded": False,
+            "exclusion_reason": None,
+            "scaleup_suggested": False,
+            "contract_type": "AUTRE",
+            "structure_type": "INCONNU",
+            "category_confidence": "FAIBLE",
+            "rd_nature": False,
+            "duration_months": None,
+            "is_cesure": False,
+            "signals": {},
+            "company_note": {"known": False, "note": "", "confidence": "FAIBLE"},
+            "grading_version": "v3",
             "verdict": verdict,
             "sub_scores": {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS} if not is_api_error else None,
             "hard_cap_triggered": None,
@@ -483,7 +821,45 @@ class LLMJudge:
     # API publique
     # ------------------------------------------------------------------ #
     def judge(self, job: dict[str, Any], cv_text: str | None = None) -> dict[str, Any]:
-        """Évalue une offre. Ne lève JAMAIS d'exception (fallback garanti)."""
+        """Évalue une offre avec exclusion amont sans appel LLM. Ne lève JAMAIS d'exception."""
+        # 1. Vérification d'exclusion amont par le titre (économise le quota)
+        exclusion_kws = self.config.get("scoring_v3", {}).get("exclusion_contract_keywords", [])
+        title_excluded, title_reason = is_title_excluded_contract(job.get("title", ""), exclusion_kws)
+        if title_excluded:
+            return {
+                "rerank_score": 0.0,
+                "quality_score": 0,
+                "final_score": 0,
+                "floor_value": None,
+                "floor_reason": None,
+                "cap_applied": None,
+                "cap_value": None,
+                "excluded": True,
+                "exclusion_reason": title_reason,
+                "scaleup_suggested": False,
+                "contract_type": "AUTRE",
+                "structure_type": "INCONNU",
+                "category_confidence": "HAUTE",
+                "rd_nature": False,
+                "duration_months": None,
+                "is_cesure": False,
+                "signals": {},
+                "company_note": {"known": False, "note": "", "confidence": "FAIBLE"},
+                "grading_version": "v3",
+                "verdict": "EXCLU",
+                "sub_scores": {key: DEFAULT_SUB_SCORE for key in SUB_SCORE_KEYS},
+                "hard_cap_triggered": None,
+                "hard_cap_evidence": None,
+                "reasoning": f"Offre exclue avant appel LLM : {title_reason}.",
+                "flags": [],
+                "match_reasons": [],
+                "red_flags": [f"[EXCLU] {title_reason}"],
+                "tech_stack": [],
+                "questions_entretien": [],
+                "evidence": {},
+                "information_level": "COMPLET",
+            }
+
         if not self.available:
             return self._fallback(
                 job, reason="GEMINI_API_KEY absente — analyse LLM ignorée.", is_api_error=True
@@ -499,3 +875,4 @@ class LLMJudge:
             return self._fallback(
                 job, reason=f"Réponse API Gemini inattendue : {exc}.", is_api_error=True
             )
+
