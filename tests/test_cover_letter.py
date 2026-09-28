@@ -211,5 +211,42 @@ def test_generator_gemini_fallback_on_deepseek_error(monkeypatch: pytest.MonkeyP
     assert generator.last_source == "gemini"
 
 
+def test_cover_letter_v3_adaptations() -> None:
+    """Vérifie l'adaptation du ton par structure_type et la détection du signal suite_explicite."""
+    generator = CoverLetterGenerator(api_key="valid-key", deepseek_api_key="")
+
+    # 1. Labo public avec suite explicite
+    job_labo = {
+        "title": "Stage R&D Modèles de Diffusion",
+        "company": "Inria",
+        "structure_type": "LABO_PUBLIC",
+        "signals": {
+            "suite_explicite": {"present": True, "evidence": "Possibilité de thèse"}
+        },
+    }
+    prompt = generator._build_user_prompt(job_labo, "CV mock")
+    assert "ORIENTATION DU TON (Laboratoire public de recherche)" in prompt
+    assert "PERSPECTIVE DE SUITE / THÈSE" in prompt
+
+    # Lettre algorithmique correspondante
+    letter_labo = generate_algorithmic_cover_letter(job_labo)
+    assert "laboratoire" in letter_labo.lower()
+    assert "thèse" in letter_labo.lower()
+
+    # 2. Scale-up IA sans suite
+    job_scaleup = {
+        "title": "Stage Machine Learning Engineer",
+        "company": "Mistral AI",
+        "structure_type": "SCALEUP_IA",
+        "signals": {},
+    }
+    prompt_scaleup = generator._build_user_prompt(job_scaleup, "CV mock")
+    assert "ORIENTATION DU TON (Scale-up IA de pointe)" in prompt_scaleup
+    assert "PERSPECTIVE DE SUITE / THÈSE" not in prompt_scaleup
+
+    letter_scaleup = generate_algorithmic_cover_letter(job_scaleup)
+    assert "roadmap technique" in letter_scaleup or "produits" in letter_scaleup
+
+
 
 
