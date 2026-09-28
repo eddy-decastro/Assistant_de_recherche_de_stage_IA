@@ -278,3 +278,84 @@ def test_openai_compatible_provider_structure() -> None:
     assert provider.model == "llama-3.3-70b-versatile"
     assert provider.base_url == "https://api.groq.com/openai/v1"
 
+
+def test_sliding_window_citation_verification() -> None:
+    """Vérifie la fenêtre glissante, la tolérance de 80% et l'insensibilité casse/accents."""
+    doc = (
+        "Dans le cadre de ce stage, vous travaillerez au sein d'une équipe de 5 chercheurs seniors "
+        "spécialisés en Vision 3D et Apprentissage profond. L'environnement repose sur PyTorch et Slurm."
+    )
+    # 1. Correspondance exacte
+    assert verify_citation("équipe de 5 chercheurs seniors", doc) is True
+    # 2. Insensibilité casse et accents
+    assert verify_citation("ÉQUIPE DE 5 CHERCHEURS SENIORS", doc) is True
+    assert verify_citation("apprentissage profond", doc) is True
+    # 3. Tolérance 80% : 5 mots dont 1 absent/différent (4/5 = 80%)
+    assert verify_citation("équipe de cinq chercheurs seniors", doc) is True
+    # 4. Citation absente
+    assert verify_citation("direction générale des finances publiques", doc) is False
+    # 5. Citation vide
+    assert verify_citation("", doc) is False
+
+
+def test_trust_llm_scaleup_option() -> None:
+    """Vérifie le comportement de l'option trust_llm_scaleup pour une entreprise hors liste."""
+    job = {"title": "Stage ML", "company": "StartUpInconnue123", "description": "Modélisation LLM"}
+    parsed = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 4, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    # Cas par défaut : trust_llm_scaleup = False
+    cfg_default = load_config()
+    cfg_default.setdefault("scoring_v3", {}).setdefault("floors", {})["trust_llm_scaleup"] = False
+    b_default = compute_final_score(parsed, job, config=cfg_default)
+    assert b_default.scaleup_suggested is True
+    assert b_default.floor_value is None  # Aucun plancher 70 par défaut
+
+    # Cas avec trust_llm_scaleup = True
+    cfg_trusted = load_config()
+    cfg_trusted.setdefault("scoring_v3", {}).setdefault("floors", {})["trust_llm_scaleup"] = True
+    b_trusted = compute_final_score(parsed, job, config=cfg_trusted)
+    assert b_trusted.scaleup_suggested is True
+    assert b_trusted.floor_value == 70  # Plancher 70 accordé car option activée
+    assert b_trusted.final_score == 70
+
+
+def test_citation_failure_adds_red_flag_without_penalty() -> None:
+    """Une citation échouée ajoute un tag dans red_flags sans pénaliser la note de qualité."""
+    doc = "Stage de recherche en modélisation PyTorch."
+    job = {"title": "Stage ML", "company": "PME", "description": doc}
+    parsed = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "signals": {
+            "encadrant_explicite": {"present": True, "evidence": "Citation imaginaire non présente dans le doc"},
+        },
+        "red_flags": [],
+    }
+    b = compute_final_score(parsed, job)
+    # Qualité neutre 50 préservée (pas de pénalité négative)
+    assert b.quality_score == 50
+    # Tag ajouté dans red_flags
+    assert any("[CITATION_NON_VERIFIEE] encadrant_explicite" in rf for rf in parsed.get("red_flags", []))
+
+
+def test_short_company_name_matching_boundaries() -> None:
+    """Vérifie que les noms d'entreprises courts (NW, TSE, Bump, Swan) ne créent pas de faux positifs."""
+    from src.matching.scorer import _name_matches
+
+    # Vrais positifs avec mot entier ou alias
+    assert _name_matches("NW Groupe", "NW") is True
+    assert _name_matches("NW", "NW") is True
+    assert _name_matches("TSE Energy", "TSE") is True
+    assert _name_matches("Bump", "Bump") is True
+    assert _name_matches("Swan Banking", "Swan") is True
+
+    # Faux positifs (sous-chaînes dans des mots plus longs)
+    assert _name_matches("Downwards Tech", "NW") is False
+    assert _name_matches("Mouche Tsetse Lab", "TSE") is False
+    assert _name_matches("Bumping along", "Bump") is False
+    assert _name_matches("Swans Lake", "Swan") is False
+
+

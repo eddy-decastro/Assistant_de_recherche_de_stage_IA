@@ -219,3 +219,6 @@ class Scorer:
         scored["final_score"] = round(final, 2)
         return scored
 
+
+_name_matches = Scorer._name_matches
+
