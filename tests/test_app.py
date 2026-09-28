@@ -402,7 +402,7 @@ def test_grille_sous_scores() -> None:
     assert "📐 Modélisation : <b>5/5</b>" in markup, markup
     assert "👥 Équipe : <b>4/5</b>" in markup
     assert "🚀 Carrière : <b>4/5</b>" in markup
-    assert "📅 PFE : <b>5/5</b>" in markup
+    assert "📅 Calendrier PFE : <b>5/5</b>" in markup
     assert markup.index("sc-subscore-strip") < markup.index("<details"), (
         "Les mini-indicateurs doivent précéder l'accordéon (visibles d'emblée)."
     )
