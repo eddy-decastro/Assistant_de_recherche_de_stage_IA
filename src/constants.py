@@ -78,46 +78,56 @@ VERDICT_COLORS = {
 # --- Sous-scores du juge LLM (grille d'évaluation qualitative, échelle 1-5) ---
 # Les cinq dimensions de la nouvelle grille calibrée :
 SUB_SCORE_KEYS = (
-    "modeling_depth",
-    "mentorship_team",
-    "engineering_practice",
-    "option_value",
+    "supervision",
+    "technical_depth",
+    "real_impact",
+    "structure_fit",
+    "next_step",
     "logistics",
 )
 
 # Coefficients de pondération du prompt (somme = 1.0)
 SUB_SCORE_WEIGHTS = {
-    "modeling_depth": 0.30,
-    "mentorship_team": 0.25,
-    "engineering_practice": 0.20,
-    "option_value": 0.15,
-    "logistics": 0.10,
+    "supervision": 0.15,
+    "technical_depth": 0.30,
+    "real_impact": 0.25,
+    "structure_fit": 0.15,
+    "next_step": 0.10,
+    "logistics": 0.05,
 }
 
 # Valeur neutre par défaut pour une information absente (score 2 selon la règle du prompt)
 DEFAULT_SUB_SCORE = 2
 
 SUB_SCORE_LABELS = {
+    "supervision": "Encadrement / Mentorship",
+    "technical_depth": "Profondeur Technique",
+    "real_impact": "Impact du Livrable",
+    "structure_fit": "Adéquation Structure",
+    "next_step": "Débouchés / Thèse",
+    "logistics": "Logistique / PFE",
+    # Rétro-compatibilité
     "modeling_depth": "Modélisation",
     "mentorship_team": "Encadrement",
     "engineering_practice": "Pratiques d'ingénierie",
     "option_value": "Thèse / CDI",
-    "logistics": "Logistique / PFE",
-    # Rétro-compatibilité pour offres antérieures :
     "career_leverage": "Carrière",
     "pfe_compatibility": "Calendrier PFE",
 }
 
 # Libellés compacts pour la ligne de mini-indicateurs affichée sur la carte
 SUB_SCORE_SHORT_LABELS = {
+    "supervision": "Équipe",
+    "technical_depth": "Technique",
+    "real_impact": "Impact",
+    "structure_fit": "Structure",
+    "next_step": "Débouché",
+    "logistics": "Logistique",
+    # Rétro
     "modeling_depth": "Modélisation",
     "mentorship_team": "Équipe",
     "engineering_practice": "Ingénierie",
-    "option_value": "Thèse / CDI",
-    "logistics": "Logistique",
-    # Rétro-compatibilité :
-    "career_leverage": "Carrière",
-    "pfe_compatibility": "PFE",
+    "option_value": "Tremplin",
 }
 
 

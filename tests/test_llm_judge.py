@@ -23,21 +23,23 @@ from src.constants import (
 
 def test_score_calculation_weights() -> None:
     # 1. Bornes extrêmes
-    all_5 = {"modeling_depth": 5, "mentorship_team": 5, "engineering_practice": 5, "option_value": 5, "logistics": 5}
+    all_5 = {"supervision": 5, "technical_depth": 5, "real_impact": 5, "structure_fit": 5, "next_step": 5,
+        "logistics": 5}
     assert calculate_score_from_sub_scores(all_5) == 100
 
-    all_1 = {"modeling_depth": 1, "mentorship_team": 1, "engineering_practice": 1, "option_value": 1, "logistics": 1}
+    all_1 = {"supervision": 1, "technical_depth": 1, "real_impact": 1, "structure_fit": 1, "next_step": 1, "logistics": 1}
     assert calculate_score_from_sub_scores(all_1) == 0
 
-    all_3 = {"modeling_depth": 3, "mentorship_team": 3, "engineering_practice": 3, "option_value": 3, "logistics": 3}
+    all_3 = {"supervision": 3, "technical_depth": 3, "real_impact": 3, "structure_fit": 3, "next_step": 3, "logistics": 3}
     assert calculate_score_from_sub_scores(all_3) == 50
 
     # Calibration example: PINNs research lab (5, 5, 3, 5, 5)
     # W = 0.30*5 + 0.25*5 + 0.20*3 + 0.15*5 + 0.10*5 = 1.5 + 1.25 + 0.6 + 0.75 + 0.5 = 4.60
     # Score = (4.60 - 1) / 4 * 100 = 90
-    calib_1 = {"modeling_depth": 5, "mentorship_team": 5, "engineering_practice": 3, "option_value": 5, "logistics": 5}
+    calib_1 = {"supervision": 5, "technical_depth": 5, "real_impact": 3, "structure_fit": 5, "next_step": 5,
+        "logistics": 5}
     s1 = calculate_score_from_sub_scores(calib_1)
-    assert s1 == 90
+    assert s1 == 88
     assert verdict_from_score(s1) == VERDICT_EXCELLENT
 
 
@@ -59,20 +61,22 @@ def test_judge_parsing_new_schema() -> None:
     fake_json = """{
       "information_level": "COMPLET",
       "evidence": {
-        "modeling_depth": "PyTorch et PINNs",
-        "mentorship_team": "chercheur PhD",
-        "engineering_practice": "cluster GPU",
-        "option_value": "thèse CIFRE envisagée",
+        "supervision": "PyTorch et PINNs",
+        "technical_depth": "chercheur PhD",
+        "real_impact": "cluster GPU",
+        "structure_fit": "thèse CIFRE envisagée",
+        "next_step": "embauche",
         "logistics": "stage 6 mois début avril Paris"
       },
       "reasoning": "Opportunité R&D avec chercheur.",
       "hard_cap_triggered": "NONE",
       "hard_cap_evidence": null,
       "sub_scores": {
-        "modeling_depth": 5,
-        "mentorship_team": 5,
-        "engineering_practice": 3,
-        "option_value": 5,
+        "supervision": 5,
+        "technical_depth": 5,
+        "real_impact": 3,
+        "structure_fit": 5,
+        "next_step": 5,
         "logistics": 5
       },
       "flags": ["CALENDRIER_DECALE"],
@@ -83,7 +87,7 @@ def test_judge_parsing_new_schema() -> None:
     }"""
 
     res = judge._parse_response(fake_json, job)
-    assert res["rerank_score"] == 90
+    assert res["rerank_score"] == 88
     assert res["verdict"] == VERDICT_EXCELLENT
     assert res["flags"] == ["CALENDRIER_DECALE"]
     assert res["questions_entretien"] == ["Quel cluster GPU ?"]
@@ -101,10 +105,11 @@ def test_judge_parsing_hard_cap_capping() -> None:
       "hard_cap_triggered": "BI_REPORTING",
       "hard_cap_evidence": "dashboards Power BI",
       "sub_scores": {
-        "modeling_depth": 3,
-        "mentorship_team": 4,
-        "engineering_practice": 3,
-        "option_value": 3,
+        "supervision": 3,
+        "technical_depth": 4,
+        "real_impact": 3,
+        "structure_fit": 3,
+        "next_step": 5,
         "logistics": 5
       }
     }"""
