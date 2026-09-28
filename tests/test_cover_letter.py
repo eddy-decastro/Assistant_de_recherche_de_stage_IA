@@ -26,13 +26,18 @@ SAMPLE_JOB = {
     "description": "Recherche stagiaire de fin d'études pour travailler sur des LLM et des architectures de transformers.",
 }
 
+# Coordonnées fictives : les vraies vivent dans config.local.yaml (non versionné).
+FAKE_CANDIDATE = {
+    "name": "Eddy DE CASTRO",
+    "phone": "01 23 45 67 89",
+    "email": "candidat@example.com",
+    "linkedin": "https://www.linkedin.com/in/eddy-de-castro/",
+}
+
 
 def test_get_cv_text() -> None:
-    """Vérifie que le texte du CV est chargé depuis data/cv_eddy.txt."""
-    cv = get_cv_text()
-    assert isinstance(cv, str)
-    assert len(cv.strip()) > 0
-    assert "EXPÉRIENCE" in cv or "COMPÉTENCES" in cv or "PROFIL" in cv
+    """get_cv_text renvoie toujours une chaîne (vide si aucun CV n'est configuré)."""
+    assert isinstance(get_cv_text(), str)
 
 
 def test_generator_prompt_building() -> None:
@@ -64,38 +69,46 @@ def test_generator_mock_client() -> None:
     assert "Objet : Candidature" in result
     mock_client.models.generate_content.assert_called_once()
     call_kwargs = mock_client.models.generate_content.call_args[1]
-    assert call_kwargs["config"].system_instruction == SYSTEM_PROMPT
+    assert call_kwargs["config"].system_instruction == generator.system_prompt
 
 
 def test_candidate_info_loading() -> None:
-    """Vérifie le chargement des coordonnées du candidat."""
+    """Vérifie le chargement des coordonnées du candidat depuis la configuration."""
     from src.matching.cover_letter import get_candidate_info
-    info = get_candidate_info()
+    info = get_candidate_info({"candidate": FAKE_CANDIDATE})
     assert "Eddy" in info["name"]
-    assert "06 98 82 44 85" in info["phone"]
-    assert "eddyprepa123@gmail.com" in info["email"]
+    assert info["phone"] == "01 23 45 67 89"
+    assert info["email"] == "candidat@example.com"
     assert "linkedin.com/in/eddy-de-castro" in info["linkedin"]
+
+
+def test_candidate_info_defaults_have_no_private_contact() -> None:
+    """Sans configuration privée, aucun téléphone ni email n'est codé en dur."""
+    from src.matching.cover_letter import get_candidate_info
+    info = get_candidate_info({})
+    assert info["phone"] == ""
+    assert info["email"] == ""
 
 
 def test_system_prompt_content() -> None:
     """Vérifie que le prompt système intègre les coordonnées et bannit les crochets."""
     from src.matching.cover_letter import build_system_prompt
-    prompt = build_system_prompt()
+    prompt = build_system_prompt(FAKE_CANDIDATE)
     assert "Eddy DE CASTRO" in prompt
-    assert "06 98 82 44 85" in prompt
-    assert "eddyprepa123@gmail.com" in prompt
+    assert "01 23 45 67 89" in prompt
+    assert "candidat@example.com" in prompt
     assert "ZÉRO CROCHET" in prompt
 
 
 def test_postprocess_letter_brackets_cleanup() -> None:
     """Vérifie que la fonction de post-traitement élimine les crochets résiduels."""
-    generator = CoverLetterGenerator(api_key="test-key")
+    generator = CoverLetterGenerator(config={"candidate": FAKE_CANDIDATE}, api_key="test-key")
     raw = "À l'attention de [Nom du Responsable],\nContact : [Téléphone] | [Email]\nDispo : [avril 2027]"
     cleaned = generator._postprocess_letter(raw)
     assert "[Nom du Responsable]" not in cleaned
     assert "l'équipe recrutement" in cleaned
-    assert "06 98 82 44 85" in cleaned
-    assert "eddyprepa123@gmail.com" in cleaned
+    assert "01 23 45 67 89" in cleaned
+    assert "candidat@example.com" in cleaned
     assert "avril 2027" in cleaned
     assert "[" not in cleaned
     assert "]" not in cleaned
@@ -183,7 +196,7 @@ def test_generator_fallback_on_503_error() -> None:
     )
 
     generator = CoverLetterGenerator(api_key="valid-key", client=mock_client, deepseek_api_key="")
-    result = generator.generate(SAMPLE_JOB)
+    result = generator.generate(SAMPLE_JOB, cv_text="CV de test")
 
     assert not result.startswith("⚠️ Erreur API Gemini")
     assert "Objet : Candidature au stage de fin d'études" in result
@@ -205,7 +218,7 @@ def test_generator_gemini_fallback_on_deepseek_error(monkeypatch: pytest.MonkeyP
     mock_client.models.generate_content.return_value = mock_response
 
     generator = CoverLetterGenerator(api_key="valid-key", client=mock_client, deepseek_api_key="mock-ds-key")
-    result = generator.generate(SAMPLE_JOB)
+    result = generator.generate(SAMPLE_JOB, cv_text="CV de test")
 
     assert "Candidature Gemini" in result
     assert generator.last_source == "gemini"
