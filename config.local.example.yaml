@@ -1,0 +1,12 @@
+# Copiez ce fichier en `config.local.yaml` (ignoré par Git) puis renseignez vos coordonnées.
+# Toute clé de config.yaml peut aussi être surchargée ici.
+# Sur Streamlit Cloud : mettez la même section [candidate] dans les secrets de l'app,
+# ainsi que le texte du CV dans la clé CV_TEXT.
+candidate:
+  name: "Prénom NOM"
+  title: "Élève-ingénieur — Formation"
+  phone: "06 00 00 00 00"
+  email: "prenom.nom@example.com"
+  linkedin: "https://www.linkedin.com/in/votre-profil/"
+  github: "https://github.com/votre-compte"
+  location: "Paris, France"

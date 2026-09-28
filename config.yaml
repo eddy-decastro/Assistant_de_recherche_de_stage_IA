@@ -281,13 +281,7 @@ llm:
   tier: free
   rate_limit_rpm: 14
   concurrency: 1
-candidate:
-  name: "Eddy DE CASTRO"
-  title: "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action"
-  phone: "06 98 82 44 85"
-  email: "eddyprepa123@gmail.com"
-  linkedin: "https://www.linkedin.com/in/eddy-de-castro/"
-  github: "https://github.com/eddy-decastro"
-  location: "Paris, France"
+# Coordonnées du candidat : section `candidate` de config.local.yaml (non versionné),
+# voir config.local.example.yaml.
 
 

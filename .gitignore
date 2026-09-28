@@ -6,9 +6,12 @@ __pycache__/
 
 # --- Secrets & Données personnelles ---
 .env
-data/cv_*.txt
+.streamlit/secrets.toml
+config.local.yaml
+data/cv*.txt
 !data/cv_template.txt
 data/*.pdf
+data/*.docx
 
 # --- Base de données locale ---
 data/*.db
