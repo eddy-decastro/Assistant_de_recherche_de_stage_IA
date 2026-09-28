@@ -78,35 +78,33 @@ VERDICT_COLORS = {
 # --- Sous-scores du juge LLM (grille d'évaluation qualitative, échelle 1-5) ---
 # Les cinq dimensions de la nouvelle grille calibrée :
 SUB_SCORE_KEYS = (
-    "supervision",
     "technical_depth",
-    "real_impact",
-    "structure_fit",
-    "next_step",
+    "target_alignment",
+    "learning_environment",
     "logistics",
 )
 
-# Coefficients de pondération du prompt (somme = 1.0)
+# Coefficients de pondération du prompt v3 (somme = 1.0)
 SUB_SCORE_WEIGHTS = {
-    "supervision": 0.15,
-    "technical_depth": 0.30,
-    "real_impact": 0.25,
-    "structure_fit": 0.15,
-    "next_step": 0.10,
-    "logistics": 0.05,
+    "technical_depth": 0.35,
+    "target_alignment": 0.20,
+    "learning_environment": 0.30,
+    "logistics": 0.15,
 }
 
-# Valeur neutre par défaut pour une information absente (score 2 selon la règle du prompt)
-DEFAULT_SUB_SCORE = 2
+# Valeur neutre par défaut pour une information absente (3 selon la règle v3)
+DEFAULT_SUB_SCORE = 3
 
 SUB_SCORE_LABELS = {
+    "technical_depth": "Profondeur technique",
+    "target_alignment": "Adéquation au sujet cible",
+    "learning_environment": "Cadre d'apprentissage",
+    "logistics": "Logistique",
+    # Rétro-compatibilité / affichage des évaluations v1
     "supervision": "Encadrement / Mentorship",
-    "technical_depth": "Profondeur Technique",
     "real_impact": "Impact du Livrable",
     "structure_fit": "Adéquation Structure",
     "next_step": "Débouchés / Thèse",
-    "logistics": "Logistique / PFE",
-    # Rétro-compatibilité
     "modeling_depth": "Modélisation",
     "mentorship_team": "Encadrement",
     "engineering_practice": "Pratiques d'ingénierie",
@@ -117,20 +115,133 @@ SUB_SCORE_LABELS = {
 
 # Libellés compacts pour la ligne de mini-indicateurs affichée sur la carte
 SUB_SCORE_SHORT_LABELS = {
-    "supervision": "Équipe",
     "technical_depth": "Technique",
+    "target_alignment": "Alignement",
+    "learning_environment": "Cadre",
+    "logistics": "Logistique",
+    # Rétro v1
+    "supervision": "Équipe",
     "real_impact": "Impact",
     "structure_fit": "Structure",
     "next_step": "Débouché",
-    "logistics": "Logistique",
-    # Rétro
     "modeling_depth": "Modélisation",
     "mentorship_team": "Équipe",
     "engineering_practice": "Ingénierie",
     "option_value": "Tremplin",
     "career_leverage": "Carrière",
-    "pfe_compatibility": "Calendrier PFE",
+    "pfe_compatibility": "PFE",
 }
+
+# --- Énumérations et règles du juge v3 ---
+CONTRACT_TYPES = (
+    "STAGE",
+    "STAGE_OU_ALTERNANCE",
+    "ALTERNANCE",
+    "CDI_CDD",
+    "AUTRE",
+)
+
+CONTRACT_TYPE_LABELS = {
+    "STAGE": "Stage",
+    "STAGE_OU_ALTERNANCE": "Stage ou alternance",
+    "ALTERNANCE": "Alternance",
+    "CDI_CDD": "CDI / CDD / Salarié",
+    "AUTRE": "Contrat non précisé",
+}
+
+STRUCTURE_TYPES = (
+    "ESN_CONSEIL",
+    "LABO_PUBLIC",
+    "LABO_PRIVE",
+    "GRAND_GROUPE_RD",
+    "SCALEUP_IA",
+    "STARTUP_PETITE",
+    "AUTRE",
+    "INCONNU",
+)
+
+STRUCTURE_TYPE_LABELS = {
+    "SCALEUP_IA": "Scale-up IA",
+    "GRAND_GROUPE_RD": "Grand groupe R&D",
+    "LABO_PRIVE": "Labo privé",
+    "LABO_PUBLIC": "Labo public",
+    "STARTUP_PETITE": "Petite startup (<15)",
+    "ESN_CONSEIL": "ESN / Conseil",
+    "AUTRE": "Autre entreprise",
+    "INCONNU": "Structure inconnue",
+}
+
+STRUCTURE_TYPE_TONES = {
+    "SCALEUP_IA": "positive",      # vert
+    "GRAND_GROUPE_RD": "positive", # vert
+    "LABO_PRIVE": "positive",      # vert
+    "LABO_PUBLIC": "positive",     # vert
+    "STARTUP_PETITE": "warn",      # orange
+    "AUTRE": "mute",
+    "INCONNU": "warn",             # orange
+    "ESN_CONSEIL": "alert",        # rouge
+}
+
+# Plafonds stricts (hard caps) v3
+HARD_CAP_RULES: dict[str, int] = {
+    "DEFENSE": 10,
+    "TRADING": 25,
+    "BI_REPORTING": 30,
+    "ESN_REGIE": 35,
+    "ENCADREMENT_ABSENT": 35,
+    "SHALLOW_AI": 40,
+}
+
+HARD_CAP_LABELS: dict[str, str] = {
+    "DEFENSE": "Défense / Armement (10)",
+    "TRADING": "Trading / HFT (25)",
+    "BI_REPORTING": "BI / Reporting (30)",
+    "ESN_REGIE": "ESN en régie (35)",
+    "ENCADREMENT_ABSENT": "Encadrement absent (35)",
+    "SHALLOW_AI": "IA superficielle (40)",
+}
+
+FLAGS = (
+    "CALENDRIER_DECALE",
+    "DUREE_INCERTAINE",
+    "HORS_IDF",
+    "PETITE_STARTUP",
+    "STACK_FLOUE",
+    "DEFENSE_INDIRECTE",
+    "ETHIQUE_A_EXAMINER",
+    "FINANCE",
+)
+
+FLAG_LABELS: dict[str, str] = {
+    "CALENDRIER_DECALE": "Calendrier décalé",
+    "DUREE_INCERTAINE": "Durée incertaine",
+    "HORS_IDF": "Hors Île-de-France",
+    "PETITE_STARTUP": "Petite startup",
+    "STACK_FLOUE": "Stack floue",
+    "DEFENSE_INDIRECTE": "Défense indirecte",
+    "ETHIQUE_A_EXAMINER": "Éthique à examiner",
+    "FINANCE": "Finance",
+}
+
+FLAG_TONES: dict[str, str] = {
+    "DEFENSE_INDIRECTE": "alert",   # rouge
+    "ETHIQUE_A_EXAMINER": "alert",  # rouge
+    "CALENDRIER_DECALE": "warn",    # orange
+    "DUREE_INCERTAINE": "warn",     # orange
+    "HORS_IDF": "warn",             # orange
+    "PETITE_STARTUP": "warn",       # orange
+    "STACK_FLOUE": "warn",          # orange
+    "FINANCE": "warn",              # orange
+}
+
+SIGNAL_BONUSES: dict[str, int] = {
+    "encadrant_explicite": 6,
+    "donnees_reelles_explicites": 3,
+    "suite_explicite": 3,
+}
+BENCHMARK_PENALTY = 5
+MAX_BONUS_TOTAL = 10
+
 
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
