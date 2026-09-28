@@ -256,3 +256,25 @@ def test_cv_anonymization() -> None:
     assert "https://www.linkedin.com" not in anon
     assert "[PROFIL_MASQUÉ]" in anon
     assert "Expérience PyTorch et Graph ML." in anon
+
+
+def test_gemini_rate_limiter_rpd_quota() -> None:
+    """Vérifie que l'atteinte du quota journalier (RPD) lève DailyQuotaExceededError."""
+    import pytest
+    from src.matching.llm_judge import GeminiRateLimiter, DailyQuotaExceededError
+
+    limiter = GeminiRateLimiter(rpm=600, rpd=2)
+    limiter.wait_for_slot()
+    limiter.wait_for_slot()
+    with pytest.raises(DailyQuotaExceededError) as exc:
+        limiter.wait_for_slot()
+    assert "Quota journalier" in str(exc.value)
+
+
+def test_openai_compatible_provider_structure() -> None:
+    """Vérifie l'instanciation de l'abstraction de secours compatible OpenAI."""
+    from src.matching.llm_judge import OpenAICompatibleProvider
+    provider = OpenAICompatibleProvider(api_key="fake", base_url="https://api.groq.com/openai/v1", model="llama-3.3-70b-versatile")
+    assert provider.model == "llama-3.3-70b-versatile"
+    assert provider.base_url == "https://api.groq.com/openai/v1"
+

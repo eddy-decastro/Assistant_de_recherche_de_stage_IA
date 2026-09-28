@@ -432,25 +432,208 @@ def compute_final_score(
         scaleup_suggested=scaleup_suggested,
     )
 
+class DailyQuotaExceededError(Exception):
+    """Exception levée lorsque le quota journalier de requêtes (RPD) est épuisé."""
+    pass
+
+
+class BaseLLMProvider:
+    """Interface abstraite pour les fournisseurs LLM."""
+
+    def generate(self, contents: str, system_prompt: str, schema: dict[str, Any] | None = None) -> str:
+        raise NotImplementedError
+
+
+class OpenAICompatibleProvider(BaseLLMProvider):
+    """Fournisseur de secours compatible OpenAI (Groq, Cerebras, Ollama, etc.).
+
+    Non activé par défaut (llm.fallback_provider: null dans config.yaml).
+    Permet de basculer sur des modèles open-weight gratuits avec un endpoint OpenAI standard.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.groq.com/openai/v1",
+        model: str = "llama-3.3-70b-versatile",
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def generate(self, contents: str, system_prompt: str, schema: dict[str, Any] | None = None) -> str:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": contents},
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        resp = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        return str(data["choices"][0]["message"]["content"])
+
+
+def get_response_schema() -> dict[str, Any]:
+    """Retourne le JSON Schema imposant la structure et les énumérations exactes v3."""
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "information_level": {
+                "type": "STRING",
+                "enum": ["COMPLET", "PARTIEL", "INSUFFISANT"],
+            },
+            "contract_type": {
+                "type": "STRING",
+                "enum": list(CONTRACT_TYPES),
+            },
+            "contract_evidence": {"type": "STRING"},
+            "duration_months": {"type": "INTEGER", "nullable": True},
+            "is_cesure": {"type": "BOOLEAN"},
+            "evidence": {
+                "type": "OBJECT",
+                "properties": {
+                    "structure": {"type": "STRING"},
+                    "technical_depth": {"type": "STRING"},
+                    "target_alignment": {"type": "STRING"},
+                    "learning_environment": {"type": "STRING"},
+                    "logistics": {"type": "STRING"},
+                    "rd_nature": {"type": "STRING"},
+                },
+            },
+            "signals": {
+                "type": "OBJECT",
+                "properties": {
+                    "encadrant_explicite": {
+                        "type": "OBJECT",
+                        "properties": {"present": {"type": "BOOLEAN"}, "evidence": {"type": "STRING"}},
+                        "required": ["present", "evidence"],
+                    },
+                    "donnees_reelles_explicites": {
+                        "type": "OBJECT",
+                        "properties": {"present": {"type": "BOOLEAN"}, "evidence": {"type": "STRING"}},
+                        "required": ["present", "evidence"],
+                    },
+                    "suite_explicite": {
+                        "type": "OBJECT",
+                        "properties": {"present": {"type": "BOOLEAN"}, "evidence": {"type": "STRING"}},
+                        "required": ["present", "evidence"],
+                    },
+                    "donnees_benchmark_seulement": {
+                        "type": "OBJECT",
+                        "properties": {"present": {"type": "BOOLEAN"}, "evidence": {"type": "STRING"}},
+                        "required": ["present", "evidence"],
+                    },
+                },
+            },
+            "reasoning": {"type": "STRING"},
+            "structure_type": {
+                "type": "STRING",
+                "enum": list(STRUCTURE_TYPES),
+            },
+            "category_confidence": {
+                "type": "STRING",
+                "enum": ["HAUTE", "MOYENNE", "FAIBLE"],
+            },
+            "rd_nature": {"type": "BOOLEAN"},
+            "hard_cap_triggered": {
+                "type": "STRING",
+                "enum": ["NONE"] + list(HARD_CAP_RULES.keys()),
+            },
+            "hard_cap_evidence": {"type": "STRING", "nullable": True},
+            "sub_scores": {
+                "type": "OBJECT",
+                "nullable": True,
+                "properties": {
+                    "technical_depth": {"type": "INTEGER"},
+                    "target_alignment": {"type": "INTEGER"},
+                    "learning_environment": {"type": "INTEGER"},
+                    "logistics": {"type": "INTEGER"},
+                },
+            },
+            "flags": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "company_note": {
+                "type": "OBJECT",
+                "properties": {
+                    "known": {"type": "BOOLEAN"},
+                    "note": {"type": "STRING"},
+                    "confidence": {"type": "STRING", "enum": ["HAUTE", "MOYENNE", "FAIBLE"]},
+                },
+            },
+            "match_reasons": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "red_flags": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "tech_stack_detected": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "questions_entretien": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+        },
+        "required": [
+            "information_level",
+            "contract_type",
+            "structure_type",
+            "category_confidence",
+            "rd_nature",
+            "hard_cap_triggered",
+            "reasoning",
+        ],
+    }
+
+
 class GeminiRateLimiter:
     """Régulateur de débit global thread-safe pour l'API Gemini.
 
     - Respecte le plafond RPM (ex: 15 requêtes/minute en Free Tier).
+    - Respecte le plafond journalier RPD (ex: 1500 requêtes/jour).
     - En cas d'erreur 429, bloque TOUS les threads pour la durée exacte
       demandée par l'API (retry-after jusqu'à 65s).
     """
 
-    def __init__(self, rpm: int = 15) -> None:
+    def __init__(self, rpm: int = 15, rpd: int = 1500) -> None:
         self.rpm = max(1, rpm)
+        self.rpd = max(1, rpd)
         self.interval = 60.0 / self.rpm
         self._lock = threading.Lock()
         self._last_call_time: float = 0.0
         self._blocked_until: float = 0.0
+        self._daily_calls: int = 0
+        self._day_start: float = time.time()
 
     def wait_for_slot(self) -> float:
-        """Attend le prochain créneau disponible. Retourne le temps d'attente effectif en secondes."""
+        """Attend le prochain créneau disponible ou lève DailyQuotaExceededError si quota journalier atteint."""
         with self._lock:
             now = time.time()
+            # Réinitialisation après 24 heures
+            if now - self._day_start >= 86400:
+                self._daily_calls = 0
+                self._day_start = now
+
+            if self._daily_calls >= self.rpd:
+                raise DailyQuotaExceededError(
+                    f"Quota journalier Gemini atteint ({self._daily_calls}/{self.rpd} req/jour). "
+                    "Arrêt propre du traitement par lot."
+                )
+
             total_waited = 0.0
 
             # 1. Si bloqué globalement suite à un 429
@@ -470,6 +653,7 @@ class GeminiRateLimiter:
                 now = time.time()
 
             self._last_call_time = now
+            self._daily_calls += 1
             return total_waited
 
     def report_429(self, retry_after: float) -> None:
@@ -484,15 +668,17 @@ _GLOBAL_RATE_LIMITER: GeminiRateLimiter | None = None
 _LIMITER_LOCK = threading.Lock()
 
 
-def get_global_rate_limiter(rpm: int = 15) -> GeminiRateLimiter:
+def get_global_rate_limiter(rpm: int = 15, rpd: int = 1500) -> GeminiRateLimiter:
     global _GLOBAL_RATE_LIMITER
     with _LIMITER_LOCK:
-        if _GLOBAL_RATE_LIMITER is None or _GLOBAL_RATE_LIMITER.rpm != rpm:
-            _GLOBAL_RATE_LIMITER = GeminiRateLimiter(rpm)
+        if _GLOBAL_RATE_LIMITER is None or _GLOBAL_RATE_LIMITER.rpm != rpm or _GLOBAL_RATE_LIMITER.rpd != rpd:
+            _GLOBAL_RATE_LIMITER = GeminiRateLimiter(rpm=rpm, rpd=rpd)
         return _GLOBAL_RATE_LIMITER
 
 
 def _is_api_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, DailyQuotaExceededError):
+        return False
     if isinstance(exc, APIError):
         return exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()
     return False
@@ -546,7 +732,8 @@ class LLMJudge:
         self.tier = str(llm_cfg.get("tier", "free")).casefold()
         default_rpm = 15 if self.tier == "free" else 120
         self.rpm = int(llm_cfg.get("rate_limit_rpm", default_rpm))
-        self.rate_limiter = rate_limiter or get_global_rate_limiter(self.rpm)
+        self.rpd = int(llm_cfg.get("rate_limit_rpd", 1500))
+        self.rate_limiter = rate_limiter or get_global_rate_limiter(self.rpm, self.rpd)
         self._client = client  # injectable pour mock
 
         if api_key is not None:
@@ -604,10 +791,12 @@ class LLMJudge:
             config=types.GenerateContentConfig(
                 system_instruction=get_system_prompt(),
                 temperature=self.temperature,
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                response_schema=get_response_schema(),
             )
         )
         return response.text
+
 
     # ------------------------------------------------------------------ #
     # Parsing / normalisation v3
