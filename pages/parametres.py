@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_config, save_config
+from src.config import load_config, resolve_cv_path, save_config
 from utils.data import bump_data_version, get_database, load_jobs, _esc
 from utils.styles import inject_styles
 from utils.task_manager import (
@@ -31,7 +31,7 @@ from utils.task_manager import (
     start_background_task,
 )
 
-CV_PATH = PROJECT_ROOT / "data" / "cv_eddy.txt"
+CV_PATH = resolve_cv_path()
 
 st.set_page_config(
     page_title="Paramètres & Profil",
@@ -121,7 +121,7 @@ with tab_cv:
             CV_PATH.write_text(edited_cv, encoding="utf-8")
             st.session_state["cv_editor_content"] = edited_cv
             bump_data_version()
-            st.success("Profil candidat enregistré avec succès dans `data/cv_eddy.txt` !")
+            st.success(f"Profil candidat enregistré dans `{CV_PATH.relative_to(PROJECT_ROOT)}` (fichier non versionné).")
 
     with c2:
         st.download_button(
@@ -144,11 +144,11 @@ with tab_cv:
     with col_nom:
         c_name = st.text_input("Nom & Prénom", value=candidate_cfg.get("name", "Eddy DE CASTRO"), key="c_name_input")
     with col_tel:
-        c_phone = st.text_input("Téléphone", value=candidate_cfg.get("phone", "06 98 82 44 85"), key="c_phone_input")
+        c_phone = st.text_input("Téléphone", value=candidate_cfg.get("phone", ""), key="c_phone_input")
 
     col_mail, col_loc = st.columns(2)
     with col_mail:
-        c_email = st.text_input("Email", value=candidate_cfg.get("email", "eddyprepa123@gmail.com"), key="c_email_input")
+        c_email = st.text_input("Email", value=candidate_cfg.get("email", ""), key="c_email_input")
     with col_loc:
         c_location = st.text_input("Ville / Localisation", value=candidate_cfg.get("location", "Paris, France"), key="c_location_input")
 
@@ -172,7 +172,7 @@ with tab_cv:
         }
         save_config(cfg_main)
         bump_data_version()
-        st.success("Coordonnées enregistrées avec succès dans `config.yaml` !")
+        st.success("Coordonnées enregistrées dans `config.local.yaml` (fichier non versionné).")
 
 
 
