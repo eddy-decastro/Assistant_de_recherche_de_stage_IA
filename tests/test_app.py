@@ -30,7 +30,9 @@ from utils.styles import (
     _theme_type,
 )
 from utils.components import (
+    active_filter_count,
     job_card_html,
+    job_list_item_html,
     score_alignment,
     clean_text,
     excerpt,
@@ -79,8 +81,8 @@ _OFFER_CONTENT_PATTERNS = (
     r'<p class="sc-excerpt">.*?</p>',
     r'<h3 class="sc-card-title">.*?</h3>',
     r'<div class="sc-card-meta">.*?</div>',
-    r'<span class="sc-badge[^"]*sc-subscore[^"]*">.*?</span>',
-    r'<div class="sc-subscore-strip">.*?</div>',
+    r'<div class="sc-list-title">.*?</div>',
+    r'<div class="sc-list-meta">.*?</div>',
     r'<div class="sc-alert[^"]*">.*?</div>',
 )
 
@@ -145,8 +147,13 @@ def _safe_token(text: str) -> str | None:
 
 
 def _cards(at: AppTest) -> list[str]:
-    """Cartes d'offres rendues dans la zone principale (fragment HTML dédié)."""
+    """Cartes d'offres détaillées rendues dans la zone principale (panneau de droite)."""
     return [element.value for element in at.markdown if '<div class="sc-card">' in element.value]
+
+
+def _items(at: AppTest) -> list[str]:
+    """Éléments compacts de la liste d'offres (colonne de gauche)."""
+    return [element.value for element in at.markdown if '<div class="sc-list-item">' in element.value]
 
 
 def test_helpers_score_et_alignement() -> None:
@@ -313,11 +320,14 @@ def test_interface_streamlit() -> None:
     db = _open_database()
     total = db.count_jobs()
     top = db.get_jobs(limit=1)
+    all_jobs = db.get_jobs()
     db.engine.dispose()
-    cards = _cards(at)
-    expected = min(total, 50)  # 50 = valeur par défaut de « Offres affichées »
-    assert len(cards) in (expected, expected + 1), f"{len(cards)} carte(s) rendue(s) pour {total} offre(s) en base"
-    print(f"  Interface : {total} offre(s) en base, {len(cards)} carte(s) rendue(s) OK")
+    # Défauts du flux : vue focus (offres NOUVEAU) et 50 offres affichées.
+    expected = len(filter_jobs(all_jobs, Filters(hide_processed=True, limit=50)))
+    items = _items(at)
+    assert len(items) == expected, f"{len(items)} offre(s) listée(s), {expected} attendue(s) ({total} en base)"
+    assert len(_cards(at)) == (1 if expected else 0), "Une seule carte détaillée : l'offre sélectionnée."
+    print(f"  Interface : {total} offre(s) en base, {len(items)} listée(s) + 1 carte détaillée OK")
 
     # 3. Aucun emoji décoratif dans les libellés d'INTERFACE.
     rendered = ui_labels_only(" ".join([markup] + [element.value for element in at.caption]))
@@ -333,7 +343,7 @@ def test_interface_streamlit() -> None:
     # 4. Recherche infructueuse : état vide explicite, aucune carte.
     at.sidebar.text_input[0].set_value("zz-introuvable-zz").run()
     assert not at.exception, at.exception
-    assert _cards(at) == []
+    assert _cards(at) == [] and _items(at) == []
     assert any('<div class="sc-empty">' in element.value for element in at.markdown)
     print("  Interface : recherche sans résultat -> état vide OK")
 
@@ -394,15 +404,15 @@ def test_grille_sous_scores() -> None:
     }
     markup = job_card_html(scored, ())
 
-    assert "📐 Modélisation 5/5" in markup
-    assert "👥 Encadrement 4/5" in markup
-    assert "🚀 Carrière 4/5" in markup
-    assert "📅 Calendrier PFE 5/5" in markup
-
-    assert "📐 Modélisation : <b>5/5</b>" in markup, markup
-    assert "👥 Équipe : <b>4/5</b>" in markup
-    assert "🚀 Carrière : <b>4/5</b>" in markup
-    assert "📅 Calendrier PFE : <b>5/5</b>" in markup
+    # Grille détaillée (accordéon) : libellés complets + jauge à 5 segments.
+    assert "<span>Modélisation</span>" in markup and "<span>Encadrement</span>" in markup, markup
+    assert "<span>Carrière</span>" in markup and "<span>Calendrier PFE</span>" in markup
+    # Bandeau compact : libellés courts, jauges visibles d'emblée.
+    assert "<span>Équipe</span>" in markup
+    assert markup.count('class="sc-meter"') == 8, "4 sous-scores × (bandeau + grille détaillée)."
+    assert "<b>5/5</b>" in markup and "<b>4/5</b>" in markup
+    strip = markup[markup.index("sc-subscore-strip"):markup.index("<details")]
+    assert strip.count('<i class="on"></i>') == 5 + 4 + 4 + 5, "Segments allumés = notes cumulées."
     assert markup.index("sc-subscore-strip") < markup.index("<details"), (
         "Les mini-indicateurs doivent précéder l'accordéon (visibles d'emblée)."
     )
@@ -628,6 +638,51 @@ def test_parametres_interface() -> None:
     print("  Interface : page Paramètres OK")
 
 
+def test_liste_compacte_et_kanban_echappes() -> None:
+    """Liste compacte et cartes Kanban : contenu des offres échappé, score et verdict visibles."""
+    hostile = {**RERANKED, "title": "<script>alert(1)</script> Stage", "company": "A&B <Labs>", "url": "javascript:alert(1)"}
+    item = job_list_item_html(hostile)
+    assert "<script>" not in item and "&lt;script&gt;" in item
+    assert "A&amp;B &lt;Labs&gt;" in item
+    assert "88" in item and "Excellent" in item and "Postulé" in item
+
+    from pages.kanban import kanban_card_html
+    card = kanban_card_html(hostile)
+    assert "<script>" not in card and "&lt;script&gt;" in card
+    assert "javascript:" not in card, "Une URL non http ne doit pas devenir un lien."
+    linked = kanban_card_html({**RERANKED, "url": "https://example.com/offre?a=1&b=2"})
+    assert 'href="https://example.com/offre?a=1&amp;b=2"' in linked
+    print("  Liste compacte & Kanban : échappement et contenu OK")
+
+
+def test_compteur_de_filtres_actifs() -> None:
+    """Seuls les critères restrictifs comptent (pas la pagination ni la vue focus)."""
+    sources = ("linkedin", "jobteaser")
+    base = Filters(sources=sources, statuses=tuple(STATUS_ORDER), hide_processed=True, limit=50)
+    assert active_filter_count(base, sources) == 0
+    assert active_filter_count(Filters(sources=("linkedin",), hide_processed=True), sources) == 1
+    assert active_filter_count(Filters(sources=sources, query="nlp", min_score=40, exclude_dassault=True), sources) == 3
+    print("  Filtres : compteur de critères actifs OK")
+
+
+def test_reinitialisation_des_filtres() -> None:
+    """Le bouton « Réinitialiser » n'apparaît qu'avec un filtre actif et rétablit les défauts."""
+    at = AppTest.from_file(str(PROJECT_ROOT / "app.py"), default_timeout=240).run()
+    assert not at.exception, at.exception
+    assert not [b for b in at.sidebar.button if b.label == "Réinitialiser"]
+
+    at.sidebar.text_input[0].set_value("zz-introuvable-zz")
+    at.sidebar.slider[0].set_value(40)
+    at.run()
+    assert any("2</b> filtres actifs" in el.value for el in at.sidebar.markdown)
+    reset = next(b for b in at.sidebar.button if b.label == "Réinitialiser")
+    reset.click().run()
+    assert not at.exception, at.exception
+    assert at.sidebar.text_input[0].value == "" and at.sidebar.slider[0].value == 0
+    assert not [b for b in at.sidebar.button if b.label == "Réinitialiser"]
+    print("  Filtres : réinitialisation en un clic OK")
+
+
 def main() -> None:
     """Exécute l'ensemble des tests du dashboard."""
     test_helpers_score_et_alignement()
@@ -641,6 +696,9 @@ def main() -> None:
     test_onglet_telemetrie_interface()
     test_kanban_interface()
     test_parametres_interface()
+    test_liste_compacte_et_kanban_echappes()
+    test_compteur_de_filtres_actifs()
+    test_reinitialisation_des_filtres()
     test_interface_streamlit()
     print("TOUS LES TESTS PASSENT")
 

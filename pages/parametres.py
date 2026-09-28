@@ -23,36 +23,27 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import load_config, save_config
 from utils.data import bump_data_version, get_database, load_jobs, _esc
-from utils.styles import inject_styles
+from utils.layout import page_setup, render_page_header
 from utils.task_manager import (
     get_active_task,
-    render_sidebar_task_badge,
     render_task_monitor,
     start_background_task,
 )
 
 CV_PATH = PROJECT_ROOT / "data" / "cv_eddy.txt"
 
-st.set_page_config(
-    page_title="Paramètres & Profil",
-    page_icon=":material/settings:",
-    layout="wide",
+page_setup()
+
+render_page_header(
+    "Pilotage",
+    "Paramètres & Profil",
+    "Personnalisez votre CV, vos critères de collecte et pilotez la ré-évaluation des offres par Gemini.",
 )
 
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
-
-st.markdown("<h1>Paramètres &amp; Profil</h1>", unsafe_allow_html=True)
-st.caption("Personnalisez votre CV, vos critères de scraping et pilotez la ré-évaluation par Gemini.")
-
 tab_cv, tab_scraping, tab_rerank = st.tabs([
-    "📄 Mon CV & Profil",
-    "🔍 Recherches & Scraping",
-    "🔄 Re-notation des offres",
+    ":material/person: Mon CV & profil",
+    ":material/travel_explore: Recherches & collecte",
+    ":material/autorenew: Re-notation des offres",
 ])
 
 
@@ -116,7 +107,7 @@ with tab_cv:
 
     c1, c2, _ = st.columns([1.5, 1.5, 3], gap="small")
     with c1:
-        if st.button("Enregistrer le profil", type="primary", use_container_width=True, icon=":material/save:"):
+        if st.button("Enregistrer le profil", type="primary", width="stretch", icon=":material/save:"):
             CV_PATH.parent.mkdir(parents=True, exist_ok=True)
             CV_PATH.write_text(edited_cv, encoding="utf-8")
             st.session_state["cv_editor_content"] = edited_cv
@@ -129,7 +120,7 @@ with tab_cv:
             data=edited_cv,
             file_name="CV_Actif.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
             icon=":material/download:",
         )
 
@@ -376,7 +367,7 @@ with tab_rerank:
         est_sec = int(actual_count * (60.0 / max(1, llm_rpm)))
         est_str = f"{est_sec // 60} min {est_sec % 60:02d} s" if est_sec >= 60 else f"{est_sec} s"
         tier_badge = "Gratuit (15 req/min max)" if llm_tier == "free" else "Payant (rapide)"
-        st.caption(f"⏱️ Durée estimée pour **{actual_count} offre(s)** : **~{est_str}** *(Forfait {tier_badge})*")
+        st.caption(f"Durée estimée pour **{actual_count} offre(s)** : **~{est_str}** *(Forfait {tier_badge})*")
 
     with c_opts:
         st.write("")
@@ -408,7 +399,7 @@ with tab_rerank:
     render_task_monitor()
 
     if is_task_running:
-        st.info("⏳ Un traitement est actuellement en cours. Vous pouvez suivre sa progression ci-dessus ou naviguer librement sans interrompre le calcul.")
+        st.info("Un traitement est actuellement en cours. Vous pouvez suivre sa progression ci-dessus ou naviguer librement sans interrompre le calcul.")
 
     if st.button(
         button_label,

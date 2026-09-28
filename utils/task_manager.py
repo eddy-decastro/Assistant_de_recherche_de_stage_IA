@@ -297,7 +297,7 @@ def render_task_monitor(target_key: str | None = None) -> bool:
     progress = task.get("progress")
 
     if status == "running":
-        st.markdown(f"### ⚡ {name} (en cours)")
+        st.markdown(f"### {name} · en cours")
         if progress:
             st.progress(
                 progress["percent"] / 100.0,
@@ -318,7 +318,7 @@ def render_task_monitor(target_key: str | None = None) -> bool:
 
         c_stop, c_refresh = st.columns([1, 2])
         with c_stop:
-            if st.button("⏹️ Arrêter le traitement", type="secondary", key=f"btn_stop_{target_key or 'task'}"):
+            if st.button("Arrêter le traitement", type="secondary", icon=":material/stop_circle:", key=f"btn_stop_{target_key or 'task'}"):
                 stop_active_task()
                 st.rerun()
         with c_refresh:
@@ -335,7 +335,7 @@ def render_task_monitor(target_key: str | None = None) -> bool:
         return True
 
     elif status == "completed":
-        st.success(f"✅ **{name}** s'est achevé avec succès !")
+        st.success(f"**{name}** s'est achevé avec succès.", icon=":material/check_circle:")
         with st.expander("Voir le journal complet de l'exécution", expanded=False):
             st.code(logs_text[-4000:], language="text")
 
@@ -345,7 +345,7 @@ def render_task_monitor(target_key: str | None = None) -> bool:
         return False
 
     elif status == "failed":
-        st.error(f"❌ **{name}** s'est arrêté avec une erreur (code {task.get('return_code')}).")
+        st.error(f"**{name}** s'est arrêté avec une erreur (code {task.get('return_code')}).")
         with st.expander("Détails du journal d'erreur", expanded=True):
             st.code(logs_text[-3000:], language="text")
 
@@ -355,7 +355,7 @@ def render_task_monitor(target_key: str | None = None) -> bool:
         return False
 
     elif status == "stopped":
-        st.warning(f"⚠️ **{name}** a été interrompu par l'utilisateur.")
+        st.warning(f"**{name}** a été interrompu par l'utilisateur.", icon=":material/pause_circle:")
         with st.expander("Dernières lignes du journal", expanded=False):
             st.code(logs_text[-2000:], language="text")
 
@@ -374,8 +374,7 @@ def render_sidebar_task_badge() -> None:
         return
 
     progress = task.get("progress")
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**⚡ {task.get('name', 'Tâche')} en cours**")
+    st.sidebar.markdown(f"**{task.get('name', 'Tâche')}** · en cours")
     if progress:
         st.sidebar.progress(progress["percent"] / 100.0)
         st.sidebar.caption(f"{progress['current']}/{progress['total']} offres {progress.get('eta', '')}")

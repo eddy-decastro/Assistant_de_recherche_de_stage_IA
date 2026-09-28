@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -10,25 +11,18 @@ from typing import Any
 from dataclasses import dataclass
 
 from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc
-from utils.styles import inject_styles
+from utils.layout import page_setup, render_page_header
 from utils.task_manager import (
     get_active_task,
-    render_sidebar_task_badge,
     render_task_monitor,
     start_background_task,
 )
 from src.config import load_config, DEFAULT_CONFIG_PATH
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Pipeline", page_icon=":material/settings:", layout="wide")
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
+page_setup()
 
 from src.storage.cloud_storage import (
     is_cloud_storage_configured,
@@ -48,39 +42,44 @@ class PipelineAction:
     args: tuple[str, ...]
     help: str
     status: str
+    icon: str = ":material/play_arrow:"
 
 PIPELINE_ACTIONS: tuple[PipelineAction, ...] = (
     PipelineAction(
         key="full_pipeline",
-        label="Lancer le pipeline complet (Collecte → Backfill → Scoring Gemini)",
+        label="Pipeline complet",
         script="run_pipeline.py",
         args=(),
-        help="Exécute l'intégralité de la chaîne de traitement de manière automatisée.",
+        help="Collecte → enrichissement des fiches → scoring par le juge LLM, en une seule tâche.",
         status="Pipeline unifié en cours…",
+        icon=":material/rocket_launch:",
     ),
     PipelineAction(
         key="collect",
-        label="Collecter les offres uniquement",
+        label="Collecte seule",
         script="run_scrapers.py",
         args=("--no-scoring",),
         help="Collecte hybride (passe Fraîcheur puis Rattrapage), ingestion SQLite, mémoire de collecte et télémétrie.",
         status="Collecte en cours (fraîcheur → rattrapage → ingestion)…",
+        icon=":material/travel_explore:",
     ),
     PipelineAction(
         key="descriptions",
-        label="Enrichir les fiches de poste (Backfill)",
+        label="Enrichir les fiches",
         script="backfill_descriptions.py",
         args=(),
         help="Récupère les descriptions manquantes depuis les pages détail (LinkedIn / JobTeaser).",
         status="Enrichissement des fiches en cours (pages détail)…",
+        icon=":material/description:",
     ),
     PipelineAction(
         key="rerank",
-        label="Juge LLM seul (Gemini)",
+        label="Juge LLM seul",
         script="run_scrapers.py",
         args=("--no-collect", "--trigger-rerank", "--top-rerank", "1000"),
         help="Sans nouvelle collecte : analyse par le juge LLM des offres non évaluées (rythme adapté au forfait).",
         status="Juge LLM en cours (évaluation des offres non notées)…",
+        icon=":material/gavel:",
     ),
 )
 
@@ -148,8 +147,11 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
     default_sources = scrapers_cfg.get("enabled_sources", ["linkedin", "jobteaser"])
     default_max = int(scrapers_cfg.get("max_offers_per_source", 200))
 
-    st.markdown("### Personnaliser & Lancer la collecte")
-    st.caption("Ajustez les requêtes, plateformes cibles et volumes d'offres pour ce run ou enregistrez-les par défaut.")
+    st.markdown(
+        '<div class="sc-section-title">Collecte personnalisée'
+        "<small>requêtes, plateformes et volumes pour ce run, ou enregistrés par défaut</small></div>",
+        unsafe_allow_html=True,
+    )
 
     queries_input = st.text_area(
         "Requêtes de recherche cibles (une par ligne)",
@@ -194,14 +196,16 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
         launch_clicked = st.button(
             "Lancer la collecte personnalisée",
             type="primary",
-            use_container_width=True,
+            icon=":material/play_arrow:",
+            width="stretch",
             help="Lance immédiatement la collecte en tâche de fond avec les paramètres ci-dessus sans modifier config.yaml.",
             disabled=is_task_running,
         )
     with btn_col2:
         save_clicked = st.button(
             "Enregistrer comme paramètres par défaut",
-            use_container_width=True,
+            icon=":material/save:",
+            width="stretch",
             help="Met à jour durablement la section scrapers de config.yaml avec ces valeurs.",
         )
 
@@ -241,111 +245,131 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
             st.toast("Configuration mise à jour !")
 
 
+def _section(title: str, note: str = "") -> None:
+    """Titre de section de la page."""
+    small = f"<small>{note}</small>" if note else ""
+    st.markdown(f'<div class="sc-section-title">{title}{small}</div>', unsafe_allow_html=True)
+
+
+def render_actions(actions: tuple[PipelineAction, ...], is_task_running: bool, key_prefix: str) -> None:
+    """Actions prédéfinies en grille de cartes (titre, description, bouton)."""
+    cols = st.columns(2, gap="small")
+    for index, action in enumerate(actions):
+        with cols[index % 2]:
+            with st.container(border=True, key=f"card-action-{key_prefix}-{action.key}"):
+                st.markdown(f"**{action.label}**")
+                st.caption(action.help)
+                if st.button(
+                    "Lancer",
+                    key=f"{key_prefix}-{action.key}",
+                    icon=action.icon,
+                    type="primary" if action.key == "full_pipeline" else "secondary",
+                    disabled=is_task_running,
+                ):
+                    run_pipeline(action)
+
+
+def render_database_section(jobs: list[dict[str, Any]]) -> None:
+    """État de la base SQLite, rafraîchissement et synchronisation cloud (R2 / S3)."""
+    _section("Base de données", f"{len(jobs)} offres en base SQLite")
+    distribution = source_distribution(jobs)
+    c_stats, c_refresh = st.columns([3, 1], vertical_alignment="center")
+    with c_stats:
+        st.markdown(
+            '<div class="sc-kv">'
+            + "".join(f"<div>{_esc(label)} <b>{count}</b></div>" for label, count, _ in distribution)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+    with c_refresh:
+        if st.button("Actualiser", icon=":material/refresh:", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", width="stretch"):
+            try:
+                db = get_database()
+                db.engine.dispose()
+            except Exception:
+                pass
+            st.cache_resource.clear()
+            st.cache_data.clear()
+            bump_data_version(sync_cloud=False)
+            st.rerun()
+
+    _section("Synchronisation cloud", "Cloudflare R2 / S3")
+    if not is_cloud_storage_configured():
+        st.caption("Synchronisation cloud inactive. Configurez les variables R2/S3 pour lier un bucket.")
+        return
+    meta = get_remote_metadata()
+    if meta:
+        size_mb = meta["size_bytes"] / (1024 * 1024)
+        date_str = meta["last_modified"].strftime("%d/%m/%Y à %H:%M UTC") if meta.get("last_modified") else "inconnue"
+        st.success(f"Stockage distant connecté. Base distante : **{size_mb:.2f} Mo** (modifiée le {date_str}).", icon=":material/cloud_done:")
+    else:
+        st.info("Stockage distant configuré mais aucune base distante trouvée dans le bucket.", icon=":material/cloud_off:")
+
+    c_sync1, c_sync2 = st.columns(2)
+    with c_sync1:
+        if st.button("Récupérer la base distante", icon=":material/cloud_download:", width="stretch", help="Force le téléchargement de la base depuis le bucket."):
+            with st.spinner("Téléchargement de la base distante en cours…"):
+                try:
+                    db = get_database()
+                    db.engine.dispose()
+                except Exception:
+                    pass
+                if download_database(force=True):
+                    st.cache_resource.clear()
+                    st.cache_data.clear()
+                    bump_data_version(sync_cloud=False)
+                    st.toast("Base locale mise à jour depuis le cloud.")
+                    st.rerun()
+                else:
+                    st.warning("Échec du téléchargement ou stockage vide.")
+    with c_sync2:
+        if st.button("Sauvegarder vers le cloud", icon=":material/cloud_upload:", width="stretch", help="Envoie la base SQLite actuelle vers le bucket."):
+            with st.spinner("Envoi vers le cloud en cours…"):
+                if upload_database():
+                    st.toast("Base sauvegardée sur le cloud.")
+                else:
+                    st.error("Échec de l'envoi.")
+
+
 def render_base_panel(jobs: list[dict[str, Any]]) -> None:
-    """Panneau : état de la base et maintenance du pipeline."""
-    # Affichage du moniteur de tâche interactive (barre, logs, bouton d'arrêt)
+    """Page Pipeline : suivi de tâche, lancement des traitements, base et cloud."""
+    render_page_header(
+        "Pilotage",
+        "Pipeline",
+        "Lancez la collecte, l'enrichissement des fiches et le scoring en tâche de fond, "
+        "puis gérez la base SQLite et sa synchronisation cloud.",
+    )
+    # Moniteur de tâche interactif (barre, logs, bouton d'arrêt)
     render_task_monitor()
 
     active_task = get_active_task()
     is_task_running = bool(active_task and active_task.get("status") == "running")
-
-    distribution = source_distribution(jobs)
-    
-    st.markdown("### État de la base SQLite")
-    st.markdown(
-        '<div class="sc-kv">'
-        + "".join(f"<div>{_esc(label)} <b>{count}</b></div>" for label, count, _ in distribution)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(f"{len(jobs)} offres en base SQLite")
-    
-    if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", use_container_width=True):
-        try:
-            db = get_database()
-            db.engine.dispose()
-        except Exception:
-            pass
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        bump_data_version(sync_cloud=False)
-        st.rerun()
-
-    # Section Synchronisation Cloud
-    st.markdown("---")
-    st.markdown("### ☁️ Synchronisation Cloud (R2 / S3)")
-    if is_cloud_storage_configured():
-        meta = get_remote_metadata()
-        if meta:
-            size_mb = meta["size_bytes"] / (1024 * 1024)
-            date_str = meta["last_modified"].strftime("%d/%m/%Y à %H:%M UTC") if meta.get("last_modified") else "inconnue"
-            st.success(f"Stockage distant connecté. Base distante : **{size_mb:.2f} Mo** (modifiée le {date_str}).")
-        else:
-            st.info("Stockage distant configuré mais aucune base distante trouvée dans le bucket.")
-
-        c_sync1, c_sync2 = st.columns(2)
-        with c_sync1:
-            if st.button("⬇️ Récupérer la dernière base distante", use_container_width=True, help="Force le téléchargement de la base depuis le bucket."):
-                with st.spinner("Téléchargement de la base distante en cours..."):
-                    try:
-                        db = get_database()
-                        db.engine.dispose()
-                    except Exception:
-                        pass
-                    if download_database(force=True):
-                        st.cache_resource.clear()
-                        st.cache_data.clear()
-                        bump_data_version(sync_cloud=False)
-                        st.toast("Base locale mise à jour depuis le cloud !")
-                        st.rerun()
-                    else:
-                        st.warning("Échec du téléchargement ou stockage vide.")
-        with c_sync2:
-            if st.button("⬆️ Sauvegarder la base vers le cloud", use_container_width=True, help="Envoie la base SQLite actuelle vers le bucket."):
-                with st.spinner("Envoi vers le cloud en cours..."):
-                    if upload_database():
-                        st.toast("Base sauvegardée sur le cloud avec succès !")
-                    else:
-                        st.error("Échec de l'envoi.")
-    else:
-        st.caption("Synchronisation cloud non active. Configurez les variables R2/S3 pour lier un bucket.")
+    if is_task_running:
+        st.info("Un traitement est en cours : suivez sa progression ci-dessus. "
+                "Les autres actions restent désactivées jusqu'à sa fin.", icon=":material/hourglass_top:")
 
     is_cloud_env = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
-
     if is_cloud_env:
-        st.markdown("---")
-        st.markdown("### 🛡️ Collecte & Pipeline (Mode Cloud)")
+        _section("Collecte & pipeline", "mode cloud")
         st.warning(
-            "**Collecte automatique désactivée depuis Render** : Les requêtes vers LinkedIn et Cloudflare JobTeaser "
-            "depuis les serveurs cloud de datacenters sont fréquemment bloquées ou bannies par les systèmes anti-bot.\n\n"
-            "👉 **Pour collecter de nouvelles offres** : lancez simplement `python run_pipeline.py` sur votre machine locale. "
-            "Les nouvelles offres seront ensuite synchronisées avec ce tableau de bord."
+            "**Collecte automatique désactivée sur le serveur cloud** : LinkedIn et JobTeaser bloquent "
+            "fréquemment les requêtes issues de datacenters.\n\n"
+            "Pour collecter de nouvelles offres, lancez `python run_pipeline.py` sur votre machine : "
+            "elles seront ensuite synchronisées avec ce tableau de bord.",
+            icon=":material/shield:",
         )
-        with st.expander("Mode avancé (Forcer une action sur le serveur Render)"):
-            st.caption("Attention : réservé au dépannage ou aux tests.")
-            for action in PIPELINE_ACTIONS:
-                if st.button(action.label, use_container_width=True, key=f"cloud-pipeline-{action.key}", disabled=is_task_running):
-                    run_pipeline(action)
+        with st.expander("Mode avancé : forcer une action sur le serveur"):
+            st.caption("Réservé au dépannage ou aux tests.")
+            render_actions(PIPELINE_ACTIONS, is_task_running, "cloud-pipeline")
     else:
+        _section("Lancer un traitement", "chaque action tourne en tâche de fond et survit à la navigation")
+        render_actions(PIPELINE_ACTIONS, is_task_running, "pipeline")
+        st.caption("Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement.")
+        st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
         render_custom_collection_form(is_task_running)
-        st.markdown("---")
-        st.markdown("### Actions de pipeline prédéfinies")
-        if is_task_running:
-            st.info("⏳ Un traitement est actuellement en cours. Vous pouvez suivre sa progression en direct ci-dessus.")
 
-        for action in PIPELINE_ACTIONS:
-            if st.button(
-                action.label,
-                use_container_width=True,
-                help=action.help,
-                key=f"pipeline-{action.key}",
-                disabled=is_task_running,
-            ):
-                run_pipeline(action)
-        st.caption(
-            "Chaque action s'exécute en tâche de fond avec suivi en temps réel et survit à la navigation entre les pages. "
-            "Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement."
-        )
+    st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
+    render_database_section(jobs)
 
 
 db = get_database()

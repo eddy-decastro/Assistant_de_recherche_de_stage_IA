@@ -180,13 +180,13 @@ SOURCE_LABELS = {
 
 # Couleur de badge par plateforme (repli : gris ardoise).
 SOURCE_COLORS = {
-    "linkedin": "#1C1B19",
-    "wttj": "#A8761F",
-    "welcome_to_the_jungle": "#A8761F",
-    "jobteaser": "#A8761F",
+    "linkedin": "#0A66C2",
+    "wttj": "#EAB308",
+    "welcome_to_the_jungle": "#EAB308",
+    "jobteaser": "#F97316",
 }
 
-SOURCE_FALLBACK_COLOR = "#475569"
+SOURCE_FALLBACK_COLOR = "#71717A"
 
 # Ordre d'affichage préféré des plateformes ; les sources inconnues suivent.
 SOURCE_ORDER = ["linkedin", "wttj", "welcome_to_the_jungle", "jobteaser"]

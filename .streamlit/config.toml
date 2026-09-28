@@ -1,10 +1,32 @@
 [theme]
-base = "light"
-primaryColor = "#B5482A"
-backgroundColor = "#F6F3EE"
-secondaryBackgroundColor = "#FFFDF9"
-textColor = "#1C1B19"
-font = "sans serif"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
+headingFontWeights = [700, 650, 650, 600, 600, 600]
+baseRadius = "8px"
+showSidebarBorder = true
+chartCategoricalColors = ["#6366F1", "#10B981", "#F59E0B", "#F43F5E", "#0EA5E9", "#A855F7", "#71717A"]
+
+[theme.light]
+primaryColor = "#4F46E5"
+backgroundColor = "#F7F7F8"
+secondaryBackgroundColor = "#EFEFF1"
+textColor = "#18181B"
+borderColor = "#E4E4E7"
+
+[theme.light.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F4F5"
+
+[theme.dark]
+primaryColor = "#6366F1"
+backgroundColor = "#0E0F13"
+secondaryBackgroundColor = "#1D2027"
+textColor = "#ECECEF"
+borderColor = "#262A33"
+
+[theme.dark.sidebar]
+backgroundColor = "#16181D"
+secondaryBackgroundColor = "#1D2027"
 
 [browser]
 gatherUsageStats = false

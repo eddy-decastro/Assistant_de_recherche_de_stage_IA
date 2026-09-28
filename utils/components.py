@@ -4,7 +4,8 @@ from typing import Any, Sequence, Mapping
 import html
 import json
 from utils.data import *
-from utils.data import _esc, _set_status
+from utils.data import _esc, _set_status_and_advance
+from utils.layout import page_header_html
 
 from src.constants import *
 from src.storage.database import Database
@@ -23,31 +24,38 @@ def _badge(label: str, tone: str | None = None, dot: str | None = None, extra_cl
     return f'<span class="{classes}">{marker}{_esc(label)}</span>'
 
 
-def score_html(job: dict[str, Any]) -> str:
-    """Jauge de score épurée : « 84 / 100 » + libellé d'alignement."""
+def score_html(job: dict[str, Any], small: bool = False) -> str:
+    """Jauge de score : pastille « 84/100 », mini-barre 0–100 et palier d'alignement."""
     score = effective_score(job)
     label, tone = score_alignment(score)
     origin = "rerank LLM" if is_reranked(job) else "score hybride"
+    width = max(0.0, min(100.0, score))
+    size = " sc-score-sm" if small else ""
     return (
-        f'<div class="sc-score-box {tone_class(tone)}">'
-        f'<span class="sc-score" title="Score R&D ({origin})"><b>{score:.0f}</b><span>/100</span></span>'
+        f'<div class="sc-score-box{size} {tone_class(tone)}">'
+        f'<span class="sc-score" title="Score R&amp;D ({origin})"><b>{score:.0f}</b><span>/100</span></span>'
+        f'<span class="sc-score-bar"><i style="width:{width:.0f}%"></i></span>'
         f'<span class="sc-align">{_esc(label)}</span>'
         f"</div>"
     )
 
 
+def _status_html(status: str | None) -> str:
+    """Statut de candidature : pastille colorée + libellé."""
+    tone = STATUS_TONES.get(status, "mute")
+    return (
+        f'<span class="sc-status {tone_class(tone)}"><i class="sc-dot"></i>'
+        f'{_esc(STATUS_LABELS.get(status, status or "Inconnu"))}</span>'
+    )
+
+
 def _meta_html(job: dict[str, Any]) -> str:
     """Sous-titre : entreprise · ville · date relative · statut de candidature."""
-    status = job.get("status")
-    status_cls = f"sc-status-{status.lower()}" if status else ""
     parts = [f'<span class="sc-company">{_esc(job.get("company"))}</span>']
     if job.get("location"):
         parts.append(f'<span class="sc-meta-item">{_esc(job["location"])}</span>')
     parts.append(f'<span class="sc-meta-item">{_esc(relative_date(job.get("created_at")))}</span>')
-    parts.append(
-        f'<span class="sc-status {status_cls}">'
-        f'<i class="sc-dot"></i>{_esc(STATUS_LABELS.get(status, status or "Inconnu"))}</span>'
-    )
+    parts.append(_status_html(job.get("status")))
     separator = '<span class="sc-sep">·</span>'
     return f'<div class="sc-card-meta">{separator.join(parts)}</div>'
 
@@ -134,22 +142,23 @@ def _verdict_block(job: dict[str, Any]) -> str:
     )
 
 
-# Icônes de la grille d'évaluation (sous-scores) — l'emoji est confiné à l'UI.
-SUB_SCORE_ICONS = {
-    "modeling_depth": "📐",
-    "mentorship_team": "👥",
-    "engineering_practice": "⚙️",
-    "option_value": "🎓",
-    "logistics": "📅",
-    # Rétro-compatibilité :
-    "career_leverage": "🚀",
-    "pfe_compatibility": "📅",
-}
-
-
 def _subscore_tone(value: int) -> str:
     """Tonalité d'un sous-score (5 = excellent → 1 = bloquant)."""
     return {5: "positive", 4: "accent", 3: "mute", 2: "warn"}.get(value, "alert")
+
+
+def _meter_html(value: int) -> str:
+    """Jauge à 5 segments suivie de la note « n/5 »."""
+    segments = "".join('<i class="on"></i>' if index < value else "<i></i>" for index in range(5))
+    return f'<span class="sc-meter"><span class="sc-meter-seg">{segments}</span><b>{value}/5</b></span>'
+
+
+def _subscore_keys(sub: Mapping[str, Any]) -> list[str]:
+    """Sous-critères à afficher : grille courante d'abord, puis clés historiques connues."""
+    keys = [k for k in SUB_SCORE_KEYS if k in sub] + [
+        k for k in sub if k not in SUB_SCORE_KEYS and k in SUB_SCORE_LABELS
+    ]
+    return keys or list(SUB_SCORE_KEYS)
 
 
 def _hard_cap_banner(job: dict[str, Any]) -> str:
@@ -163,51 +172,36 @@ def _hard_cap_banner(job: dict[str, Any]) -> str:
         return ""
     return (
         f'<div class="sc-alert {tone_class("alert")}">'
-        '<span class="sc-alert-icon">⚠️</span>'
+        '<span class="sc-alert-icon">!</span>'
         f"<span><b>Verrou bloquant</b> — {_esc(reason)} : score plafonné, "
         "candidature à écarter ou à vérifier avant tout effort.</span></div>"
     )
 
 
-def _subscores_strip(job: dict[str, Any]) -> str:
-    """Mini-indicateurs compacts des sous-scores, visibles SANS ouvrir l'accordéon."""
-    if not is_reranked(job):
-        return ""
+def _subscore_items(job: dict[str, Any], labels: Mapping[str, str]) -> str:
+    """Lignes « libellé + jauge » des sous-scores, avec le libellé choisi."""
     sub = job.get("sub_scores") or {}
-    if not sub:
+    items = []
+    for key in _subscore_keys(sub):
+        value = coerce_sub_score(sub.get(key))
+        items.append(
+            f'<div class="sc-subscore-item {tone_class(_subscore_tone(value))}">'
+            f'<span>{_esc(labels.get(key, key))}</span>{_meter_html(value)}</div>'
+        )
+    return "".join(items)
+
+
+def _subscores_strip(job: dict[str, Any]) -> str:
+    """Mini-jauges compactes des sous-scores, visibles SANS ouvrir l'accordéon."""
+    if not is_reranked(job) or not job.get("sub_scores"):
         return ""
-    keys_to_show = [k for k in SUB_SCORE_KEYS if k in sub] + [
-        k for k in sub if k not in SUB_SCORE_KEYS and k in SUB_SCORE_LABELS
-    ]
-    if not keys_to_show:
-        keys_to_show = list(SUB_SCORE_KEYS)
-    separator = '<span class="sc-sep">|</span>'
-    items = [
-        f'<span class="sc-subscore-item {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
-        f"{SUB_SCORE_ICONS.get(key, '•')} {_esc(SUB_SCORE_SHORT_LABELS.get(key, key))} : "
-        f"<b>{coerce_sub_score(sub.get(key))}/5</b></span>"
-        for key in keys_to_show
-    ]
-    return f'<div class="sc-subscore-strip">{separator.join(items)}</div>'
+    return f'<div class="sc-subscore-strip">{_subscore_items(job, SUB_SCORE_SHORT_LABELS)}</div>'
 
 
 def _subscores_block(job: dict[str, Any]) -> str:
     """Grille d'évaluation détaillée (accordéon) : sous-scores /5 + verrou bloquant."""
-    if not is_reranked(job):
+    if not is_reranked(job) or not job.get("sub_scores"):
         return ""
-    sub = job.get("sub_scores") or {}
-    if not sub:
-        return ""
-    keys_to_show = [k for k in SUB_SCORE_KEYS if k in sub] + [
-        k for k in sub if k not in SUB_SCORE_KEYS and k in SUB_SCORE_LABELS
-    ]
-    if not keys_to_show:
-        keys_to_show = list(SUB_SCORE_KEYS)
-    badges = "".join(
-        f'<span class="sc-badge sc-subscore {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
-        f"{SUB_SCORE_ICONS.get(key, '•')} {_esc(SUB_SCORE_LABELS.get(key, key))} {coerce_sub_score(sub.get(key))}/5</span>"
-        for key in keys_to_show
-    )
     hard_cap = (job.get("hard_cap_triggered") or "").strip()
     cap_html = (
         f'<div class="sc-badges"><span class="sc-badge {tone_class("alert")}">'
@@ -217,7 +211,7 @@ def _subscores_block(job: dict[str, Any]) -> str:
     )
     return (
         '<div class="sc-block"><div class="sc-section">Grille d\'évaluation</div>'
-        f'<div class="sc-badges">{badges}</div>{cap_html}</div>'
+        f'<div class="sc-subscore-grid">{_subscore_items(job, SUB_SCORE_LABELS)}</div>{cap_html}</div>'
     )
 
 
@@ -299,81 +293,136 @@ def job_card_html(job: dict[str, Any], keywords: Sequence[str], compact: bool = 
     html += "</div>"
     return html
 
-@st.dialog("Lettre de motivation personnalisée", width="large")
+def job_list_item_html(job: dict[str, Any]) -> str:
+    """Élément compact de la liste d'offres : titre, contexte, score, verdict."""
+    meta = [f"<b>{_esc(job.get('company') or 'Entreprise inconnue')}</b>"]
+    if job.get("location"):
+        meta.append(_esc(job["location"]))
+    meta.append(_esc(relative_date(job.get("created_at"))))
+    tags = [_badge(source_label(job.get("source")), dot=source_color(job.get("source")))]
+    if is_reranked(job):
+        verdict = job.get("verdict")
+        tags.append(_badge(VERDICT_LABELS.get(verdict, verdict or "Évalué"), VERDICT_TONES.get(verdict, "mute")))
+    if job.get("hard_cap_triggered"):
+        tags.append(_badge("Verrou bloquant", "alert"))
+    status = job.get("status")
+    if status and status != STATUS_NEW:
+        tags.append(_badge(STATUS_LABELS.get(status, status), STATUS_TONES.get(status, "mute")))
+    return (
+        '<div class="sc-list-item">'
+        '<div class="sc-list-main">'
+        f'<div class="sc-list-title">{_esc(job.get("title") or "Offre sans titre")}</div>'
+        f'<div class="sc-list-meta">{" · ".join(meta)}</div>'
+        f'<div class="sc-list-tags">{"".join(tags)}</div>'
+        "</div>"
+        f"{score_html(job, small=True)}"
+        "</div>"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Lettre de motivation (boîte de dialogue)
+# --------------------------------------------------------------------------- #
+LETTER_SOURCES = {
+    "gemini": ("Rédigée par Gemini", "accent"),
+    "deepseek": ("Relais DeepSeek V3", "warn"),
+    "fallback": ("Mode secours algorithmique", "mute"),
+}
+
+
+def _copy_button_html(text: str, button_id: str) -> str:
+    """Bouton « Copier » : copie le brouillon affiché (ou, à défaut, la dernière version)."""
+    payload = json.dumps(text).replace("</", "<\\/")
+    return f"""
+<button id="{button_id}" class="sc-copy-btn" type="button">Copier la lettre</button>
+<script>
+(function () {{
+  const btn = document.getElementById("{button_id}");
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  const saved = {payload};
+  const done = () => {{
+    btn.classList.add("is-done");
+    btn.textContent = "Copiée";
+    setTimeout(() => {{ btn.classList.remove("is-done"); btn.textContent = "Copier la lettre"; }}, 2000);
+  }};
+  btn.addEventListener("click", () => {{
+    const area = document.querySelector('textarea[aria-label^="Brouillon"]');
+    const text = (area && area.value) || saved;
+    const legacy = () => {{
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.setAttribute("readonly", "");
+      el.style.position = "fixed";
+      el.style.left = "-9999px";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      done();
+    }};
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(done).catch(legacy);
+    }} else {{
+      legacy();
+    }}
+  }});
+}})();
+</script>
+"""
+
+
+def _store_letter(job_id: str, letter: str, source: str | None) -> None:
+    """Mémorise une nouvelle version de la lettre (brouillon éditable inclus)."""
+    session_key = f"cover_letter_{job_id}"
+    st.session_state[session_key] = letter
+    st.session_state[f"cover_letter_source_{job_id}"] = source
+    st.session_state[f"editor_{session_key}"] = letter
+
+
+def _is_stale_letter(text: str) -> bool:
+    """Vrai si le cache contient une erreur plutôt qu'une lettre."""
+    return not text or text.startswith("⚠️") or "no longer available" in text
+
+
+@st.dialog("Lettre de motivation", width="large")
 def show_cover_letter_dialog(job: dict[str, Any]) -> None:
-    """Boîte de dialogue modale affichant la lettre de motivation rédigée par Gemini."""
+    """Boîte de dialogue : brouillon éditable, copie, export PDF, régénération, candidature."""
     job_id = str(job.get("id"))
     title = str(job.get("title") or "Offre sans titre")
     company = str(job.get("company") or "Entreprise")
     url = str(job.get("url") or "")
-
-    if url.startswith("http"):
-        col_title, col_apply = st.columns([2.8, 1.2], vertical_alignment="center")
-        with col_title:
-            st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
-            st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
-        with col_apply:
-            st.link_button("🚀 Postuler à l'offre ↗", url, type="primary", use_container_width=True)
-    else:
-        st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
-        st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
-
     session_key = f"cover_letter_{job_id}"
-    source_key = f"cover_letter_source_{job_id}"
-    cached_letter = str(st.session_state.get(session_key, ""))
     editor_key = f"editor_{session_key}"
 
-    # Si la lettre n'a pas été générée ou si le cache contient une ancienne erreur
-    if (
-        not cached_letter
-        or cached_letter.startswith("⚠️")
-        or "no longer available" in cached_letter
-    ):
-        with st.spinner("Rédaction de la lettre en cours..."):
+    if _is_stale_letter(str(st.session_state.get(session_key, ""))):
+        with st.spinner("Rédaction de la lettre en cours…"):
             generator = CoverLetterGenerator()
-            new_letter = generator.generate(job)
-            st.session_state[session_key] = new_letter
-            st.session_state[source_key] = generator.last_source
-            if editor_key in st.session_state:
-                st.session_state[editor_key] = new_letter
-
-    letter_text = st.session_state.get(session_key, "")
-
-    # Nettoyage préventif de l'état du widget éditeur s'il contenait l'erreur
-    if editor_key in st.session_state and ("⚠️" in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
+            _store_letter(job_id, generator.generate(job), generator.last_source)
+    letter_text = str(st.session_state.get(session_key, ""))
+    if editor_key not in st.session_state or _is_stale_letter(str(st.session_state[editor_key])):
         st.session_state[editor_key] = letter_text
 
-    # Si la lettre a été produite via DeepSeek ou le moteur de secours algorithmique
-    source = st.session_state.get(source_key)
+    source = st.session_state.get(f"cover_letter_source_{job_id}")
+    source_badge = _badge(*LETTER_SOURCES[source]) if source in LETTER_SOURCES else ""
+    st.markdown(
+        '<div class="sc-letter-head">'
+        f'<h3 class="sc-card-title">{_esc(title)}</h3>{source_badge}</div>'
+        f'<div class="sc-card-meta"><span class="sc-company">{_esc(company)}</span>'
+        '<span class="sc-sep">·</span><span class="sc-meta-item">à partir de votre profil '
+        "<code>data/cv_eddy.txt</code></span></div>",
+        unsafe_allow_html=True,
+    )
     if source == "deepseek":
-        st.info(
-            "🤖 **IA de secours DeepSeek V3 active** : Votre lettre a été rédigée avec succès par DeepSeek "
-            "(relais automatique suite à une saturation temporaire de Google Gemini). "
-            "Vous pouvez la copier, la modifier ou la télécharger en PDF."
-        )
+        st.caption("Gemini était saturé : DeepSeek V3 a pris le relais automatiquement.")
     elif source == "fallback":
-        st.info(
-            "⚡ **Mode de secours algorithmique actif** : Rédigée sur-mesure à partir de votre profil et de l'offre. "
-            "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou tenter une génération IA ci-dessous."
-        )
+        st.caption("Les modèles IA sont indisponibles : version rédigée par le moteur de secours. "
+                   "Vous pouvez relancer une génération IA via « Régénérer ».")
 
-    edited = st.text_area(
-        "Brouillon de la lettre (éditable directement avant envoi) :",
-        value=letter_text,
-        height=380,
-        key=editor_key,
-    )
-
-    words_count = len(edited.split())
-    chars_count = len(edited)
-    approx_pages = max(1.0, round(words_count / 420.0, 1))
-    st.caption(f"📊 **{words_count} mots** · {chars_count:,} caractères (environ {approx_pages} page{'s' if approx_pages > 1.1 else ''} standard)")
-
-    custom_inst = st.text_input(
-        "Consigne spécifique pour orienter la rédaction (optionnel) :",
-        placeholder="ex : Insiste sur les Transformers et la vision par ordinateur, mets en valeur le projet MedStay-CI...",
-        key=f"inst_{session_key}",
-    )
+    edited = st.text_area("Brouillon (modifiable avant envoi)", height=380, key=editor_key)
+    words = len(edited.split())
+    pages = max(1.0, round(words / 420.0, 1))
+    st.caption(f"{words} mots · {len(edited):,} caractères · ≈ {pages} page{'s' if pages > 1.1 else ''}".replace(",", " "))
 
     clean_company = "".join(c for c in company if c.isalnum() or c in ("-", "_", " ")).strip()
     if clean_company and clean_company.lower() not in ("entreprise", "inconnue", "none"):
@@ -381,288 +430,180 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     else:
         pdf_filename = "Lettre de motivation Eddy De Castro.pdf"
 
-    pdf_bytes = generate_cover_letter_pdf(edited, job=job)
-    # Fix: escape single quotes for insertion in HTML inline script
-    escaped_json = json.dumps(edited).replace("'", "&#39;")
-    copy_btn_id = f"copy_btn_{job_id}"
-
-    c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.1, 1.1], gap="small")
-    with c1:
-        st.html(
-            f"""
-            <div style="display: flex; width: 100%;">
-              <button
-                id="{copy_btn_id}"
-                type="button"
-                onclick='(function(btn) {{
-                  let textToCopy = {escaped_json};
-                  const area = document.querySelector("textarea[aria-label*=\\"Brouillon\\"]");
-                  if (area && area.value) {{
-                    textToCopy = area.value;
-                  }}
-                  if (navigator.clipboard && navigator.clipboard.writeText) {{
-                    navigator.clipboard.writeText(textToCopy).then(() => {{
-                      btn.innerText = "✓ Copié dans le presse-papier !";
-                      btn.style.backgroundColor = "#059669";
-                      btn.style.borderColor = "#059669";
-                      btn.style.color = "#FFFFFF";
-                      setTimeout(() => {{
-                        btn.innerText = "📋 Copier la lettre";
-                        btn.style.backgroundColor = "";
-                        btn.style.borderColor = "";
-                        btn.style.color = "";
-                      }}, 2500);
-                    }}).catch(() => fallbackCopy(textToCopy, btn));
-                  }} else {{
-                    fallbackCopy(textToCopy, btn);
-                  }}
-                  function fallbackCopy(str, b) {{
-                    const el = document.createElement("textarea");
-                    el.value = str;
-                    el.setAttribute("readonly", "");
-                    el.style.position = "absolute";
-                    el.style.left = "-9999px";
-                    document.body.appendChild(el);
-                    el.select();
-                    document.execCommand("copy");
-                    document.body.removeChild(el);
-                    b.innerText = "✓ Copié dans le presse-papier !";
-                    b.style.backgroundColor = "#059669";
-                    b.style.borderColor = "#059669";
-                    b.style.color = "#FFFFFF";
-                    setTimeout(() => {{
-                      b.innerText = "📋 Copier la lettre";
-                      b.style.backgroundColor = "";
-                      b.style.borderColor = "";
-                      b.style.color = "";
-                    }}, 2500);
-                  }}
-                }})(this)'
-                style="
-                  width: 100%;
-                  min-height: 38px;
-                  padding: 0.4rem 0.75rem;
-                  font-family: inherit;
-                  font-size: 13px;
-                  font-weight: 500;
-                  color: inherit;
-                  background-color: transparent;
-                  border: 1px solid rgba(128, 128, 128, 0.35);
-                  border-radius: 8px;
-                  cursor: pointer;
-                  display: inline-flex;
-                  align-items: center;
-                  justify-content: center;
-                  gap: 6px;
-                  transition: all 0.2s ease-in-out;
-                "
-                onmouseover="this.style.borderColor='#1E3A8A'; this.style.backgroundColor='rgba(30, 58, 138, 0.08)';"
-                onmouseout="if(!this.innerText.includes('Copié')) {{ this.style.borderColor='rgba(128, 128, 128, 0.35)'; this.style.backgroundColor='transparent'; }}"
-              >
-                📋 Copier la lettre
-              </button>
-            </div>
-            """
-        )
-    with c2:
+    c_copy, c_pdf, c_regen = st.columns(3, gap="small")
+    with c_copy:
+        st.html(_copy_button_html(edited, f"copy_btn_{job_id}"), unsafe_allow_javascript=True)
+    with c_pdf:
         st.download_button(
-            "Télécharger (.pdf)",
-            data=pdf_bytes,
+            "Télécharger en PDF",
+            data=generate_cover_letter_pdf(edited, job=job),
             file_name=pdf_filename,
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
             icon=":material/picture_as_pdf:",
         )
-    with c3:
-        if st.button("Réessayer Gemini", key=f"regen_gemini_{job_id}", use_container_width=True, icon=":material/refresh:"):
-            with st.spinner("Appel à Gemini en cours..."):
-                generator = CoverLetterGenerator()
-                new_l = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
-                st.session_state[session_key] = new_l
-                st.session_state[source_key] = generator.last_source
-                if editor_key in st.session_state:
-                    st.session_state[editor_key] = new_l
-                if generator.last_source == "gemini":
-                    st.toast("✓ Lettre rédigée avec succès par Gemini !")
-                elif generator.last_source == "deepseek":
-                    st.toast("🤖 Gemini saturé : relayé avec succès par DeepSeek V3 !")
-                else:
-                    st.toast("⚡ Version de secours algorithmique générée.")
-                st.rerun()
-    with c4:
-        if st.button("Rédiger DeepSeek", key=f"force_deepseek_{job_id}", use_container_width=True, icon=":material/smart_toy:"):
-            with st.spinner("Rédaction par DeepSeek V3..."):
-                generator = CoverLetterGenerator()
-                new_l = generator.generate_with_deepseek(job, custom_instruction=custom_inst)
-                if new_l and not new_l.startswith("⚠️"):
-                    st.session_state[session_key] = new_l
-                    st.session_state[source_key] = "deepseek"
-                    if editor_key in st.session_state:
-                        st.session_state[editor_key] = new_l
-                    st.toast("✓ Lettre rédigée avec succès par DeepSeek V3 !")
-                else:
-                    st.toast("⚠️ DeepSeek non disponible, génération de secours activée.")
-                    new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
-                    st.session_state[session_key] = new_l
-                    st.session_state[source_key] = "fallback"
-                    if editor_key in st.session_state:
-                        st.session_state[editor_key] = new_l
-                st.rerun()
-
-    # Section de candidature directe depuis la lettre de motivation
-    if url.startswith("http"):
-        st.markdown('<hr style="margin: 18px 0 14px; border-color: var(--border, #E4DED3);">', unsafe_allow_html=True)
-        col_act1, col_act2 = st.columns([1.6, 1.2], vertical_alignment="center", gap="small")
-        with col_act1:
-            st.link_button(
-                "🚀 Postuler directement à l'offre ↗",
-                url,
-                type="primary",
-                use_container_width=True,
+    with c_regen:
+        with st.popover("Régénérer", icon=":material/refresh:", width="stretch"):
+            custom_inst = st.text_area(
+                "Consigne pour orienter la rédaction (facultatif)",
+                placeholder="ex : insiste sur les Transformers et la vision par ordinateur…",
+                key=f"inst_{session_key}",
+                height=90,
             )
-        with col_act2:
-            current_st = job.get("status")
-            if current_st != STATUS_APPLIED:
-                if st.button(
-                    "✓ Marquer comme postulé",
-                    key=f"dialog_applied_{job_id}",
-                    use_container_width=True,
-                    icon=":material/check_circle:",
-                ):
-                    db = get_database()
-                    db.update_status(job_id, STATUS_APPLIED)
-                    job["status"] = STATUS_APPLIED
-                    bump_data_version()
-                    st.toast("✓ Statut mis à jour : Candidature marquée comme envoyée !")
-                    st.rerun()
-            else:
-                st.caption("✅ Candidature déjà enregistrée comme postulée")
+            if st.button("Avec Gemini", key=f"regen_gemini_{job_id}", type="primary", width="stretch"):
+                with st.spinner("Appel à Gemini en cours…"):
+                    generator = CoverLetterGenerator()
+                    letter = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
+                    _store_letter(job_id, letter, generator.last_source)
+                st.toast({
+                    "gemini": "Lettre rédigée par Gemini.",
+                    "deepseek": "Gemini saturé : lettre rédigée par DeepSeek V3.",
+                }.get(generator.last_source, "Version de secours générée."))
+                st.rerun(scope="fragment")
+            if st.button("Avec DeepSeek V3", key=f"force_deepseek_{job_id}", width="stretch"):
+                with st.spinner("Rédaction par DeepSeek V3…"):
+                    generator = CoverLetterGenerator()
+                    letter = generator.generate_with_deepseek(job, custom_instruction=custom_inst)
+                    if letter and not letter.startswith("⚠️"):
+                        _store_letter(job_id, letter, "deepseek")
+                        st.toast("Lettre rédigée par DeepSeek V3.")
+                    else:
+                        _store_letter(job_id, generator.generate_fallback(job, custom_instruction=custom_inst), "fallback")
+                        st.toast("DeepSeek indisponible : version de secours générée.")
+                st.rerun(scope="fragment")
+
+    st.divider()
+    c_apply, c_status = st.columns(2, gap="small")
+    with c_apply:
+        if url.startswith("http"):
+            st.link_button("Postuler à l'offre ↗", url, type="primary", width="stretch")
+    with c_status:
+        if job.get("status") == STATUS_APPLIED:
+            st.caption("Candidature déjà marquée comme envoyée.")
+        elif st.button("Marquer comme postulé", key=f"dialog_applied_{job_id}", width="stretch", icon=":material/check_circle:"):
+            get_database().update_status(job_id, STATUS_APPLIED)
+            job["status"] = STATUS_APPLIED
+            bump_data_version()
+            st.toast("Candidature marquée comme envoyée.")
+            st.rerun()
 
 
-def render_job_card(db: Database, job: dict[str, Any], keywords: Sequence[str]) -> None:
-    """Rend une carte d'offre unifiée suivie de sa barre d'actions de candidature."""
-    with st.container(border=True):
+# --------------------------------------------------------------------------- #
+# Flux d'offres : liste compacte + panneau de détail
+# --------------------------------------------------------------------------- #
+LIST_PANE_HEIGHT = 780
+
+
+def _status_actions(status: str | None) -> tuple[tuple[str, str, str], ...]:
+    """Transitions proposées depuis un statut : (libellé, statut cible, icône)."""
+    if status == STATUS_APPLIED:
+        return (("Entretien obtenu", STATUS_INTERVIEW, ":material/forum:"), ("Archiver", STATUS_IGNORED, ":material/archive:"))
+    if status in (STATUS_INTERVIEW, STATUS_IGNORED, STATUS_REJECTED):
+        return (("Rétablir au flux", STATUS_NEW, ":material/undo:"),)
+    return (("Marquer postulé", STATUS_APPLIED, ":material/send:"), ("Archiver", STATUS_IGNORED, ":material/archive:"))
+
+
+def render_job_card(db: Database, job: dict[str, Any], keywords: Sequence[str], next_id: str | None = None) -> None:
+    """Carte d'offre détaillée suivie de sa barre d'actions de candidature."""
+    job_id = str(job.get("id"))
+    url = str(job.get("url") or "")
+    with st.container(border=True, key=f"card-detail-{job_id}"):
         st.markdown(job_card_html(job, keywords), unsafe_allow_html=True)
         st.markdown('<div class="sc-card-actions-divider"></div>', unsafe_allow_html=True)
-        status = job.get("status")
-        job_id = str(job.get("id"))
-        url = str(job.get("url") or "")
-
-        if status == STATUS_APPLIED:
-            actions: tuple[tuple[str, str], ...] = (
-                ("Entretien obtenu", STATUS_INTERVIEW),
-                ("Archiver", STATUS_IGNORED),
-            )
-        elif status in (STATUS_INTERVIEW, STATUS_IGNORED):
-            actions = (("Rétablir au flux", STATUS_NEW),)
-        else:
-            actions = (("Marquer postulé", STATUS_APPLIED), ("Archiver", STATUS_IGNORED))
-
-        if len(actions) == 2:
-            cols = st.columns([1.3, 2.5, 1.1, 1.4, 1.1], gap="small")
-            with cols[0]:
-                if url.startswith("http"):
-                    st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
-            # cols[1] sert d'espaceur pour pousser les boutons secondaires à droite
-            with cols[2]:
-                if st.button("Lettre", key=f"letter-{job_id}", use_container_width=True, icon=":material/edit_note:"):
-                    show_cover_letter_dialog(job)
-            with cols[3]:
+        with st.container(horizontal=True, gap="small"):
+            if url.startswith("http"):
+                st.link_button("Postuler ↗", url, type="primary")
+            if st.button("Lettre de motivation", key=f"letter-{job_id}", icon=":material/edit_note:"):
+                show_cover_letter_dialog(job)
+            for label, target, icon in _status_actions(job.get("status")):
                 st.button(
-                    actions[0][0],
-                    key=f"status-{actions[0][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[0][1]),
-                    use_container_width=True,
-                )
-            with cols[4]:
-                st.button(
-                    actions[1][0],
-                    key=f"status-{actions[1][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[1][1]),
-                    use_container_width=True,
-                )
-        else:
-            cols = st.columns([1.3, 3.8, 1.1, 1.4], gap="small")
-            with cols[0]:
-                if url.startswith("http"):
-                    st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
-            with cols[2]:
-                if st.button("Lettre", key=f"letter-{job_id}", use_container_width=True, icon=":material/edit_note:"):
-                    show_cover_letter_dialog(job)
-            with cols[3]:
-                st.button(
-                    actions[0][0],
-                    key=f"status-{actions[0][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[0][1]),
-                    use_container_width=True,
+                    label,
+                    key=f"status-{target}-{job_id}",
+                    icon=icon,
+                    on_click=_set_status_and_advance,
+                    args=(db, job_id, target, next_id),
                 )
 
 
-
-def render_compact_card_with_select(db, job, keywords):
-    """Rend une carte d'offre compacte (liste de gauche) avec un bouton de sélection."""
-    import streamlit as st
-    with st.container(border=True):
-        st.markdown(job_card_html(job, keywords, compact=True), unsafe_allow_html=True)
-        st.markdown('<div class="sc-card-actions-divider"></div>', unsafe_allow_html=True)
-        job_id = str(job.get("id"))
-        is_selected = st.session_state.get("selected_job_id") == job_id
-        label = "👁️ Sélectionnée" if is_selected else "🔍 Voir détails"
-        
-        # Un seul bouton pour la carte compacte
-        if st.button(label, key=f"select_{job_id}", use_container_width=True, type="primary" if is_selected else "secondary"):
+def render_compact_card_with_select(db: Database, job: dict[str, Any], keywords: Sequence[str]) -> None:
+    """Élément compact de la liste de gauche, avec son bouton de sélection."""
+    job_id = str(job.get("id"))
+    is_selected = st.session_state.get("selected_job_id") == job_id
+    with st.container(border=True, key=f"card-{'sel' if is_selected else 'item'}-{job_id}"):
+        st.markdown(job_list_item_html(job), unsafe_allow_html=True)
+        if st.button(
+            "Affichée" if is_selected else "Voir le détail",
+            key=f"select_{job_id}",
+            type="tertiary",
+            icon=":material/check:" if is_selected else ":material/arrow_forward:",
+            icon_position="left" if is_selected else "right",
+            disabled=is_selected,
+        ):
             st.session_state.selected_job_id = job_id
             st.rerun()
 
-def render_job_detail_pane(db, job, keywords):
-    """Rend le panneau de détails complet (à droite)."""
-    import streamlit as st
-    st.markdown("### Détails de l'offre")
-    render_job_card(db, job, keywords)
+
+def render_job_detail_pane(db: Database, job: dict[str, Any], keywords: Sequence[str], next_id: str | None = None) -> None:
+    """Panneau de détail (colonne de droite)."""
+    render_job_card(db, job, keywords, next_id)
+
+
+def _empty_state(title: str, body: str) -> None:
+    """Encadré d'état vide (titre + explication)."""
+    st.markdown(f'<div class="sc-empty"><b>{title}</b>{body}</div>', unsafe_allow_html=True)
+
 
 def render_stream(
-    db,
-    jobs,
-    filters,
-    keywords,
+    db: Database,
+    jobs: list[dict[str, Any]],
+    filters: Filters,
+    keywords: Sequence[str],
+    base_total: int | None = None,
+    active_filters: int = 0,
 ) -> None:
-    import streamlit as st
+    """Flux d'offres en deux volets : liste compacte à gauche, détail à droite."""
     if not jobs:
-        st.markdown(
-            '<div class="sc-empty">Aucune offre ne correspond aux filtres courants.<br>'
-            "Relancez la collecte (<code>python run_pipeline.py</code>) ou élargissez les critères.</div>",
-            unsafe_allow_html=True,
-        )
+        if base_total == 0:
+            _empty_state(
+                "La base ne contient encore aucune offre.",
+                "Lancez une première collecte depuis la page Pipeline, ou en local avec "
+                "<code>python run_pipeline.py</code>.",
+            )
+            try:
+                st.page_link("pages/pipeline.py", label="Ouvrir le pipeline", icon=":material/play_circle:")
+            except Exception:  # noqa: BLE001 - page exécutée hors du routeur (tests)
+                pass
+        else:
+            _empty_state(
+                "Aucune offre ne correspond aux filtres courants.",
+                "Élargissez les critères ou relancez la collecte "
+                "(<code>python run_pipeline.py</code>).",
+            )
+            st.button("Réinitialiser les filtres", key="reset-filters-empty", icon=":material/filter_alt_off:", on_click=reset_filters)
         return
-        
-    note = "tri par score R&D décroissant"
-    note += " · filtres actifs" if not filters.is_default() else " · aucun filtre"
+
+    note = "tri par score R&amp;D décroissant"
+    note += " · filtres actifs" if active_filters else " · aucun filtre"
     st.markdown(
         f'<div class="sc-stream"><span class="sc-stream-count">{len(jobs)} offre(s)</span>'
         f'<span class="sc-stream-note">{note}</span></div>',
         unsafe_allow_html=True,
     )
-    
-    # SPLIT PANE
-    if "selected_job_id" not in st.session_state:
-        st.session_state.selected_job_id = None
-        
-    valid_ids = {str(j["id"]) for j in jobs}
-    if st.session_state.selected_job_id not in valid_ids and jobs:
-        st.session_state.selected_job_id = str(jobs[0]["id"])
-        
-    col_list, col_detail = st.columns([1.1, 1.4], gap="medium")
-    
+
+    ids = [str(j["id"]) for j in jobs]
+    if st.session_state.get("selected_job_id") not in ids:
+        st.session_state.selected_job_id = ids[0]
+    selected_id = st.session_state.selected_job_id
+    position = ids.index(selected_id)
+    next_id = ids[position + 1] if position + 1 < len(ids) else (ids[position - 1] if position else None)
+
+    col_list, col_detail = st.columns([1, 1.45], gap="medium")
     with col_list:
-        with st.container(height=900, border=False):
+        with st.container(height=LIST_PANE_HEIGHT, border=False):
             if filters.group_by_source:
-                from utils.data import group_jobs_by_source
                 for label, group in group_jobs_by_source(jobs):
                     st.markdown(
-                        f'<div class="sc-group"><span class="sc-group-name">{label}</span>'
+                        f'<div class="sc-group"><span class="sc-group-name">{_esc(label)}</span>'
                         f'<span class="sc-group-count">{len(group)} offre(s)</span></div>',
                         unsafe_allow_html=True,
                     )
@@ -671,17 +612,13 @@ def render_stream(
             else:
                 for job in jobs:
                     render_compact_card_with_select(db, job, keywords)
-                    
+
     with col_detail:
-        with st.container(height=900, border=False):
-            if st.session_state.selected_job_id:
-                try:
-                    selected_job = next(j for j in jobs if str(j["id"]) == st.session_state.selected_job_id)
-                    render_job_detail_pane(db, selected_job, keywords)
-                except StopIteration:
-                    st.info("Offre introuvable.")
-            else:
-                st.info("👈 Sélectionnez une offre à gauche pour voir les détails.")
+        with st.container(height=LIST_PANE_HEIGHT, border=False):
+            selected_job = next(j for j in jobs if str(j["id"]) == selected_id)
+            render_job_detail_pane(db, selected_job, keywords, next_id)
+
+
 
 # --------------------------------------------------------------------------- #
 # Bandeau KPI & en-tête
@@ -693,15 +630,17 @@ def _inline_relative(value: Any) -> str:
 
 
 def render_header(jobs: list[dict[str, Any]], config: dict[str, Any]) -> None:
-    """En-tête : identité du poste, volumétrie et chaîne de traitement courante."""
-    llm_model = config.get("llm", {}).get("model", "Gemini 2.0 Flash")
+    """En-tête : identité du produit, volumétrie et chaîne de traitement courante."""
+    llm_model = config.get("llm", {}).get("model", "Gemini")
     stamps = [stamp for stamp in (parse_timestamp(job.get("created_at")) for job in jobs) if stamp]
-    chain = f"scoring & reranking 100% LLM (<code>{_esc(llm_model)}</code>)"
+    last = _esc(_inline_relative(max(stamps))) if stamps else "inconnue"
     st.markdown(
-        '<div class="sc-eyebrow">Veille stages R&amp;D · Data Science / Machine Learning</div>'
-        '<div class="sc-title">Stage Copilot</div>'
-        f'<div class="sc-subtitle">{len(jobs)} offres en base · dernière collecte '
-        f"{_esc(_inline_relative(max(stamps)) if stamps else 'inconnue')} · {chain}</div>",
+        page_header_html(
+            "Veille stages R&D · Data Science / Machine Learning",
+            "Stage Copilot",
+            f"{len(jobs)} offres en base · dernière collecte {last} · "
+            f"scoring &amp; reranking par <code>{_esc(llm_model)}</code>",
+        ),
         unsafe_allow_html=True,
     )
 
@@ -751,8 +690,58 @@ def render_kpis(
 
 
 # --------------------------------------------------------------------------- #
-# Barre latérale : filtres compacts, affichage, maintenance de la base
+# Barre latérale : filtres compacts, réinitialisation, affichage
 # --------------------------------------------------------------------------- #
+def filter_defaults(sources: Sequence[str]) -> dict[str, Any]:
+    """Valeurs par défaut des filtres du flux (toutes plateformes, vue focus active)."""
+    return {
+        "flt_query": "",
+        "flt_sources": list(sources),
+        "flt_min_score": 0,
+        "flt_llm_only": False,
+        "flt_hide_processed": True,
+        "flt_statuses": list(STATUS_ORDER),
+        "flt_tiers": list(TIER_LABELS.keys()),
+        "flt_exclude_esn": False,
+        "flt_exclude_dassault": False,
+        "flt_exclude_companies": [],
+        "flt_selected_companies": [],
+    }
+
+
+def reset_filters() -> None:
+    """Callback : rétablit tous les filtres du flux à leur valeur par défaut.
+
+    Les valeurs sont réécrites (et non supprimées) pour que les widgets affichés
+    se remettent à jour côté navigateur.
+    """
+    defaults = st.session_state.get("_flt_defaults") or {}
+    for key, value in defaults.items():
+        st.session_state[key] = list(value) if isinstance(value, list) else value
+
+
+def active_filter_count(filters: Filters, all_sources: Sequence[str] = ()) -> int:
+    """Nombre de critères qui restreignent réellement le flux.
+
+    Contrairement à ``Filters.is_default``, ignore la pagination et la vue focus
+    (activée par défaut) et considère « toutes les plateformes cochées » comme
+    l'absence de filtre.
+    """
+    checks = (
+        bool(filters.query),
+        bool(filters.sources) and bool(all_sources) and set(filters.sources) != set(all_sources),
+        bool(filters.min_score),
+        filters.llm_only,
+        not filters.hide_processed and bool(filters.statuses) and set(filters.statuses) != set(STATUS_ORDER),
+        bool(filters.tiers) and len(filters.tiers) != len(TIER_LABELS),
+        filters.exclude_esn,
+        filters.exclude_dassault,
+        bool(filters.exclude_companies),
+        bool(filters.selected_companies),
+    )
+    return sum(1 for check in checks if check)
+
+
 def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -> Filters:
     """Barre latérale de filtres compacts ; retourne les critères courants."""
     counts: dict[str, int] = {}
@@ -767,91 +756,106 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
 
     sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
 
-    with st.sidebar:
-        from utils.task_manager import render_sidebar_task_badge
-        render_sidebar_task_badge()
+    # Filtres pilotés par session_state : défauts posés une fois, puis nettoyés des
+    # options disparues (la base a pu changer depuis le dernier rendu).
+    defaults = filter_defaults(sources)
+    st.session_state["_flt_defaults"] = defaults
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+    for key, options in (
+        ("flt_sources", sources),
+        ("flt_exclude_companies", sorted_companies),
+        ("flt_selected_companies", sorted_companies),
+    ):
+        allowed = set(options)
+        st.session_state[key] = [value for value in st.session_state[key] if value in allowed]
 
+    with st.sidebar:
         st.markdown('<div class="sc-eyebrow">Filtres</div>', unsafe_allow_html=True)
+        state_slot = st.container()
         query = st.text_input(
             "Recherche",
             placeholder="Titre, entreprise, techno…",
             icon=":material/search:",
+            key="flt_query",
             help="Plein texte (ET logique) sur le titre, l'entreprise, la ville, "
             "la fiche de poste et les technologies. Validez avec Entrée.",
         )
         selected_sources = st.multiselect(
             "Plateformes",
             options=list(sources),
-            default=list(sources),
+            key="flt_sources",
             format_func=lambda source: f"{source_label(source)} ({counts.get(source, 0)})",
         )
         min_score = st.slider(
             "Score R&D minimal",
-            0,
-            100,
-            0,
-            5,
+            min_value=0,
+            max_value=100,
+            step=5,
+            key="flt_min_score",
             help="Score effectif : rerank du juge LLM s'il existe, sinon score hybride du bi-encoder.",
         )
         llm_only = st.toggle(
             "Verdict LLM uniquement",
+            key="flt_llm_only",
             help="Ne conserver que les offres déjà évaluées par le juge LLM (étape 2).",
         )
         hide_processed = st.toggle(
             "Masquer les offres traitées",
-            value=True,
+            key="flt_hide_processed",
             help="Prioritaire sur le filtre de statut : ne conserve que les offres au statut NOUVEAU.",
         )
 
-        with st.expander("Critères avancés"):
+        with st.expander("Critères avancés", icon=":material/tune:"):
             statuses = st.multiselect(
                 "Statut de candidature",
                 options=STATUS_OPTIONS,
-                default=STATUS_ORDER,
+                key="flt_statuses",
                 format_func=lambda status: STATUS_LABELS.get(status, status),
                 disabled=hide_processed,
             )
             tiers = st.multiselect(
                 "Typologie d'entreprise",
                 options=list(TIER_LABELS.keys()),
-                default=list(TIER_LABELS.keys()),
+                key="flt_tiers",
                 format_func=lambda tier: TIER_LABELS[tier],
             )
             exclude_esn = st.toggle(
                 "Exclure les ESN",
+                key="flt_exclude_esn",
                 help="Retire les ESN / SSII du flux (filtre également appliqué en amont si configuré).",
             )
             exclude_dassault = st.toggle(
                 "Exclure Dassault",
+                key="flt_exclude_dassault",
                 help="Masque les offres Dassault Systèmes et Dassault Aviation.",
             )
             exclude_companies = st.multiselect(
                 "Exclure des entreprises",
                 options=sorted_companies,
-                default=[],
+                key="flt_exclude_companies",
                 format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
                 help="Sélectionnez une ou plusieurs entreprises à masquer du flux.",
             )
             selected_companies = st.multiselect(
                 "Cibler des entreprises",
                 options=sorted_companies,
-                default=[],
+                key="flt_selected_companies",
                 format_func=lambda c: f"{c} ({company_counts.get(c, 0)})",
                 help="Ne conserver que les offres des entreprises sélectionnées.",
             )
 
-        with st.expander("Affichage"):
+        with st.expander("Affichage", icon=":material/view_agenda:"):
             display_mode = st.selectbox("Mode de flux", options=[DISPLAY_FLAT, DISPLAY_GROUPED])
             page_size = st.selectbox(
                 "Offres affichées",
                 options=list(PAGE_SIZES),
                 index=1,
-                help="Limite le nombre de cartes rendues pour garder l'interface fluide.",
+                help="Limite le nombre d'offres rendues pour garder l'interface fluide.",
             )
 
-
     limit = None if page_size == PAGE_SIZE_ALL else int(page_size)
-    return Filters(
+    filters = Filters(
         query=query or "",
         sources=tuple(selected_sources),
         statuses=tuple(statuses),
@@ -867,4 +871,19 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         group_by_source=display_mode == DISPLAY_GROUPED,
     )
 
-
+    active = active_filter_count(filters, sources)
+    if active:
+        with state_slot:
+            c_state, c_reset = st.columns([1.4, 1], vertical_alignment="center")
+            c_state.markdown(
+                f'<div class="sc-filter-state"><b>{active}</b> filtre{"s" if active > 1 else ""} actif{"s" if active > 1 else ""}</div>',
+                unsafe_allow_html=True,
+            )
+            c_reset.button(
+                "Réinitialiser",
+                key="reset-filters",
+                type="tertiary",
+                icon=":material/filter_alt_off:",
+                on_click=reset_filters,
+            )
+    return filters

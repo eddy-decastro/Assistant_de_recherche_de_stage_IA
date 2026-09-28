@@ -38,69 +38,47 @@ def check_password(password_attempt: str) -> bool:
     return hmac.compare_digest(password_attempt.strip().encode("utf-8"), expected.encode("utf-8"))
 
 
-def require_auth() -> None:
-    """Garde d'accès Streamlit : interrompt l'affichage si l'utilisateur n'est pas connecté."""
-    if not is_auth_enabled():
-        return
+def is_authenticated() -> bool:
+    """Vrai si l'accès est libre ou si la session courante est déverrouillée."""
+    return not is_auth_enabled() or bool(st.session_state.get("authenticated", False))
 
-    if st.session_state.get("authenticated", False):
-        return
 
-    # Interface de connexion épurée
+def render_login() -> None:
+    """Écran de connexion : formulaire validable avec la touche Entrée."""
     st.markdown(
-        """
-        <style>
-        .auth-container {
-            max-width: 420px;
-            margin: 60px auto 20px auto;
-            padding: 32px;
-            background: var(--background-secondary, rgba(255, 255, 255, 0.05));
-            border: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
-            border-radius: 8px;
-            text-align: center;
-        }
-        .auth-title {
-            font-size: 1.4rem;
-            font-weight: 600;
-            margin-bottom: 8px;
-            letter-spacing: -0.02em;
-        }
-        .auth-subtitle {
-            font-size: 0.85rem;
-            color: gray;
-            margin-bottom: 24px;
-        }
-        </style>
-        """,
+        '<div class="sc-auth">'
+        '<div class="sc-auth-mark">SC</div>'
+        '<div class="sc-title">Stage Copilot</div>'
+        '<div class="sc-subtitle">Veille de stages R&amp;D protégée. '
+        "Saisissez le mot de passe d'accès pour continuer.</div>"
+        "</div>",
         unsafe_allow_html=True,
     )
-
-    _, col, _ = st.columns([1, 1.4, 1])
+    _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown(
-            """
-            <div class="auth-container">
-                <div class="auth-title">Stage Copilot</div>
-                <div class="auth-subtitle">Console d'ingénierie & veille R&D protégée</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        password = st.text_input(
-            "Mot de passe d'accès",
-            type="password",
-            placeholder="Entrez le mot de passe maître...",
-            label_visibility="collapsed",
-            key="auth_master_password_input",
-        )
-        if st.button("Déverrouiller la console", use_container_width=True, type="primary"):
+        with st.form("login", border=True):
+            password = st.text_input(
+                "Mot de passe d'accès",
+                type="password",
+                placeholder="Mot de passe",
+                key="auth_master_password_input",
+            )
+            submitted = st.form_submit_button(
+                "Déverrouiller", type="primary", width="stretch", icon=":material/lock_open:"
+            )
+        if submitted:
             if check_password(password):
                 st.session_state["authenticated"] = True
                 st.rerun()
             else:
-                st.error("Mot de passe incorrect.")
+                st.error("Mot de passe incorrect.", icon=":material/error:")
 
+
+def require_auth() -> None:
+    """Garde d'accès Streamlit : affiche la connexion et interrompt la page si besoin."""
+    if is_authenticated():
+        return
+    render_login()
     st.stop()
 
 
@@ -110,8 +88,8 @@ def render_logout_button() -> None:
         return
 
     if st.session_state.get("authenticated", False):
-        st.sidebar.markdown("---")
-        if st.sidebar.button("Déconnexion", use_container_width=True, type="secondary"):
+        st.sidebar.divider()
+        if st.sidebar.button("Déconnexion", width="stretch", icon=":material/logout:"):
             st.session_state["authenticated"] = False
             st.rerun()
 

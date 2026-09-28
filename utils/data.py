@@ -39,10 +39,10 @@ STATUS_LABELS = {
 PROCESSED_STATUSES = (STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED, STATUS_REJECTED)
 
 STATUS_TONES = {
-    STATUS_NEW: "mute",
+    STATUS_NEW: "accent",
     STATUS_APPLIED: "positive",
-    STATUS_INTERVIEW: "accent",
-    STATUS_IGNORED: "warn",
+    STATUS_INTERVIEW: "warn",
+    STATUS_IGNORED: "mute",
     STATUS_REJECTED: "alert",
 }
 
@@ -109,6 +109,17 @@ def _set_status(db: Database, job_id: str, status: str) -> None:
     """Callback de bouton : persiste un statut de candidature puis invalide le cache."""
     db.update_status(job_id, status)
     bump_data_version()
+
+
+def _set_status_and_advance(db: Database, job_id: str, status: str, next_id: str | None) -> None:
+    """Comme ``_set_status``, puis sélectionne l'offre suivante du flux.
+
+    Utilisé quand l'offre traitée va disparaître de la liste (vue focus) : la
+    lecture continue sur l'offre suivante au lieu de revenir en tête de liste.
+    """
+    _set_status(db, job_id, status)
+    if next_id:
+        st.session_state["selected_job_id"] = next_id
 
 
 # --------------------------------------------------------------------------- #

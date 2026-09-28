@@ -4,10 +4,10 @@ Visualisation par colonnes selon l'avancement dans le recrutement :
 * Nouveau (offres qualifiées à étudier)
 * Postulé (candidature envoyée)
 * Entretien / Relance (en cours d'échange)
-* Refusé / Non retenu
-* Ignoré (archivé)
+* Rejeté (refus ou non retenu)
+* Archivé
 
-Chaque carte permet le changement de statut en 1 clic et réagit immédiatement.
+Chaque carte peut être déplacée vers n'importe quel statut via « Déplacer ».
 """
 from __future__ import annotations
 
@@ -21,189 +21,119 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_config
 from src.constants import (
-    STATUS_NEW,
     STATUS_APPLIED,
-    STATUS_INTERVIEW,
-    STATUS_REJECTED,
     STATUS_IGNORED,
+    STATUS_INTERVIEW,
+    STATUS_NEW,
+    STATUS_REJECTED,
     TIER_1,
     TIER_ESN,
     TIER_LABELS,
     VERDICT_LABELS,
 )
-from utils.components import _badge, score_alignment, show_cover_letter_dialog
+from utils.components import _badge, show_cover_letter_dialog
 from utils.data import (
     Filters,
-    bump_data_version,
+    STATUS_LABELS,
+    STATUS_TONES,
+    VERDICT_TONES,
+    _esc,
+    _set_status,
     effective_score,
     filter_jobs,
     get_database,
     is_reranked,
     load_jobs,
-    STATUS_LABELS,
-    VERDICT_TONES,
-    tone_class,
+    score_alignment,
 )
-from utils.styles import inject_styles
-from utils.task_manager import render_sidebar_task_badge
+from utils.layout import page_setup, render_page_header
 
-st.set_page_config(
-    page_title="Kanban Candidatures",
-    page_icon=":material/view_kanban:",
-    layout="wide",
-)
+page_setup()
 
-inject_styles()
-render_sidebar_task_badge()
-
-# Styles spécifiques à la vue Kanban : conteneur large et boutons de cartes compacts
+# Vue large : les cinq colonnes ont besoin de toute la largeur de l'écran.
 st.markdown(
-    """
-    <style>
-    /* Permettre aux 5 colonnes Kanban de respirer sur grand écran */
-    [data-testid="stMainBlockContainer"] {
-        max-width: 98% !important;
-        padding-left: 1.5rem !important;
-        padding-right: 1.5rem !important;
-    }
-    /* Boutons compacts et proportions harmonieuses dans les cartes Kanban */
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button,
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a {
-        height: 32px !important;
-        min-height: 32px !important;
-        padding: 0 8px !important;
-        font-size: 11.5px !important;
-    }
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button p,
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a p {
-        font-size: 11.5px !important;
-    }
-    </style>
-    """,
+    "<style>[data-testid=\"stMainBlockContainer\"] { max-width: 100% !important; "
+    "padding-left: 2rem !important; padding-right: 2rem !important; }</style>",
     unsafe_allow_html=True,
 )
 
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
+# Ordre des colonnes = parcours de candidature.
+KANBAN_COLUMNS = (STATUS_NEW, STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED, STATUS_IGNORED)
+MOVE_ICONS = {
+    STATUS_NEW: ":material/inbox:",
+    STATUS_APPLIED: ":material/send:",
+    STATUS_INTERVIEW: ":material/forum:",
+    STATUS_REJECTED: ":material/block:",
+    STATUS_IGNORED: ":material/archive:",
+}
 
-# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
-if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
-    import importlib
-    import utils.data
-    importlib.reload(utils.data)
-    from utils.data import Filters, filter_jobs
 
-KANBAN_COLUMNS = [
-    (STATUS_NEW, "🆕 Nouveau", "sc-tone-accent"),
-    (STATUS_APPLIED, "📤 Postulé", "sc-tone-positive"),
-    (STATUS_INTERVIEW, "💬 Entretien", "sc-tone-warn"),
-    (STATUS_REJECTED, "❌ Refusé", "sc-tone-alert"),
-    (STATUS_IGNORED, "🙈 Ignoré", "sc-tone-mute"),
-]
+def kanban_card_html(job: dict[str, Any]) -> str:
+    """Contenu de carte Kanban : titre (lien si URL valide), entreprise, score et badges."""
+    title = _esc(job.get("title") or "Offre sans titre")
+    url = str(job.get("url") or "")
+    if url.startswith("http"):
+        title = f'<a href="{_esc(url)}" target="_blank" rel="noopener">{title}</a>'
+    meta = [f"<b>{_esc(job.get('company') or 'Entreprise inconnue')}</b>"]
+    if job.get("location"):
+        meta.append(_esc(job["location"]))
+    score = effective_score(job)
+    align_label, tone = score_alignment(score)
+    tags = [_badge(f"{score:.0f}/100 · {align_label}", tone)]
+    if is_reranked(job) and job.get("verdict"):
+        verdict = job["verdict"]
+        tags.append(_badge(VERDICT_LABELS.get(verdict, verdict), VERDICT_TONES.get(verdict, "mute")))
+    tier = job.get("company_tier")
+    if tier in (TIER_1, TIER_ESN):
+        tags.append(_badge(TIER_LABELS.get(tier, str(tier)), "positive" if tier == TIER_1 else "alert"))
+    return (
+        '<div class="sc-kanban-card">'
+        f'<div class="sc-list-title">{title}</div>'
+        f'<div class="sc-list-meta">{" · ".join(meta)}</div>'
+        f'<div class="sc-list-tags">{"".join(tags)}</div>'
+        "</div>"
+    )
 
 
 def _render_kanban_card(job: dict[str, Any], db: Any) -> None:
-    """Rend une carte compacte dans la colonne Kanban correspondante."""
+    """Carte compacte : en-tête, lettre de motivation et déplacement vers un autre statut."""
     job_id = str(job["id"])
-    score = effective_score(job)
-    align_label, tone = score_alignment(score)
-    company = str(job.get("company") or "Entreprise inconnue")
-    title = str(job.get("title") or "Offre sans titre")
-    location = str(job.get("location") or "")
-    url = str(job.get("url") or "#")
-    current_status = str(job.get("status") or STATUS_NEW)
-
-    card_container = st.container(border=True)
-    with card_container:
-        # En-tête de carte : titre cliquable & score
-        st.markdown(
-            f'<div style="font-weight: 600; font-size: 0.95rem; line-height: 1.25;">'
-            f'<a href="{url}" target="_blank" style="text-decoration: none; color: inherit;">{title}</a></div>'
-            f'<div style="color: var(--sc-fg-muted); font-size: 0.8rem; margin-top: 2px;">{company}'
-            f'{" · " + location if location else ""}</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Badges : Score, Tier, Verdict
-        badges_html = [
-            f'<span class="sc-badge {tone_class(tone)}"><b>{score:.0f}</b>/100 · {align_label}</span>'
-        ]
-
-        if is_reranked(job):
-            verdict = job.get("verdict")
-            if verdict:
-                badges_html.append(
-                    _badge(
-                        VERDICT_LABELS.get(verdict, verdict),
-                        VERDICT_TONES.get(verdict, "mute"),
-                    )
-                )
-
-        tier = job.get("company_tier")
-        if tier in (TIER_1, TIER_ESN):
-            badges_html.append(
-                _badge(
-                    TIER_LABELS.get(tier, str(tier)),
-                    "positive" if tier == TIER_1 else "alert",
-                )
-            )
-
-        st.markdown(
-            f'<div style="margin-top: 8px; margin-bottom: 8px;">{" ".join(badges_html)}</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Bouton d'action et transition de statut
-        if url.startswith("http"):
-            col_btn1, col_btn2 = st.columns([1, 1], gap="small")
-            with col_btn1:
-                st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
-            with col_btn2:
-                if st.button("✍️ Lettre", key=f"kanban_letter_{job_id}", use_container_width=True):
-                    show_cover_letter_dialog(job)
-        else:
-            if st.button("✍️ Lettre de motivation", key=f"kanban_letter_{job_id}", use_container_width=True):
+    current = str(job.get("status") or STATUS_NEW)
+    with st.container(border=True, key=f"card-kb-{job_id}"):
+        st.markdown(kanban_card_html(job), unsafe_allow_html=True)
+        with st.container(horizontal=True, gap="small"):
+            if st.button("Lettre", key=f"kanban_letter_{job_id}", icon=":material/edit_note:"):
                 show_cover_letter_dialog(job)
+            with st.popover("Déplacer", help="Changer le statut de cette candidature"):
+                for target in KANBAN_COLUMNS:
+                    if target == current:
+                        continue
+                    st.button(
+                        STATUS_LABELS.get(target, target),
+                        key=f"kb_move_{target}_{job_id}",
+                        icon=MOVE_ICONS[target],
+                        on_click=_set_status,
+                        args=(db, job_id, target),
+                        width="stretch",
+                    )
 
-        # Actions rapides Kanban
-        st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--sc-border-muted);'/>", unsafe_allow_html=True)
-        options = [status_code for status_code, _, _ in KANBAN_COLUMNS]
-        idx = options.index(current_status) if current_status in options else 0
-        
-        c_left, c_mid, c_right = st.columns([1, 1, 1], gap="small")
-        if idx > 0:
-            prev_s = options[idx - 1]
-            if c_left.button("⬅️", help=f"Retour à {STATUS_LABELS.get(prev_s, prev_s)}", key=f"kb_prev_{job_id}", use_container_width=True):
-                db.update_status(job_id, prev_s)
-                import utils.data
-                utils.data.bump_data_version()
-                st.rerun()
-                
-        if current_status not in (STATUS_IGNORED, STATUS_REJECTED):
-            if c_mid.button("🗑️", help="Archiver / Ignorer", key=f"kb_ign_{job_id}", use_container_width=True):
-                db.update_status(job_id, STATUS_IGNORED)
-                import utils.data
-                utils.data.bump_data_version()
-                st.rerun()
-                
-        # On peut avancer jusqu'à "Entretien" (index 2). Si on est à "Ignoré" on peut recommencer.
-        if idx < 2 or current_status in (STATUS_IGNORED, STATUS_REJECTED):
-            next_s = options[idx + 1] if idx < 2 else STATUS_NEW
-            label_next = STATUS_LABELS.get(next_s, next_s)
-            if c_right.button("➡️", help=f"Avancer à {label_next}", key=f"kb_next_{job_id}", use_container_width=True):
-                db.update_status(job_id, next_s)
-                import utils.data
-                utils.data.bump_data_version()
-                st.rerun()
+
+def _column_header(status: str, count: int) -> str:
+    """En-tête de colonne : libellé du statut et compteur, teintés par sa tonalité."""
+    tone = STATUS_TONES.get(status, "mute")
+    return (
+        f'<div class="sc-kanban-col sc-tone-{tone}"><b>{_esc(STATUS_LABELS.get(status, status))}</b>'
+        f'<span class="sc-kanban-count">{count}</span></div>'
+    )
 
 
 def main() -> None:
-    st.markdown("<h1>Tableau Kanban — Suivi des Candidatures</h1>", unsafe_allow_html=True)
-    st.caption(
-        "Faites évoluer le statut de vos candidatures d'une colonne à une autre en 1 clic."
+    render_page_header(
+        "Tableau Kanban",
+        "Candidatures",
+        "Suivez chaque offre de « Nouveau » à « Entretien ». Le bouton « Déplacer » "
+        "d'une carte la fait passer à n'importe quel autre statut.",
     )
 
     db = get_database()
@@ -217,11 +147,10 @@ def main() -> None:
             company_counts[comp] = company_counts.get(comp, 0) + 1
     sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
 
-    # Zone de filtres compacts
-    with st.expander("🎛️ Filtres du Tableau Kanban", expanded=False):
+    with st.expander("Filtres", icon=":material/filter_list:", expanded=False):
         c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
         with c1:
-            query = st.text_input("Recherche", placeholder="Rechercher par poste ou entreprise…")
+            query = st.text_input("Recherche", placeholder="Poste, entreprise, techno…", icon=":material/search:")
         with c2:
             min_score = st.slider("Score min", 0, 100, 0, step=5)
         with c3:
@@ -232,7 +161,7 @@ def main() -> None:
                 "Affichage par colonne",
                 options=["30", "50", "100", "Tout"],
                 index=0,
-                help="Choisissez 'Tout' pour afficher l'intégralité des offres de la base sans restriction.",
+                help="« Tout » affiche l'intégralité des offres de chaque colonne.",
             )
 
         col_ex, col_sel = st.columns(2)
@@ -259,6 +188,7 @@ def main() -> None:
             query=query,
             min_score=min_score,
             llm_only=rerank_only,
+            statuses=KANBAN_COLUMNS,
             exclude_dassault=exclude_dassault,
             exclude_companies=tuple(exclude_companies),
             selected_companies=tuple(selected_companies),
@@ -266,42 +196,30 @@ def main() -> None:
         ),
     )
 
-    # Répartition par statut
-    jobs_by_status: dict[str, list[dict[str, Any]]] = {
-        code: [] for code, _, _ in KANBAN_COLUMNS
-    }
+    jobs_by_status: dict[str, list[dict[str, Any]]] = {code: [] for code in KANBAN_COLUMNS}
     for job in filtered:
-        st_code = str(job.get("status") or STATUS_NEW)
-        if st_code in jobs_by_status:
-            jobs_by_status[st_code].append(job)
-        else:
-            jobs_by_status[STATUS_NEW].append(job)
+        status = str(job.get("status") or STATUS_NEW)
+        # Les offres écartées automatiquement par le filtre métier (motif renseigné)
+        # restent hors du tableau : la colonne « Rejeté » suit vos refus à vous.
+        if status == STATUS_REJECTED and job.get("rejection_reason"):
+            continue
+        jobs_by_status.get(status, jobs_by_status[STATUS_NEW]).append(job)
 
-    # Colonnes Kanban
-    cols = st.columns(len(KANBAN_COLUMNS))
-
-    for idx, (status_code, label, tone) in enumerate(KANBAN_COLUMNS):
-        column_jobs = jobs_by_status[status_code]
-        with cols[idx]:
-            st.markdown(
-                f'<div style="background: var(--sc-bg-card); padding: 8px 12px; border-radius: 6px; '
-                f'border-top: 3px solid var(--sc-border-active); margin-bottom: 12px;">'
-                f'<b style="font-size: 0.95rem;">{label}</b> '
-                f'<span class="sc-badge {tone}" style="margin-left: 6px;">{len(column_jobs)}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
+    cols = st.columns(len(KANBAN_COLUMNS), gap="small")
+    for col, status in zip(cols, KANBAN_COLUMNS):
+        column_jobs = jobs_by_status[status]
+        with col:
+            st.markdown(_column_header(status, len(column_jobs)), unsafe_allow_html=True)
             if not column_jobs:
-                st.caption("Aucune offre")
-            elif display_limit is None or len(column_jobs) <= display_limit:
-                for job in column_jobs:
-                    _render_kanban_card(job, db)
-            else:
-                for job in column_jobs[:display_limit]:
-                    _render_kanban_card(job, db)
-                with st.expander(f"Voir les {len(column_jobs) - display_limit} autres offres…"):
-                    for job in column_jobs[display_limit:]:
+                st.markdown('<div class="sc-kanban-empty">Aucune offre</div>', unsafe_allow_html=True)
+                continue
+            visible = column_jobs if display_limit is None else column_jobs[:display_limit]
+            for job in visible:
+                _render_kanban_card(job, db)
+            hidden = column_jobs[len(visible):]
+            if hidden:
+                with st.expander(f"Voir les {len(hidden)} autres offres"):
+                    for job in hidden:
                         _render_kanban_card(job, db)
 
 

@@ -20,27 +20,12 @@ from utils.data import (
     Filters,
     filter_jobs,
 )
-from utils.styles import inject_styles
-from utils.task_manager import render_sidebar_task_badge
+from utils.layout import page_setup, render_page_header
 from src.constants import *
 from src.config import load_config
 from src.storage.database import Database
 
-st.set_page_config(page_title="Statistiques & Télémétrie", page_icon=":material/monitoring:", layout="wide")
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
-
-# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
-if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
-    import importlib
-    import utils.data
-    importlib.reload(utils.data)
-    from utils.data import Filters, filter_jobs
+page_setup()
 
 db = get_database()
 if not hasattr(db, "get_rejected_seen_jobs"):
@@ -301,7 +286,7 @@ def render_telemetry(db: Database, runs_limit: int = 8, passes_limit: int = 20) 
             sorted({stop_reason_label(stat.get("stop_reason")) for stat in losses})
         )
         st.markdown(
-            f'<div class="sc-alert {tone_class("alert")}"><span class="sc-alert-icon">⚠️</span>'
+            f'<div class="sc-alert {tone_class("alert")}"><span class="sc-alert-icon">!</span>'
             f"<span><b>{len(losses)} passe(s) interrompue(s)</b> — du flux a pu être perdu "
             f"({_esc(reasons)}). Vérifiez la source concernée avant de conclure à un "
             "vivier épuisé.</span></div>",
@@ -431,8 +416,8 @@ def normalize_region(loc: str | None) -> str:
 def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
     """Indicateurs de suivi de vos candidatures et rythme d'envoi."""
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.3rem;">'
-        "🎯 Suivi de vos candidatures personnelles</div></div>",
+        '<div class="sc-section-title">'
+        "Suivi de vos candidatures personnelles</div>",
         unsafe_allow_html=True,
     )
     if not jobs:
@@ -461,8 +446,8 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
 
     with col_hist:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.1rem;">'
-            "Rythme d'envoi des candidatures (par jour)</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Rythme d'envoi des candidatures (par jour)</div>",
             unsafe_allow_html=True,
         )
         if not applied_jobs:
@@ -482,7 +467,7 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
 
                 chart_rhythm = (
                     alt.Chart(counts)
-                    .mark_bar(color="#2563eb", cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+                    .mark_bar(color="#6366F1", cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
                     .encode(
                         x=alt.X("date:T", title="Date", axis=alt.Axis(format="%d/%m", labelAngle=0)),
                         y=alt.Y("Candidatures:Q", title="Candidatures envoyées", axis=alt.Axis(tickMinStep=1)),
@@ -493,14 +478,14 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
                     )
                     .properties(height=260)
                 )
-                st.altair_chart(chart_rhythm, use_container_width=True)
+                st.altair_chart(chart_rhythm, width="stretch")
             else:
                 st.info("Horodatage indisponible.")
 
     with col_status:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.1rem;">'
-            "Répartition globale des offres par statut</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Répartition globale des offres par statut</div>",
             unsafe_allow_html=True,
         )
         status_data = [
@@ -518,13 +503,13 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
                 x=alt.X("Nombre:Q", title="Nombre d'offres"),
                 color=alt.Color("Statut:N", scale=alt.Scale(
                     domain=["Nouveau", "Postulé", "Entretien", "Archivé"],
-                    range=["#64748b", "#2563eb", "#059669", "#d97706"]
+                    range=["#71717A", "#6366F1", "#10B981", "#F59E0B"]
                 ), legend=None),
                 tooltip=["Statut", "Nombre"],
             )
             .properties(height=260)
         )
-        st.altair_chart(chart_status, use_container_width=True)
+        st.altair_chart(chart_status, width="stretch")
 
 
 # --------------------------------------------------------------------------- #
@@ -538,8 +523,8 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     # A. Cartographie
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.3rem;">'
-        "🗺️ Répartition géographique des opportunités</div></div>",
+        '<div class="sc-section-title">'
+        "Répartition géographique des opportunités</div>",
         unsafe_allow_html=True,
     )
     region_counts = Counter([normalize_region(j.get("location")) for j in jobs])
@@ -556,7 +541,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     chart_geo = (
         alt.Chart(df_geo)
-        .mark_bar(color="#3b82f6", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+        .mark_bar(color="#6366F1", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
         .encode(
             y=alt.Y("Région:N", sort="-x", title=None),
             x=alt.X("Offres:Q", title="Nombre d'offres"),
@@ -564,7 +549,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
         )
         .properties(height=250)
     )
-    st.altair_chart(chart_geo, use_container_width=True)
+    st.altair_chart(chart_geo, width="stretch")
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
 
@@ -573,8 +558,8 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     with col_vol:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.15rem;">'
-            "Top 10 des entreprises qui recrutent le plus (Volume)</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Top 10 des entreprises qui recrutent le plus (Volume)</div>",
             unsafe_allow_html=True,
         )
         comp_counts = Counter([j.get("company").strip() for j in jobs if j.get("company") and j.get("company").strip()])
@@ -583,7 +568,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
         chart_vol = (
             alt.Chart(df_vol)
-            .mark_bar(color="#0284c7", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+            .mark_bar(color="#0EA5E9", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
             .encode(
                 y=alt.Y("Entreprise:N", sort="-x", title=None),
                 x=alt.X("Offres:Q", title="Nombre d'offres publiées"),
@@ -591,12 +576,12 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
             )
             .properties(height=280)
         )
-        st.altair_chart(chart_vol, use_container_width=True)
+        st.altair_chart(chart_vol, width="stretch")
 
     with col_qual:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.15rem;">'
-            "Top 10 des entreprises les plus cotées en R&D</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Top 10 des entreprises les plus cotées en R&D</div>",
             unsafe_allow_html=True,
         )
         by_comp: dict[str, list[dict[str, Any]]] = {}
@@ -611,7 +596,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
                 scores = [effective_score(j) for j in j_list]
                 avg = sum(scores) / len(scores)
                 t1 = any(j.get("company_tier") == TIER_1 for j in j_list)
-                label = f"⭐ {c}" if t1 else c
+                label = f"{c} (Tier 1)" if t1 else c
                 qual_rows.append({
                     "Entreprise": label,
                     "Score R&D moyen": round(avg, 1),
@@ -624,7 +609,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
         if not df_qual.empty:
             chart_qual = (
                 alt.Chart(df_qual)
-                .mark_bar(color="#059669", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+                .mark_bar(color="#10B981", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
                 .encode(
                     y=alt.Y("Entreprise:N", sort="-x", title=None),
                     x=alt.X("Score R&D moyen:Q", scale=alt.Scale(domain=[0, 100]), title="Score moyen / 100"),
@@ -632,8 +617,8 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
                 )
                 .properties(height=280)
             )
-            st.altair_chart(chart_qual, use_container_width=True)
-            st.caption("Calculé sur les entreprises ayant au moins 2 offres pour la représentativité. (⭐ = Scale-up / Lab Tier 1)")
+            st.altair_chart(chart_qual, width="stretch")
+            st.caption("Calculé sur les entreprises ayant au moins 2 offres pour la représentativité. « Tier 1 » = scale-up ou laboratoire de premier plan.")
         else:
             st.info("Données insuffisantes.")
 
@@ -641,8 +626,8 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     # C. Match des Plateformes : LinkedIn vs JobTeaser
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.2rem;">'
-        "⚔️ Comparatif des Plateformes : LinkedIn vs JobTeaser</div></div>",
+        '<div class="sc-section-title">'
+        "Comparatif des Plateformes : LinkedIn vs JobTeaser</div>",
         unsafe_allow_html=True,
     )
 
@@ -666,7 +651,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     with col_li:
         li = sources_data["linkedin"]
-        st.markdown("#### 🔵 LinkedIn")
+        st.markdown(f'<div class="sc-section-title" style="font-size:14px;"><span class="sc-dot" style="background:{source_color("linkedin")};margin-right:6px;"></span>LinkedIn</div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         c1.metric("Offres retenues", f"{li['total']}")
         c2.metric("Score R&D moyen", f"{li['avg_score']:.1f} / 100")
@@ -675,7 +660,7 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     with col_jt:
         jt = sources_data["jobteaser"]
-        st.markdown("#### 🟠 JobTeaser")
+        st.markdown(f'<div class="sc-section-title" style="font-size:14px;"><span class="sc-dot" style="background:{source_color("jobteaser")};margin-right:6px;"></span>JobTeaser</div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         c1.metric("Offres retenues", f"{jt['total']}")
         c2.metric("Score R&D moyen", f"{jt['avg_score']:.1f} / 100")
@@ -694,8 +679,8 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
 
     # A. Distribution des scores & verdicts
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.3rem;">'
-        "🧠 Distribution des scores R&D et verdicts du juge LLM</div></div>",
+        '<div class="sc-section-title">'
+        "Distribution des scores R&D et verdicts du juge LLM</div>",
         unsafe_allow_html=True,
     )
 
@@ -706,8 +691,8 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
 
     with col_scores:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.1rem;">'
-            "Histogramme des scores R&D (0 à 100)</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Histogramme des scores R&D (0 à 100)</div>",
             unsafe_allow_html=True,
         )
         bins = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 101]
@@ -725,7 +710,7 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
         df_scores["Niveau"] = df_scores["Tranche"].apply(get_tier_label)
         color_scale = alt.Scale(
             domain=["Cœur de cible (≥80)", "Pertinent (60-79)", "Mitigé (40-59)", "Hors sujet (<40)"],
-            range=["#059669", "#2563eb", "#d97706", "#dc2626"],
+            range=["#10B981", "#6366F1", "#F59E0B", "#F43F5E"],
         )
         chart_scores = (
             alt.Chart(df_scores)
@@ -738,12 +723,12 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
             )
             .properties(height=260)
         )
-        st.altair_chart(chart_scores, use_container_width=True)
+        st.altair_chart(chart_scores, width="stretch")
 
     with col_verdicts:
         st.markdown(
-            '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.1rem;">'
-            "Répartition par verdict du juge</div></div>",
+            '<div class="sc-section-title" style="font-size:14px;margin-top:6px;">'
+            "Répartition par verdict du juge</div>",
             unsafe_allow_html=True,
         )
         verdict_counts: Counter[str] = Counter()
@@ -764,7 +749,7 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
         ])
         v_colors = alt.Scale(
             domain=["EXCELLENT", "BON", "MITIGÉ", "HORS SUJET"],
-            range=["#059669", "#2563eb", "#d97706", "#dc2626"],
+            range=["#10B981", "#6366F1", "#F59E0B", "#F43F5E"],
         )
         chart_verdicts = (
             alt.Chart(df_verdicts)
@@ -777,14 +762,14 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
             )
             .properties(height=260)
         )
-        st.altair_chart(chart_verdicts, use_container_width=True)
+        st.altair_chart(chart_verdicts, width="stretch")
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
 
     # B. Jauges des 5 sous-scores moyens
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.2rem;">'
-        "⚖️ Moyennes des 5 sous-scores R&D (sur 5.0)</div></div>",
+        '<div class="sc-section-title">'
+        "Moyennes des 5 sous-scores R&D (sur 5.0)</div>",
         unsafe_allow_html=True,
     )
     subscore_defs = [
@@ -811,8 +796,8 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
 
     # C. Baromètre des Technologies & Domaines de pointe
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.25rem;">'
-        "💻 Baromètre des Technologies & Domaines de pointe</div></div>",
+        '<div class="sc-section-title">'
+        "Baromètre des Technologies & Domaines de pointe</div>",
         unsafe_allow_html=True,
     )
     st.caption("Volume de présence dans les offres et score R&D moyen associé par le juge.")
@@ -874,7 +859,7 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
             )
             .properties(height=380)
         )
-        st.altair_chart(chart_baro, use_container_width=True)
+        st.altair_chart(chart_baro, width="stretch")
     else:
         st.info("Aucune technologie identifiée.")
 
@@ -915,17 +900,17 @@ def _rejections_table(rejected_jobs: Sequence[dict[str, Any]]) -> str:
 
         title_html = (
             f'<a href="{_esc(url)}" target="_blank" rel="noopener noreferrer" '
-            f'style="color:var(--text, #1C1B19);text-decoration:underline;text-underline-offset:3px;font-weight:550;">'
+            f'class="sc-link">'
             f'{_esc(title)}</a>'
             if url
             else _esc(title)
         )
         action_html = (
             f'<a href="{_esc(url)}" target="_blank" rel="noopener noreferrer" '
-            f'style="white-space:nowrap;font-size:12px;font-weight:600;color:var(--accent, #B5482A);text-decoration:none;">'
+            f'class="sc-link-accent">'
             f"Ouvrir l'annonce ↗</a>"
             if url
-            else '<span style="color:var(--text-3, #6E695F);">—</span>'
+            else '<span class="sc-faint">—</span>'
         )
 
         rows.append(
@@ -951,8 +936,8 @@ def _rejections_table(rejected_jobs: Sequence[dict[str, Any]]) -> str:
 def render_rejections_explorer(db: Database) -> None:
     """Explorateur des offres écartées par les filtres de collecte (seen_jobs)."""
     st.markdown(
-        '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.4rem;">'
-        "Explorateur des offres écartées</div></div>"
+        '<div class="sc-section-title">'
+        "Explorateur des offres écartées</div>"
         '<div class="sc-stream-note" style="margin-bottom:14px;">'
         "Offres écartées par les filtres de collecte (orientation BI, hors sujet, etc.) "
         "et conservées dans la mémoire de collecte <code>seen_jobs</code>."
@@ -1085,29 +1070,35 @@ filters = Filters(
 )
 filtered_jobs = filter_jobs(jobs, filters)
 
-if len(filtered_jobs) != len(jobs):
+render_page_header(
+    "Pilotage",
+    "Statistiques & télémétrie",
+    "Suivi de vos candidatures, cartographie du marché, qualité R&amp;D des offres et santé des collectes.",
+)
+
+if exclude_dassault or exclude_companies or selected_companies:
     st.markdown(
         f'<div class="sc-stream"><span class="sc-stream-count">'
         f"Statistiques sur {len(filtered_jobs)} offres</span>"
         f'<span class="sc-stream-note">'
-        f"({len(jobs) - len(filtered_jobs)} offre(s) masquée(s) par le filtre entreprise)</span></div>",
+        f"({len(filter_jobs(jobs, Filters())) - len(filtered_jobs)} offre(s) masquée(s) par le filtre entreprise)</span></div>",
         unsafe_allow_html=True,
     )
 else:
     st.markdown(
         f'<div class="sc-stream"><span class="sc-stream-count">'
-        f"Statistiques sur {len(jobs)} offres au total</span>"
+        f"Statistiques sur {len(filtered_jobs)} offres au total</span>"
         f'<span class="sc-stream-note">Toutes entreprises confondues</span></div>',
         unsafe_allow_html=True,
     )
 
 tab_personal, tab_geo, tab_rd, tab_telemetry, tab_rejections = st.tabs(
     [
-        "🎯 Mes Candidatures",
-        "🗺️ Cartographie & Entreprises",
-        "🧠 Qualité R&D & Technologies",
-        "📡 Télémétrie des collectes",
-        "🚫 Explorateur des rejets",
+        ":material/person: Mes candidatures",
+        ":material/map: Cartographie & entreprises",
+        ":material/insights: Qualité R&D & technologies",
+        ":material/sensors: Télémétrie des collectes",
+        ":material/block: Explorateur des rejets",
     ]
 )
 
