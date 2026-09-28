@@ -128,6 +128,8 @@ SUB_SCORE_SHORT_LABELS = {
     "mentorship_team": "Équipe",
     "engineering_practice": "Ingénierie",
     "option_value": "Tremplin",
+    "career_leverage": "Carrière",
+    "pfe_compatibility": "Calendrier PFE",
 }
 
 
