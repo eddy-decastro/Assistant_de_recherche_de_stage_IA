@@ -5,6 +5,13 @@ backgroundColor = "#F6F3EE"
 secondaryBackgroundColor = "#FFFDF9"
 textColor = "#1C1B19"
 font = "sans serif"
+borderColor = "#E4DED3"
+baseRadius = "8px"
+buttonRadius = "6px"
+
+[theme.sidebar]
+backgroundColor = "#F6F3EE"
+secondaryBackgroundColor = "#EFEAE0"
 
 [browser]
 gatherUsageStats = false

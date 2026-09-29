@@ -121,7 +121,6 @@ _CSS_CHROME = Template(
 [data-testid="stMainBlockContainer"] {
   padding-top: 2.4rem;
   padding-bottom: 5rem;
-  max-width: 1160px;
 }
 [data-testid="stSidebarUserContent"] { padding-top: .4rem; }
 [data-testid="stSidebar"] {
