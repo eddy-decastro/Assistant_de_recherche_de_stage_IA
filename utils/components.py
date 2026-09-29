@@ -11,6 +11,9 @@ from src.storage.database import Database
 from src.matching.cover_letter import CoverLetterGenerator
 from src.matching.pdf_exporter import generate_cover_letter_pdf
 
+# Préfixe des lettres de secours générées en erreur (séquence échappée : aucun emoji dans le source).
+_WARN_PREFIX = "\u26a0\ufe0f"
+
 # Fragments HTML (typographie et badges, aucun emoji décoratif)
 # --------------------------------------------------------------------------- #
 
@@ -21,125 +24,6 @@ def _badge(label: str, tone: str | None = None, dot: str | None = None, extra_cl
         classes += f" {extra_cls}"
     marker = f'<i class="sc-dot" style="background:{dot}"></i>' if dot else ""
     return f'<span class="{classes}">{marker}{_esc(label)}</span>'
-
-
-def score_html(job: dict[str, Any]) -> str:
-    """Jauge de score épurée : « 84 / 100 » + libellé d'alignement (+ note de qualité si v3)."""
-    score = effective_score(job)
-    label, tone = score_alignment(score)
-    origin = "rerank LLM" if is_reranked(job) else "score hybride"
-    quality_score = job.get("quality_score")
-    quality_html = ""
-    if is_reranked(job) and quality_score is not None:
-        quality_html = f'<span class="sc-quality-sub" style="display:block;font-size:11px;color:var(--text-muted,#6B7280);margin-top:2px;">qualité : {float(quality_score):.0f}</span>'
-    return (
-        f'<div class="sc-score-box {tone_class(tone)}">'
-        f'<span class="sc-score" title="Score R&D ({origin})"><b>{score:.0f}</b><span>/100</span></span>'
-        f'<span class="sc-align">{_esc(label)}</span>'
-        f'{quality_html}'
-        f"</div>"
-    )
-
-
-def _meta_html(job: dict[str, Any]) -> str:
-    """Sous-titre : entreprise · ville · date relative · statut de candidature."""
-    status = job.get("status")
-    status_cls = f"sc-status-{status.lower()}" if status else ""
-    parts = [f'<span class="sc-company">{_esc(job.get("company"))}</span>']
-    if job.get("location"):
-        parts.append(f'<span class="sc-meta-item">{_esc(job["location"])}</span>')
-    parts.append(f'<span class="sc-meta-item">{_esc(relative_date(job.get("created_at")))}</span>')
-    parts.append(
-        f'<span class="sc-status {status_cls}">'
-        f'<i class="sc-dot"></i>{_esc(STATUS_LABELS.get(status, status or "Inconnu"))}</span>'
-    )
-    separator = '<span class="sc-sep">·</span>'
-    return f'<div class="sc-card-meta">{separator.join(parts)}</div>'
-
-
-def _badges_html(job: dict[str, Any]) -> str:
-    """Ligne de badges : plateforme, contrat, structure_type, planchers, plafonds, flags, verdict."""
-    badges = [_badge(source_label(job.get("source")), dot=source_color(job.get("source")))]
-    contract = contract_label(job)
-    if contract:
-        badges.append(_badge(contract))
-
-    # Catégorie d'entreprise v3 (ou tier hérité)
-    st_type = job.get("structure_type")
-    if st_type:
-        st_lbl = STRUCTURE_TYPE_LABELS.get(st_type, st_type)
-        st_tone = STRUCTURE_TYPE_TONES.get(st_type, "mute")
-        badges.append(_badge(st_lbl, st_tone))
-    else:
-        tier = job.get("company_tier")
-        if tier in (TIER_1, TIER_ESN):
-            badges.append(_badge(TIER_LABELS.get(tier, str(tier)), "positive" if tier == TIER_1 else "alert"))
-
-    # Plancher v3 appliqué
-    floor_reason = job.get("floor_reason")
-    floor_val = job.get("floor_value")
-    if floor_reason:
-        badges.append(_badge(floor_reason, "positive"))
-    elif floor_val:
-        badges.append(_badge(f"plancher {floor_val}", "positive"))
-
-    # Plafond v3 / verrou bloquant
-    cap = job.get("cap_applied") or job.get("hard_cap_triggered")
-    if cap:
-        cap_str = str(cap).upper()
-        cap_lbl = HARD_CAP_LABELS.get(cap_str, f"plafond {cap_str}")
-        badges.append(_badge(cap_lbl, "alert"))
-
-    # Scale-up suggérée (LLM non confirmé en liste)
-    if job.get("scaleup_suggested"):
-        badges.append(_badge("scale-up suggérée (à confirmer)", "warn"))
-
-    # Flags d'attention
-    job_flags = job.get("flags") or []
-    for flag in job_flags:
-        f_str = str(flag).upper()
-        f_lbl = FLAG_LABELS.get(f_str, f_str)
-        f_tone = FLAG_TONES.get(f_str, "warn")
-        badges.append(_badge(f_lbl, f_tone))
-
-    if is_reranked(job):
-        verdict = job.get("verdict")
-        extra = f"sc-badge-verdict sc-badge-{verdict.lower()}" if verdict else ""
-        badges.append(_badge(VERDICT_LABELS.get(verdict, verdict or "Évalué"), VERDICT_TONES.get(verdict, "mute"), extra_cls=extra))
-    elif job.get("status") == STATUS_EXCLUDED or job.get("exclusion_reason"):
-        badges.append(_badge("EXCLU", "alert"))
-    return f'<div class="sc-badges">{"".join(badges)}</div>'
-
-
-def _signals_html(job: dict[str, Any]) -> str:
-    """Chips compacts pour les signaux qualitatifs actifs avec citation vérifiée au survol."""
-    signals = job.get("signals") or {}
-    if not isinstance(signals, dict) or not signals:
-        return ""
-    signal_defs = [
-        ("encadrant_explicite", "Encadrant +6", "positive"),
-        ("donnees_reelles_explicites", "Données réelles +3", "positive"),
-        ("suite_explicite", "Débouché / Thèse +3", "positive"),
-        ("donnees_benchmark_seulement", "Benchmark seul -5", "alert"),
-    ]
-    chips = []
-    for key, label, tone in signal_defs:
-        data = signals.get(key)
-        if isinstance(data, dict) and data.get("present"):
-            evidence = str(data.get("evidence") or data.get("citation") or "").strip()
-            title_attr = f' title="Citation vérifiée : {_esc(evidence)}"' if evidence else ' title="Signal vérifié dans l\'offre"'
-            chips.append(f'<span class="sc-chip {tone_class(tone)}"{title_attr}>{label}</span>')
-    if not chips:
-        return ""
-    return f'<div class="sc-chips sc-signals-chips">{"".join(chips)}</div>'
-
-
-def _chips_html(technologies: Sequence[str]) -> str:
-    """Chips de technologies détectées (police monospace compacte)."""
-    if not technologies:
-        return ""
-    chips = "".join(f'<span class="sc-chip">{_esc(item)}</span>' for item in technologies)
-    return f'<div class="sc-chips">{chips}</div>'
 
 
 def clean_text(value: Any) -> str:
@@ -158,240 +42,6 @@ def excerpt(text: str, length: int = EXCERPT_LENGTH) -> tuple[str, bool]:
     return cut.rstrip(" ,;:.") + " …", True
 
 
-def _verdict_block(job: dict[str, Any]) -> str:
-    """Synthèse du juge LLM : verdict, points forts, points d'attention."""
-    if not is_reranked(job):
-        return (
-            '<div class="sc-block"><div class="sc-section">Verdict du juge LLM</div>'
-            '<p class="sc-excerpt">Offre non évaluée à ce stade : lancez <code>python run_pipeline.py</code> '
-            "pour déclencher le reranking (Top-N configuré dans <code>config.yaml</code>).</p></div>"
-        )
-    verdict = job.get("verdict")
-    tone = VERDICT_TONES.get(verdict, "mute")
-    badges = (
-        f'<div class="sc-badges {tone_class(tone)}">'
-        f'{_badge(VERDICT_LABELS.get(verdict, verdict or "Évalué"), tone)}'
-        f'{_badge(f"Rerank {effective_score(job):.0f}/100")}'
-        f"</div>"
-    )
-    strengths = [str(item) for item in (job.get("match_reasons") or [])]
-    flags = [str(item) for item in (job.get("red_flags") or [])]
-    strong_list = (
-        f'<ul class="sc-list {tone_class("positive")}">'
-        + "".join(f"<li>{_esc(item)}</li>" for item in strengths)
-        + "</ul>"
-        if strengths
-        else '<p class="sc-excerpt">—</p>'
-    )
-    flag_list = (
-        f'<ul class="sc-list {tone_class("alert")}">'
-        + "".join(f"<li>{_esc(item)}</li>" for item in flags)
-        + "</ul>"
-        if flags
-        else '<p class="sc-excerpt">Aucun point de vigilance signalé.</p>'
-    )
-    return (
-        '<div class="sc-block"><div class="sc-section">Verdict du juge LLM</div>'
-        f"{badges}"
-        '<div class="sc-section sc-section--sub">Points forts</div>'
-        f"{strong_list}"
-        '<div class="sc-section sc-section--sub">Points d\'attention</div>'
-        f"{flag_list}</div>"
-    )
-
-
-# Icônes de la grille d'évaluation (sous-scores) — l'emoji est confiné à l'UI.
-SUB_SCORE_ICONS = {
-    "modeling_depth": "📐",
-    "mentorship_team": "👥",
-    "engineering_practice": "⚙️",
-    "option_value": "🎓",
-    "logistics": "📅",
-    # Rétro-compatibilité :
-    "career_leverage": "🚀",
-    "pfe_compatibility": "📅",
-}
-
-
-def _subscore_tone(value: int) -> str:
-    """Tonalité d'un sous-score (5 = excellent → 1 = bloquant)."""
-    return {5: "positive", 4: "accent", 3: "mute", 2: "warn"}.get(value, "alert")
-
-
-def _hard_cap_banner(job: dict[str, Any]) -> str:
-    """Bandeau d'alerte bien visible lorsqu'un verrou bloquant a été déclenché.
-
-    Placé en tête de carte (juste sous l'en-tête) : le score plafonné par un hard
-    cap doit se voir immédiatement, sans ouvrir l'accordéon.
-    """
-    reason = (job.get("hard_cap_triggered") or "").strip()
-    if not reason:
-        return ""
-    return (
-        f'<div class="sc-alert {tone_class("alert")}">'
-        '<span class="sc-alert-icon">⚠️</span>'
-        f"<span><b>Verrou bloquant</b> — {_esc(reason)} : score plafonné, "
-        "candidature à écarter ou à vérifier avant tout effort.</span></div>"
-    )
-
-
-def _subscores_strip(job: dict[str, Any]) -> str:
-    """Mini-indicateurs compacts des sous-scores, visibles SANS ouvrir l'accordéon."""
-    if not is_reranked(job):
-        return ""
-    sub = job.get("sub_scores") or {}
-    if not sub:
-        return ""
-    keys_to_show = [k for k in SUB_SCORE_KEYS if k in sub] + [
-        k for k in sub if k not in SUB_SCORE_KEYS and k in SUB_SCORE_LABELS
-    ]
-    if not keys_to_show:
-        keys_to_show = list(SUB_SCORE_KEYS)
-    separator = '<span class="sc-sep">|</span>'
-    items = [
-        f'<span class="sc-subscore-item {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
-        f"{SUB_SCORE_ICONS.get(key, '•')} {_esc(SUB_SCORE_SHORT_LABELS.get(key, key))} : "
-        f"<b>{coerce_sub_score(sub.get(key))}/5</b></span>"
-        for key in keys_to_show
-    ]
-    return f'<div class="sc-subscore-strip">{separator.join(items)}</div>'
-
-
-def _subscores_block(job: dict[str, Any]) -> str:
-    """Grille d'évaluation détaillée (accordéon) : sous-scores /5 + verrou bloquant."""
-    if not is_reranked(job):
-        return ""
-    sub = job.get("sub_scores") or {}
-    if not sub:
-        return ""
-    keys_to_show = [k for k in SUB_SCORE_KEYS if k in sub] + [
-        k for k in sub if k not in SUB_SCORE_KEYS and k in SUB_SCORE_LABELS
-    ]
-    if not keys_to_show:
-        keys_to_show = list(SUB_SCORE_KEYS)
-    badges = "".join(
-        f'<span class="sc-badge sc-subscore {tone_class(_subscore_tone(coerce_sub_score(sub.get(key))))}">'
-        f"{SUB_SCORE_ICONS.get(key, '•')} {_esc(SUB_SCORE_LABELS.get(key, key))} {coerce_sub_score(sub.get(key))}/5</span>"
-        for key in keys_to_show
-    )
-    hard_cap = (job.get("hard_cap_triggered") or "").strip()
-    cap_html = (
-        f'<div class="sc-badges"><span class="sc-badge {tone_class("alert")}">'
-        f"Verrou bloquant : {_esc(hard_cap)}</span></div>"
-        if hard_cap
-        else ""
-    )
-
-    # Détail des signaux qualitatifs et citations vérifiées
-    signals = job.get("signals") or {}
-    signals_html = ""
-    if isinstance(signals, dict) and signals:
-        signal_rows = []
-        for sig_name, sig_label in (
-            ("encadrant_explicite", "Encadrant explicite (+6)"),
-            ("donnees_reelles_explicites", "Données réelles (+3)"),
-            ("suite_explicite", "Débouché / Thèse (+3)"),
-            ("donnees_benchmark_seulement", "Benchmark seul (-5)"),
-        ):
-            s_data = signals.get(sig_name)
-            if isinstance(s_data, dict) and s_data.get("present"):
-                ev = s_data.get("evidence") or s_data.get("citation") or ""
-                tone = "alert" if "benchmark" in sig_name else "positive"
-                signal_rows.append(
-                    f'<li><span class="sc-badge {tone_class(tone)}">{_esc(sig_label)}</span> '
-                    f'<em>« {_esc(ev)} »</em></li>'
-                )
-        if signal_rows:
-            signals_html = (
-                '<div class="sc-section sc-section--sub">Signaux qualitatifs vérifiés</div>'
-                f'<ul class="sc-list">{"".join(signal_rows)}</ul>'
-            )
-
-    return (
-        '<div class="sc-block"><div class="sc-section">Grille d\'évaluation</div>'
-        f'<div class="sc-badges">{badges}</div>{cap_html}{signals_html}</div>'
-    )
-
-
-def _reasoning_block(job: dict[str, Any]) -> str:
-    """Raisonnement du juge, produit AVANT le score et conservé en base.
-
-    C'est la justification de la décision : elle rend le score auditable (on voit
-    ce qui a été constaté sur le calendrier, la mission réelle et l'encadrement).
-    """
-    text = clean_text(job.get("reasoning"))
-    if not is_reranked(job) or not text:
-        return ""
-    return (
-        '<div class="sc-block"><div class="sc-section">Analyse du juge (raisonnement)</div>'
-        f'<p class="sc-excerpt">{_esc(text)}</p></div>'
-    )
-
-
-def _scores_block(job: dict[str, Any]) -> str:
-    """Détail des scores internes (score R&D, typologie)."""
-    origin = "Gemini" if is_reranked(job) else "historique"
-    entries = (
-        ("Score R&D", f"{effective_score(job):.0f}/100 ({origin})"),
-        ("Typologie", TIER_LABELS.get(job.get("company_tier"), "—")),
-    )
-    cells = "".join(f"<div>{_esc(label)} <b>{_esc(value)}</b></div>" for label, value in entries)
-    return f'<div class="sc-block"><div class="sc-section">Scores</div><div class="sc-kv">{cells}</div></div>'
-
-
-def _description_block(job: dict[str, Any]) -> str:
-    """Extrait de la fiche de poste, avec lecture complète à la demande."""
-    text = clean_text(job.get("description"))
-    header = '<div class="sc-block"><div class="sc-section">Fiche de poste</div>'
-    if not text:
-        return header + '<p class="sc-excerpt">Fiche non fournie par la plateforme d\'origine.</p></div>'
-    short, truncated = excerpt(text)
-    more = (
-        '<details class="sc-more"><summary>Lire la fiche complète</summary>'
-        f'<p class="sc-excerpt">{_esc(text)}</p></details>'
-        if truncated
-        else ""
-    )
-    return f'{header}<p class="sc-excerpt">{_esc(short)}</p>{more}</div>'
-
-
-def _rejection_block(job: dict[str, Any]) -> str:
-    """Motif d'exclusion métier, affiché uniquement pour les offres écartées."""
-    reason = (job.get("rejection_reason") or "").strip()
-    if not reason:
-        return ""
-    return (
-        '<div class="sc-block"><div class="sc-section">Écartée par le filtre métier</div>'
-        f'<p class="sc-excerpt">{_esc(reason)}</p></div>'
-    )
-
-
-def job_card_html(job: dict[str, Any], keywords: Sequence[str], compact: bool = False) -> str:
-    """Carte d'offre autonome : en-tête, jauge de score, badges, accordéon, CTA."""
-    url = str(job.get("url") or "")
-    technologies = detected_technologies(job, keywords)
-    html = (
-        '<div class="sc-card">'
-        '<div class="sc-card-head">'
-        f'<div><h3 class="sc-card-title">{_esc(job.get("title"))}</h3>{_meta_html(job)}</div>'
-        f"{score_html(job)}"
-        "</div>"
-        f"{_hard_cap_banner(job)}"
-        f"{_badges_html(job)}"
-        f"{_subscores_strip(job)}"
-        f"{_signals_html(job)}"
-        f"{_chips_html(technologies)}"
-    )
-    if not compact:
-        html += (
-            '<details class="sc-details">'
-            '<summary><span class="sc-chev">▶</span>Détails &amp; évaluation</summary>'
-            f'<div class="sc-details-body">{_rejection_block(job)}{_verdict_block(job)}{_reasoning_block(job)}{_subscores_block(job)}{_scores_block(job)}{_description_block(job)}</div>'
-            "</details>"
-        )
-    html += "</div>"
-    return html
-
 @st.dialog("Lettre de motivation personnalisée", width="large")
 def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     """Boîte de dialogue modale affichant la lettre de motivation rédigée par Gemini."""
@@ -406,7 +56,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
             st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
         with col_apply:
-            st.link_button("🚀 Postuler à l'offre ↗", url, type="primary", use_container_width=True)
+            st.link_button("Postuler à l'offre ↗", url, type="primary", width="stretch")
     else:
         st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
         st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
@@ -419,7 +69,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     # Si la lettre n'a pas été générée ou si le cache contient une ancienne erreur
     if (
         not cached_letter
-        or cached_letter.startswith("⚠️")
+        or cached_letter.startswith(_WARN_PREFIX)
         or "no longer available" in cached_letter
     ):
         with st.spinner("Rédaction de la lettre en cours..."):
@@ -433,20 +83,20 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     letter_text = st.session_state.get(session_key, "")
 
     # Nettoyage préventif de l'état du widget éditeur s'il contenait l'erreur
-    if editor_key in st.session_state and ("⚠️" in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
+    if editor_key in st.session_state and (_WARN_PREFIX in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
         st.session_state[editor_key] = letter_text
 
     # Si la lettre a été produite via DeepSeek ou le moteur de secours algorithmique
     source = st.session_state.get(source_key)
     if source == "deepseek":
         st.info(
-            "🤖 **IA de secours DeepSeek V3 active** : Votre lettre a été rédigée avec succès par DeepSeek "
+            "**IA de secours DeepSeek V3 active** : Votre lettre a été rédigée avec succès par DeepSeek "
             "(relais automatique suite à une saturation temporaire de Google Gemini). "
             "Vous pouvez la copier, la modifier ou la télécharger en PDF."
         )
     elif source == "fallback":
         st.info(
-            "⚡ **Mode de secours algorithmique actif** : Rédigée sur-mesure à partir de votre profil et de l'offre. "
+            "**Mode de secours algorithmique actif** : Rédigée sur-mesure à partir de votre profil et de l'offre. "
             "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou tenter une génération IA ci-dessous."
         )
 
@@ -460,7 +110,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     words_count = len(edited.split())
     chars_count = len(edited)
     approx_pages = max(1.0, round(words_count / 420.0, 1))
-    st.caption(f"📊 **{words_count} mots** · {chars_count:,} caractères (environ {approx_pages} page{'s' if approx_pages > 1.1 else ''} standard)")
+    st.caption(f"**{words_count} mots** · {chars_count:,} caractères (environ {approx_pages} page{'s' if approx_pages > 1.1 else ''} standard)")
 
     custom_inst = st.text_input(
         "Consigne spécifique pour orienter la rédaction (optionnel) :",
@@ -500,7 +150,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                       btn.style.borderColor = "#059669";
                       btn.style.color = "#FFFFFF";
                       setTimeout(() => {{
-                        btn.innerText = "📋 Copier la lettre";
+                        btn.innerText = "Copier la lettre";
                         btn.style.backgroundColor = "";
                         btn.style.borderColor = "";
                         btn.style.color = "";
@@ -524,7 +174,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     b.style.borderColor = "#059669";
                     b.style.color = "#FFFFFF";
                     setTimeout(() => {{
-                      b.innerText = "📋 Copier la lettre";
+                      b.innerText = "Copier la lettre";
                       b.style.backgroundColor = "";
                       b.style.borderColor = "";
                       b.style.color = "";
@@ -552,7 +202,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 onmouseover="this.style.borderColor='#1E3A8A'; this.style.backgroundColor='rgba(30, 58, 138, 0.08)';"
                 onmouseout="if(!this.innerText.includes('Copié')) {{ this.style.borderColor='rgba(128, 128, 128, 0.35)'; this.style.backgroundColor='transparent'; }}"
               >
-                📋 Copier la lettre
+                Copier la lettre
               </button>
             </div>
             """
@@ -563,11 +213,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             data=pdf_bytes,
             file_name=pdf_filename,
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
             icon=":material/picture_as_pdf:",
         )
     with c3:
-        if st.button("Réessayer Gemini", key=f"regen_gemini_{job_id}", use_container_width=True, icon=":material/refresh:"):
+        if st.button("Réessayer Gemini", key=f"regen_gemini_{job_id}", width="stretch", icon=":material/refresh:"):
             with st.spinner("Appel à Gemini en cours..."):
                 generator = CoverLetterGenerator()
                 new_l = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
@@ -578,23 +228,23 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 if generator.last_source == "gemini":
                     st.toast("✓ Lettre rédigée avec succès par Gemini !")
                 elif generator.last_source == "deepseek":
-                    st.toast("🤖 Gemini saturé : relayé avec succès par DeepSeek V3 !")
+                    st.toast("Gemini saturé : relayé avec succès par DeepSeek V3 !")
                 else:
-                    st.toast("⚡ Version de secours algorithmique générée.")
+                    st.toast("Version de secours algorithmique générée.")
                 st.rerun()
     with c4:
-        if st.button("Rédiger DeepSeek", key=f"force_deepseek_{job_id}", use_container_width=True, icon=":material/smart_toy:"):
+        if st.button("Rédiger DeepSeek", key=f"force_deepseek_{job_id}", width="stretch", icon=":material/smart_toy:"):
             with st.spinner("Rédaction par DeepSeek V3..."):
                 generator = CoverLetterGenerator()
                 new_l = generator.generate_with_deepseek(job, custom_instruction=custom_inst)
-                if new_l and not new_l.startswith("⚠️"):
+                if new_l and not new_l.startswith(_WARN_PREFIX):
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "deepseek"
                     if editor_key in st.session_state:
                         st.session_state[editor_key] = new_l
                     st.toast("✓ Lettre rédigée avec succès par DeepSeek V3 !")
                 else:
-                    st.toast("⚠️ DeepSeek non disponible, génération de secours activée.")
+                    st.toast("DeepSeek non disponible, génération de secours activée.")
                     new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "fallback"
@@ -608,10 +258,10 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         col_act1, col_act2 = st.columns([1.6, 1.2], vertical_alignment="center", gap="small")
         with col_act1:
             st.link_button(
-                "🚀 Postuler directement à l'offre ↗",
+                "Postuler directement à l'offre ↗",
                 url,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         with col_act2:
             current_st = job.get("status")
@@ -619,7 +269,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 if st.button(
                     "✓ Marquer comme postulé",
                     key=f"dialog_applied_{job_id}",
-                    use_container_width=True,
+                    width="stretch",
                     icon=":material/check_circle:",
                 ):
                     db = get_database()
@@ -629,155 +279,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     st.toast("✓ Statut mis à jour : Candidature marquée comme envoyée !")
                     st.rerun()
             else:
-                st.caption("✅ Candidature déjà enregistrée comme postulée")
+                st.caption("Candidature déjà enregistrée comme postulée.")
 
-
-def render_job_card(db: Database, job: dict[str, Any], keywords: Sequence[str]) -> None:
-    """Rend une carte d'offre unifiée suivie de sa barre d'actions de candidature."""
-    with st.container(border=True):
-        st.markdown(job_card_html(job, keywords), unsafe_allow_html=True)
-        st.markdown('<div class="sc-card-actions-divider"></div>', unsafe_allow_html=True)
-        status = job.get("status")
-        job_id = str(job.get("id"))
-        url = str(job.get("url") or "")
-
-        if status == STATUS_APPLIED:
-            actions: tuple[tuple[str, str], ...] = (
-                ("Entretien obtenu", STATUS_INTERVIEW),
-                ("Archiver", STATUS_IGNORED),
-            )
-        elif status in (STATUS_INTERVIEW, STATUS_IGNORED):
-            actions = (("Rétablir au flux", STATUS_NEW),)
-        else:
-            actions = (("Marquer postulé", STATUS_APPLIED), ("Archiver", STATUS_IGNORED))
-
-        if len(actions) == 2:
-            cols = st.columns([1.3, 2.5, 1.1, 1.4, 1.1], gap="small")
-            with cols[0]:
-                if url.startswith("http"):
-                    st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
-            # cols[1] sert d'espaceur pour pousser les boutons secondaires à droite
-            with cols[2]:
-                if st.button("Lettre", key=f"letter-{job_id}", use_container_width=True, icon=":material/edit_note:"):
-                    show_cover_letter_dialog(job)
-            with cols[3]:
-                st.button(
-                    actions[0][0],
-                    key=f"status-{actions[0][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[0][1]),
-                    use_container_width=True,
-                )
-            with cols[4]:
-                st.button(
-                    actions[1][0],
-                    key=f"status-{actions[1][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[1][1]),
-                    use_container_width=True,
-                )
-        else:
-            cols = st.columns([1.3, 3.8, 1.1, 1.4], gap="small")
-            with cols[0]:
-                if url.startswith("http"):
-                    st.link_button("Postuler ↗", url, type="primary", use_container_width=True)
-            with cols[2]:
-                if st.button("Lettre", key=f"letter-{job_id}", use_container_width=True, icon=":material/edit_note:"):
-                    show_cover_letter_dialog(job)
-            with cols[3]:
-                st.button(
-                    actions[0][0],
-                    key=f"status-{actions[0][1]}-{job_id}",
-                    on_click=_set_status,
-                    args=(db, job_id, actions[0][1]),
-                    use_container_width=True,
-                )
-
-
-
-def render_compact_card_with_select(db, job, keywords):
-    """Rend une carte d'offre compacte (liste de gauche) avec un bouton de sélection."""
-    import streamlit as st
-    with st.container(border=True):
-        st.markdown(job_card_html(job, keywords, compact=True), unsafe_allow_html=True)
-        st.markdown('<div class="sc-card-actions-divider"></div>', unsafe_allow_html=True)
-        job_id = str(job.get("id"))
-        is_selected = st.session_state.get("selected_job_id") == job_id
-        label = "👁️ Sélectionnée" if is_selected else "🔍 Voir détails"
-        
-        # Un seul bouton pour la carte compacte
-        if st.button(label, key=f"select_{job_id}", use_container_width=True, type="primary" if is_selected else "secondary"):
-            st.session_state.selected_job_id = job_id
-            st.rerun()
-
-def render_job_detail_pane(db, job, keywords):
-    """Rend le panneau de détails complet (à droite)."""
-    import streamlit as st
-    st.markdown("### Détails de l'offre")
-    render_job_card(db, job, keywords)
-
-def render_stream(
-    db,
-    jobs,
-    filters,
-    keywords,
-) -> None:
-    import streamlit as st
-    if not jobs:
-        st.markdown(
-            '<div class="sc-empty">Aucune offre ne correspond aux filtres courants.<br>'
-            "Relancez la collecte (<code>python run_pipeline.py</code>) ou élargissez les critères.</div>",
-            unsafe_allow_html=True,
-        )
-        return
-        
-    note = "tri par score R&D décroissant"
-    note += " · filtres actifs" if not filters.is_default() else " · aucun filtre"
-    st.markdown(
-        f'<div class="sc-stream"><span class="sc-stream-count">{len(jobs)} offre(s)</span>'
-        f'<span class="sc-stream-note">{note}</span></div>',
-        unsafe_allow_html=True,
-    )
-    
-    # SPLIT PANE
-    if "selected_job_id" not in st.session_state:
-        st.session_state.selected_job_id = None
-        
-    valid_ids = {str(j["id"]) for j in jobs}
-    if st.session_state.selected_job_id not in valid_ids and jobs:
-        st.session_state.selected_job_id = str(jobs[0]["id"])
-        
-    col_list, col_detail = st.columns([1.1, 1.4], gap="medium")
-    
-    with col_list:
-        with st.container(height=900, border=False):
-            if filters.group_by_source:
-                from utils.data import group_jobs_by_source
-                for label, group in group_jobs_by_source(jobs):
-                    st.markdown(
-                        f'<div class="sc-group"><span class="sc-group-name">{label}</span>'
-                        f'<span class="sc-group-count">{len(group)} offre(s)</span></div>',
-                        unsafe_allow_html=True,
-                    )
-                    for job in group:
-                        render_compact_card_with_select(db, job, keywords)
-            else:
-                for job in jobs:
-                    render_compact_card_with_select(db, job, keywords)
-                    
-    with col_detail:
-        with st.container(height=900, border=False):
-            if st.session_state.selected_job_id:
-                try:
-                    selected_job = next(j for j in jobs if str(j["id"]) == st.session_state.selected_job_id)
-                    render_job_detail_pane(db, selected_job, keywords)
-                except StopIteration:
-                    st.info("Offre introuvable.")
-            else:
-                st.info("👈 Sélectionnez une offre à gauche pour voir les détails.")
 
 # --------------------------------------------------------------------------- #
-# Bandeau KPI & en-tête
+# En-tête et KPI (éléments natifs)
 # --------------------------------------------------------------------------- #
 def _inline_relative(value: Any) -> str:
     """Date relative insérable au fil d'une phrase (« il y a 3 h »)."""
@@ -786,16 +292,15 @@ def _inline_relative(value: Any) -> str:
 
 
 def render_header(jobs: list[dict[str, Any]], config: dict[str, Any]) -> None:
-    """En-tête : identité du poste, volumétrie et chaîne de traitement courante."""
+    """En-tête : titre, volumétrie, dernière collecte et chaîne de traitement."""
+    from utils.layout import page_header
+
     llm_model = config.get("llm", {}).get("model", "Gemini 2.0 Flash")
     stamps = [stamp for stamp in (parse_timestamp(job.get("created_at")) for job in jobs) if stamp]
-    chain = f"scoring & reranking 100% LLM (<code>{_esc(llm_model)}</code>)"
-    st.markdown(
-        '<div class="sc-eyebrow">Veille stages R&amp;D · Data Science / Machine Learning</div>'
-        '<div class="sc-title">Stage Copilot</div>'
-        f'<div class="sc-subtitle">{len(jobs)} offres en base · dernière collecte '
-        f"{_esc(_inline_relative(max(stamps)) if stamps else 'inconnue')} · {chain}</div>",
-        unsafe_allow_html=True,
+    last = _inline_relative(max(stamps)) if stamps else "inconnue"
+    page_header(
+        "Flux d'offres",
+        f"{len(jobs)} offres en base · dernière collecte {last} · scoring et reranking LLM ({llm_model})",
     )
 
 
@@ -805,42 +310,24 @@ def render_kpis(
     base_total: int,
     filters_active: bool,
 ) -> None:
-    """Bandeau KPI : volume actif, offres qualifiées, couverture LLM, plateformes."""
-    active = [
-        job
-        for job in jobs
-        if job.get("status") not in (STATUS_IGNORED, STATUS_REJECTED)
-    ]
+    """KPI : offres actives, qualifiées, rerankées et répartition par plateforme."""
+    from utils.layout import kpi_row
+
+    active = [job for job in jobs if job.get("status") not in (STATUS_IGNORED, STATUS_REJECTED)]
     qualified = sum(1 for job in active if effective_score(job) >= QUALIFIED_SCORE)
     ranked = sum(1 for job in active if is_reranked(job))
     base = max(len(active), 1)
-    distribution = source_distribution(active)
-    bars = "".join(
-        f'<i style="width:{count / base * 100:.2f}%;background:{color}"></i>'
-        for _, count, color in distribution
-    )
-    legend = "".join(
-        f'<span><i style="background:{color}"></i>{_esc(label)} <b>{count}</b></span>'
-        for label, count, color in distribution
-    ) or '<span>Aucune offre sur la sélection</span>'
     scope = f"sur {base_total} en base" if filters_active else "hors offres archivées"
-    st.markdown(
-        '<div class="sc-kpis">'
-        '<div class="sc-kpi"><div class="sc-kpi-label">Offres actives</div>'
-        f'<div class="sc-kpi-value">{len(active)}<span>{_esc(scope)}</span></div>'
-        f'<div class="sc-kpi-hint">{qualified / base * 100:.0f} % qualifiées R&amp;D</div></div>'
-        '<div class="sc-kpi"><div class="sc-kpi-label">Offres R&amp;D qualifiées</div>'
-        f'<div class="sc-kpi-value">{qualified}<span>score ≥ {QUALIFIED_SCORE:.0f}</span></div>'
-        f'<div class="sc-kpi-hint">{qualified} sur {len(active)} offres actives</div></div>'
-        '<div class="sc-kpi"><div class="sc-kpi-label">Rerankées par le LLM</div>'
-        f'<div class="sc-kpi-value">{ranked}<span>{_esc(llm_model)}</span></div>'
-        f'<div class="sc-kpi-hint">{ranked / base * 100:.0f} % du flux couvert</div></div>'
-        '<div class="sc-kpi"><div class="sc-kpi-label">Répartition par plateforme</div>'
-        f'<div class="sc-dist">{bars}</div>'
-        f'<div class="sc-legend">{legend}</div></div>'
-        "</div>",
-        unsafe_allow_html=True,
+    kpi_row(
+        [
+            ("Offres actives", str(len(active)), f"{scope} · {qualified / base * 100:.0f} % qualifiées R&D"),
+            ("Qualifiées R&D", str(qualified), f"Score effectif ≥ {QUALIFIED_SCORE:.0f} · {qualified} sur {len(active)} offres actives"),
+            ("Rerankées par le LLM", f"{ranked / base * 100:.0f} %", f"{ranked} offres évaluées par {llm_model}"),
+        ]
     )
+    distribution = source_distribution(active)
+    if distribution:
+        st.caption(" · ".join(f"{label} {count}" for label, count, _ in distribution))
 
 
 # --------------------------------------------------------------------------- #

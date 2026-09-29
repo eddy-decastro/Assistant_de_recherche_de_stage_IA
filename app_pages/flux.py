@@ -1,15 +1,16 @@
-"""Page Flux : KPI, filtres latéraux et flux d'offres scorées."""
+"""Page Flux : KPI, filtres latéraux et flux d'offres interactif."""
 from __future__ import annotations
 
 import streamlit as st
 
+from components.job_feed import job_feed
 from src.config import load_config
 from src.constants import source_rank
 from utils.components import (
     render_header,
     render_kpis,
     render_sidebar_filters,
-    render_stream,
+    show_cover_letter_dialog,
 )
 from utils.data import filter_jobs, get_database, load_jobs
 
@@ -27,4 +28,20 @@ selected = filter_jobs(jobs, filters)
 
 render_header(jobs, config)
 render_kpis(selected, llm_model, len(jobs), not filters.is_default())
-render_stream(db, selected, filters, keywords)
+
+if not selected:
+    st.info(
+        "Aucune offre ne correspond aux filtres courants. Relancez la collecte ou élargissez les critères.",
+        icon=":material/search_off:",
+    )
+else:
+    event = job_feed(
+        selected,
+        keywords,
+        hide_processed=filters.hide_processed,
+        grouped=filters.group_by_source,
+    )
+    if event and event["type"] == "letter":
+        job = next((j for j in selected if str(j["id"]) == event["id"]), None)
+        if job is not None:
+            show_cover_letter_dialog(job)

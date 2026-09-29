@@ -129,6 +129,7 @@ function createInstance(root) {
     mobileDetail: false,
     toastTimer: null,
     lastDetailId: null,
+    pendingSelect: null,
     setTrigger: () => {},
   }
   try { inst.selected = sessionStorage.getItem(STORAGE_KEY) } catch (_) { /* stockage indisponible */ }
@@ -341,6 +342,7 @@ function createInstance(root) {
 
   function select(id, openDetail) {
     inst.selected = id
+    inst.pendingSelect = null
     try { sessionStorage.setItem(STORAGE_KEY, id) } catch (_) { /* stockage indisponible */ }
     if (openDetail) inst.mobileDetail = true
     const rows = render()
@@ -373,6 +375,7 @@ function createInstance(root) {
   function undo(id, previous) {
     inst.overrides[id] = previous
     inst.selected = id
+    inst.pendingSelect = id // l'offre peut être absente des données jusqu'au prochain rerun
     inst.setTrigger('action', { type: 'status', id, status: previous })
     hideToast()
     render()
@@ -431,7 +434,14 @@ function createInstance(root) {
     inst.data = data
     inst.setTrigger = setTrigger
     inst.overrides = {} // la donnée serveur fait foi après chaque rerun
-    render()
+    let restored = false
+    if (inst.pendingSelect && data.jobs.some((j) => j.id === inst.pendingSelect)) {
+      inst.selected = inst.pendingSelect
+      inst.pendingSelect = null
+      restored = true
+    }
+    const rows = render()
+    if (restored && rows.get(inst.selected)) rows.get(inst.selected).scrollIntoView({ block: 'nearest' })
   }
   return inst
 }
