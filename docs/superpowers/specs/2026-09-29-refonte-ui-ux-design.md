@@ -89,15 +89,29 @@ description, rejection_reason, url`
 Seules les offres de la page courante (limite 25/50/100 déjà appliquée par les filtres) sont
 envoyées, ~4 Ko par offre.
 
+**Données annexes** envoyées avec `jobs` : `hide_processed`, `grouped` (mode de flux),
+`statuses` (codes de statut : `new/applied/interview/ignored`), `status_labels` et `rev`
+(= `data_version`, force la re-synchronisation après chaque écriture).
+
 **JS → Python** :
-- État `selected_id` (`setStateValue`) : persiste la sélection entre reruns. Si l'id n'est plus
-  dans la liste, le JS sélectionne la première offre.
+- Pas d'état `selected_id` synchronisé : `setStateValue` déclenche un rerun serveur, ce qui
+  supprimerait l'instantanéité de la navigation. La sélection vit dans l'instance JS (conservée
+  entre reruns) et dans `sessionStorage` ; si l'id n'est plus dans la liste, le JS sélectionne
+  la première offre.
 - Déclencheur `action` (`setTriggerValue`) : `{type: "status", id, status}` ou
-  `{type: "letter", id}`.
-- Côté Python, après montage : `status` → `_set_status(db, id, status)` (bump `data_version`)
-  puis `st.toast` avec bouton d'annulation (restaure le statut précédent) ; `letter` →
-  `show_cover_letter_dialog(job)` existant, inchangé.
-- « Postuler » : lien `<a target="_blank" rel="noopener">` dans le composant.
+  `{type: "letter", id}`. La charge est validée côté Python (`parse_action`) : id non vide,
+  statut dans `{NOUVEAU, POSTULÉ, ENTRETIEN, IGNORÉ}`, sinon ignorée.
+- `status` est traité dans le callback `on_action_change` (exécuté avant le corps du script :
+  les données rechargées sont déjà à jour, aucun `st.rerun()` nécessaire) via
+  `_set_status(db, id, status)` (bump `data_version`) ; un échec d'écriture affiche un `st.toast`.
+  `letter` est traité dans le corps de la page (un `st.dialog` ne peut pas être ouvert depuis un
+  callback) : `show_cover_letter_dialog(job)` existant, inchangé.
+- « Annuler » : `st.toast` ne supporte pas de bouton, donc le bandeau d'annulation est un
+  *snackbar* rendu par le composant lui-même ; il renvoie une action `status` avec l'ancien statut.
+- « Postuler » : lien `<a target="_blank" rel="noopener noreferrer">` dans le composant, limité
+  aux URL `http(s)`.
+- Les données d'offres ne sont jamais injectées via `innerHTML` : le JS construit le DOM avec
+  `createElement` / `textContent` (aucun échappement HTML à maintenir, aucune injection possible).
 
 ### 3.3 Code supprimé / conservé
 
@@ -127,8 +141,9 @@ Conservé : `_badge`, `score_alignment` (importés par le kanban), `show_cover_l
 **Liste (≈38 %)** : lignes de 64 px — pastille de score teintée par l'alignement, titre sur une
 ligne (ellipse, titre complet en `title`), « entreprise · ville · date ». Pastille terracotta si
 statut Nouveau, icône cadenas si verrou bloquant. Sélection : barre gauche terracotta + fond
-`--st-secondary-background-color`. Segments client en tête : Tous / Cœur de cible / Bon /
-Non évalué (filtrage local, sans rerun).
+`--st-secondary-background-color`. Segments client en tête : Tous / Cœur de cible / Pertinent /
+Non évalué (filtrage local, sans rerun ; « Pertinent » = tranche d'alignement 60-80). Le mode
+« Groupé par plateforme » de la sidebar est conservé : le composant insère un en-tête de groupe.
 
 **Détail (≈62 %)** : en-tête (titre, méta, score /100 + libellé d'alignement), badges, barre
 d'actions en flex avec retour à la ligne (jamais de troncature) : Postuler (primaire), Lettre,
@@ -144,7 +159,7 @@ citation au survol, verdict (points forts / points d'attention), raisonnement, f
 
 **Actions optimistes** : « Postulé » / « Archiver » retirent la ligne immédiatement quand
 « Masquer les offres traitées » est actif, et sélectionnent l'offre suivante ; Python persiste
-ensuite. Toast « Annuler » après changement de statut.
+ensuite. Snackbar « Annuler » (rendu par le composant, 6 s) après changement de statut.
 
 **Responsive** : sous 900 px, une colonne ; le détail s'affiche à la place de la liste avec un
 bouton « Retour ».
@@ -180,11 +195,16 @@ visible, contraste AA sur les pastilles de score, `prefers-reduced-motion` respe
 
 ## 7. Thème et CSS
 
-- `.streamlit/config.toml` complété : `borderColor`, `baseRadius`, `font`/`headingFont`,
-  `codeFont`, section `[theme.sidebar]`, variante `[theme.dark]` alignée sur la palette.
-- `utils/styles.py` réduit à ~150 lignes : typographie de sidebar, classes utilitaires encore
-  utilisées par le kanban et les stats. Suppression des surcharges `[data-testid=...]` de
-  boutons, sliders, multiselect.
+- `.streamlit/config.toml` complété : `borderColor`, `baseRadius`, `buttonRadius` et section
+  `[theme.sidebar]`. Le thème sombre natif (`[theme.dark]`) est hors périmètre : l'app est
+  aujourd'hui clair uniquement (`base = "light"`) ; le repli de palette dans `utils/styles.py`
+  continue de gérer le mode sombre du navigateur.
+- `utils/styles.py` réduit aux classes encore utilisées après la refonte (`.sc-badge`, `.sc-kpi*`,
+  `.sc-stream*`, `.sc-status*`, `.sc-alert*`, `.sc-empty`, `.sc-tone-*`… encore employées par les
+  tableaux HTML de Statistiques) plus la typographie de sidebar. Suppression des règles orphelines
+  (`.sc-card*`, `.sc-subscore*`, `.sc-details*`…) et des surcharges `[data-testid=...]` de
+  boutons, sliders, multiselect. Cette réduction est faite **en dernier** (livraison 4) : tant que
+  les anciennes pages existent, elles dépendent de ces classes.
 
 ## 8. Tests et vérification
 
@@ -200,7 +220,7 @@ visible, contraste AA sur les pastilles de score, `prefers-reduced-motion` respe
 Chaque livraison est indépendante, testée et commitée séparément :
 
 1. Navigation + chrome : `st.navigation`, `app_pages/`, thème, suppression du `max-width`,
-   CSS réduit, sidebar réorganisée.
+   sidebar réorganisée (le nettoyage du CSS est repris en livraison 4).
 2. Composant `job_feed` + page Flux (KPI natifs, suppression de l'ancien rendu de cartes).
 3. Kanban (limite par colonne, popover d'actions).
 4. Harmonisation Statistiques, Pipeline, Paramètres.
