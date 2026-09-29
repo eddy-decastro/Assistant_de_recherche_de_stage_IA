@@ -9,6 +9,11 @@
 # --- Client HTTP & API ---
 httpx
 
+# --- Scraping (indispensables au cron GitHub Actions) ---
+beautifulsoup4
+lxml
+curl_cffi
+
 # --- Validation de données / modèles ---
 pydantic>=2.0
 
