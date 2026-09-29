@@ -861,9 +861,6 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
     sorted_companies = sorted(company_counts.keys(), key=lambda c: (-company_counts[c], c.lower()))
 
     with st.sidebar:
-        from utils.task_manager import render_sidebar_task_badge
-        render_sidebar_task_badge()
-
         st.markdown('<div class="sc-eyebrow">Filtres</div>', unsafe_allow_html=True)
         query = st.text_input(
             "Recherche",

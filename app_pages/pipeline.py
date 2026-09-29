@@ -10,25 +10,14 @@ from typing import Any
 from dataclasses import dataclass
 
 from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc, is_reranked
-from utils.styles import inject_styles
 from utils.task_manager import (
     get_active_task,
-    render_sidebar_task_badge,
     render_task_monitor,
     start_background_task,
 )
 from src.config import load_config, DEFAULT_CONFIG_PATH
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-st.set_page_config(page_title="Pipeline", page_icon=":material/settings:", layout="wide")
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
 
 from src.storage.cloud_storage import (
     is_cloud_storage_configured,

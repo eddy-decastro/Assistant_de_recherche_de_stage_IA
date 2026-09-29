@@ -46,55 +46,6 @@ from utils.data import (
     VERDICT_TONES,
     tone_class,
 )
-from utils.styles import inject_styles
-from utils.task_manager import render_sidebar_task_badge
-
-st.set_page_config(
-    page_title="Kanban Candidatures",
-    page_icon=":material/view_kanban:",
-    layout="wide",
-)
-
-inject_styles()
-render_sidebar_task_badge()
-
-# Styles spécifiques à la vue Kanban : conteneur large et boutons de cartes compacts
-st.markdown(
-    """
-    <style>
-    /* Permettre aux 5 colonnes Kanban de respirer sur grand écran */
-    [data-testid="stMainBlockContainer"] {
-        max-width: 98% !important;
-        padding-left: 1.5rem !important;
-        padding-right: 1.5rem !important;
-    }
-    /* Boutons compacts et proportions harmonieuses dans les cartes Kanban */
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button,
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a {
-        height: 32px !important;
-        min-height: 32px !important;
-        padding: 0 8px !important;
-        font-size: 11.5px !important;
-    }
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stButton"] button p,
-    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stLinkButton"] a p {
-        font-size: 11.5px !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
-
-# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
-if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
-    import importlib
-    import utils.data
-    importlib.reload(utils.data)
-    from utils.data import Filters, filter_jobs
 
 KANBAN_COLUMNS = [
     (STATUS_NEW, "🆕 Nouveau", "sc-tone-accent"),

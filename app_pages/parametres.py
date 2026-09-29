@@ -23,28 +23,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import load_config, save_config
 from utils.data import bump_data_version, get_database, load_jobs, _esc
-from utils.styles import inject_styles
 from utils.task_manager import (
     get_active_task,
-    render_sidebar_task_badge,
     render_task_monitor,
     start_background_task,
 )
 
 CV_PATH = PROJECT_ROOT / "data" / "cv_eddy.txt"
-
-st.set_page_config(
-    page_title="Paramètres & Profil",
-    page_icon=":material/settings:",
-    layout="wide",
-)
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
 
 st.markdown("<h1>Paramètres &amp; Profil</h1>", unsafe_allow_html=True)
 st.caption("Personnalisez votre CV, vos critères de scraping et pilotez la ré-évaluation par Gemini.")

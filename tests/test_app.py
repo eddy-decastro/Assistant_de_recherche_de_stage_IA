@@ -55,8 +55,8 @@ from src.constants import (
     RUN_PARTIAL,
     SOURCE_COLORS,
 )
-from pages.pipeline import PIPELINE_ACTIONS
-from pages.statistiques import (
+from app_pages.pipeline import PIPELINE_ACTIONS
+from app_pages.statistiques import (
     _telemetry_runs_table,
     _telemetry_passes_table,
     _counters_strip,
@@ -64,7 +64,6 @@ from pages.statistiques import (
     _objectives_table,
     _refusals_table,
 )
-import app
 import streamlit as st
 from src.config import load_config
 from src.storage.database import Database
@@ -500,7 +499,7 @@ def test_telemetrie_panneau() -> None:
 
 def test_onglet_telemetrie_interface() -> None:
     """La page de télémétrie est rendue dans l'application."""
-    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "statistiques.py"), default_timeout=60).run()
+    at = AppTest.from_file(str(PROJECT_ROOT / "app_pages" / "statistiques.py"), default_timeout=60).run()
     assert not at.exception, at.exception
     markup = " ".join(element.value for element in at.markdown)
     assert "Runs de collecte" in markup, "Le tableau des runs doit être rendu."
@@ -611,7 +610,7 @@ def test_compteurs_de_collecte_et_refus() -> None:
 
 def test_kanban_interface() -> None:
     """La page Kanban de suivi des candidatures est rendue sans erreur."""
-    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "kanban.py"), default_timeout=60).run()
+    at = AppTest.from_file(str(PROJECT_ROOT / "app_pages" / "kanban.py"), default_timeout=60).run()
     assert not at.exception, at.exception
     markup = " ".join(element.value for element in at.markdown)
     assert "Tableau Kanban" in markup, "Le titre Kanban doit être rendu."
@@ -620,7 +619,7 @@ def test_kanban_interface() -> None:
 
 def test_parametres_interface() -> None:
     """La page Paramètres (configuration, sources, notation) est rendue sans erreur."""
-    at = AppTest.from_file(str(PROJECT_ROOT / "pages" / "parametres.py"), default_timeout=60).run()
+    at = AppTest.from_file(str(PROJECT_ROOT / "app_pages" / "parametres.py"), default_timeout=60).run()
     assert not at.exception, at.exception
     markup = " ".join(element.value for element in at.markdown)
     assert "Paramètres &amp; Profil" in markup or "Paramètres" in markup

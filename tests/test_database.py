@@ -507,7 +507,7 @@ def test_unranked_jobs_and_stats() -> None:
 
 def test_applied_at_tracking_and_regions() -> None:
     """Vérifie l'horodatage automatique de applied_at et la normalisation géographique."""
-    from pages.statistiques import normalize_region
+    from app_pages.statistiques import normalize_region
 
     # 1. Normalisation régionale
     assert normalize_region("Paris (75)") == "Paris & Île-de-France"

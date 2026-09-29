@@ -20,37 +20,11 @@ from utils.data import (
     Filters,
     filter_jobs,
 )
-from utils.styles import inject_styles
-from utils.task_manager import render_sidebar_task_badge
 from src.constants import *
 from src.config import load_config
 from src.storage.database import Database
 
-st.set_page_config(page_title="Statistiques & Télémétrie", page_icon=":material/monitoring:", layout="wide")
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
-
-# Rechargement défensif si Streamlit a conservé une ancienne version en cache mémoire
-if not hasattr(Filters, "__dataclass_fields__") or "exclude_companies" not in Filters.__dataclass_fields__:
-    import importlib
-    import utils.data
-    importlib.reload(utils.data)
-    from utils.data import Filters, filter_jobs
-
 db = get_database()
-if not hasattr(db, "get_rejected_seen_jobs"):
-    import importlib
-    import src.storage.database
-    importlib.reload(src.storage.database)
-    get_database.clear()
-    db = get_database()
-    if not hasattr(db, "get_rejected_seen_jobs"):
-        db.get_rejected_seen_jobs = src.storage.database.Database.get_rejected_seen_jobs.__get__(db, db.__class__)
 
 # Panneau « Télémétrie des collectes » (tables scrape_runs / scrape_query_stats)
 # --------------------------------------------------------------------------- #
