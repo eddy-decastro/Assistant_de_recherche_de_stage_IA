@@ -19,6 +19,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    case,
     create_engine,
     delete,
     event,
@@ -36,6 +37,7 @@ from src.constants import (
     DEFAULT_SUB_SCORE,
     RUN_INTERRUPTED,
     RUN_RUNNING,
+    SEEN_KNOWN,
     SEEN_VALIDATED,
     STATUS_APPLIED,
     STATUS_INTERVIEW,
@@ -257,6 +259,9 @@ class SeenJob(Base):
     rejection_reason = Column(String(300), nullable=True)
     # Identifiant de la fiche ``jobs`` correspondante (NULL si l'offre n'y est pas).
     job_id = Column(String(64), nullable=True)
+    # Empreinte du filtre métier ayant produit un rejet (``ScraperConfig.filter_fingerprint``).
+    # Un rejet dont l'empreinte diffère du filtre courant est réévalué à la collecte.
+    filter_version = Column(String(16), nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {column.name: getattr(self, column.name) for column in self.__table__.columns}
@@ -378,6 +383,10 @@ class Database:
                 "signals_json": "TEXT",
                 "company_note_json": "TEXT",
                 "grading_version": "VARCHAR(10) DEFAULT 'v1'",
+            },
+            "seen_jobs": {
+                # Empreinte du filtre métier d'un rejet (réévaluation automatique).
+                "filter_version": "VARCHAR(16)",
             },
             "scrape_query_stats": {
                 # Objectif de nouvelles offres fixé à la source pour la passe
@@ -905,7 +914,9 @@ class Database:
     # Mémoire de collecte (seen_jobs) : référence de l'arrêt anticipé
     # ------------------------------------------------------------------ #
     def load_seen_index(
-        self, sources: Iterable[str] | None = None
+        self,
+        sources: Iterable[str] | None = None,
+        filter_version: str | None = None,
     ) -> tuple[set[tuple[str, str]], set[str]]:
         """Charge la mémoire de collecte : ``({(source, clé)}, {urls canoniques})``.
 
@@ -913,12 +924,29 @@ class Database:
         répondre indifféremment par identifiant plateforme
         (``(source, id_externe)``) ou par URL canonique (offres historiques,
         antérieures à l'ajout de la colonne ``id_externe``).
+
+        Avec ``filter_version`` (empreinte du filtre métier courant), les offres
+        qui méritent d'être **réévaluées** sont laissées hors de l'index, donc
+        traitées comme inédites par le scraper :
+
+        * les rejets produits par un autre filtre (mots-clés ou règles modifiés),
+          ou sans empreinte (fiche détail illisible, rejet historique) ;
+        * les lignes historiques ``KNOWN`` sans fiche ``jobs`` : leur décision
+          d'origine (souvent un rejet sur le seul titre) a été écrasée avant que
+          l'upsert ne la préserve.
         """
         with self.SessionLocal() as session:
             stmt = select(SeenJob.source, SeenJob.external_key, SeenJob.canonical_url)
             source_list = [str(item) for item in sources] if sources else []
             if source_list:
                 stmt = stmt.where(SeenJob.source.in_(source_list))
+            if filter_version:
+                stale_rejection = SeenJob.decision.startswith("REJECTED") & (
+                    SeenJob.filter_version.is_(None)
+                    | (SeenJob.filter_version != str(filter_version))
+                )
+                lost_decision = (SeenJob.decision == SEEN_KNOWN) & SeenJob.job_id.is_(None)
+                stmt = stmt.where(~(stale_rejection | lost_decision))
             pairs: set[tuple[str, str]] = set()
             urls: set[str] = set()
             for source, external_key, url in session.execute(stmt).all():
@@ -956,18 +984,33 @@ class Database:
                         else None
                     ),
                     "job_id": entry.get("job_id"),
+                    "filter_version": (
+                        str(entry["filter_version"])[:16] if entry.get("filter_version") else None
+                    ),
                 }
             )
         with self.SessionLocal() as session:
             statement = sqlite_insert(SeenJob).values(payload)
+            # Une ré-observation ``KNOWN`` n'apporte aucune décision : elle ne doit
+            # pas écraser la décision d'origine (rejet, retenue, hors fenêtre), sans
+            # quoi un rejet ne pourrait plus être réévalué quand le filtre change.
+            reobserved = statement.excluded.decision == SEEN_KNOWN
+
+            def keep_on_reobservation(column: Any) -> Any:
+                return case(
+                    (reobserved, getattr(SeenJob, column)),
+                    else_=getattr(statement.excluded, column),
+                )
+
             statement = statement.on_conflict_do_update(
                 index_elements=[SeenJob.source, SeenJob.external_key],
                 set_={
                     "canonical_url": statement.excluded.canonical_url,
                     "title": statement.excluded.title,
                     "last_seen_at": statement.excluded.last_seen_at,
-                    "decision": statement.excluded.decision,
-                    "rejection_reason": statement.excluded.rejection_reason,
+                    "decision": keep_on_reobservation("decision"),
+                    "rejection_reason": keep_on_reobservation("rejection_reason"),
+                    "filter_version": keep_on_reobservation("filter_version"),
                     # Ne jamais perdre le rattachement à une fiche ``jobs`` : une
                     # ré-observation sans identifiant de fiche (décision ``KNOWN``,
                     # par exemple) ne doit pas écraser un lien existant.

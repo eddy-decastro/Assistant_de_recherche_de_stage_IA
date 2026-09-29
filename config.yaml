@@ -3,14 +3,28 @@ scrapers:
   - linkedin
   - jobteaser
   - wttj
+  # Pas de « Stage » dans les requêtes : chaque source filtre déjà le contrat côté
+  # serveur (LinkedIn f_JT=I, WTTJ contract_type:internship, JobTeaser
+  # contract=internship). Le mot écartait les annonces en anglais (« ML Intern »).
+  # Ordre = priorité : l'objectif de nouvelles offres par source peut être atteint
+  # avant les dernières requêtes.
   target_queries:
-  - Stage Data Scientist
-  - Stage Data Science
-  - Stage Machine Learning
-  - Stage Recherche IA
-  - Data Science Recherche
+  - Data Scientist
+  - Machine Learning
+  - Data Science
+  - Deep Learning
+  - Recherche IA
+  - AI Research
+  - Computer Vision
+  - NLP
+  - LLM
+  - Intelligence Artificielle
   max_offers_per_source: 200
   request_timeout_seconds: 30
+  # LinkedIn n'expose pas la description dans ses cartes : la fiche détail est lue
+  # pendant la collecte pour filtrer (et scorer) sur le texte complet.
+  enrich_descriptions: true
+  max_detail_fetches_per_source: 200
   passes:
     freshness:
       enabled: true
@@ -66,6 +80,29 @@ scrapers:
   - technicien support
   - helpdesk
   - community manager
+  # Sous-ensemble de positive_ds_ml_keywords trop générique pour qualifier une
+  # offre seul : compte dans le TITRE, ou à partir de 2 termes distincts dans la
+  # description. Les autres mots-clés positifs suffisent n'importe où.
+  weak_ds_ml_keywords:
+  - ia
+  - ai
+  - ds
+  - recherche
+  - research
+  - r&d
+  - r & d
+  - statistiques
+  - statistique
+  - optimisation
+  - modélisation
+  - modèle
+  - modèles
+  - quantitative
+  - analyse de données
+  - deep tech
+  - diffusion
+  - nerf
+  - biomédical
   positive_ds_ml_keywords:
   - data scientist
   - data science

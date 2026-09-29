@@ -34,6 +34,8 @@ DETAIL_ENDPOINT = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_
 CACHE_NAMESPACE = "linkedin"
 LOCATION = "France"
 SLEEP_RANGE = (2.0, 4.0)
+#: Pause entre deux fiches détail récupérées pendant la collecte (anti-429).
+DETAIL_SLEEP_RANGE = (1.0, 2.5)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -115,6 +117,9 @@ class LinkedInGuestScraper(BaseScraper):
     DATE_ORDER_RELIABLE = False
     #: Mesuré : OUI (``f_TPR``).
     SERVER_WINDOW_FILTER = True
+    #: Les cartes invitées n'exposent pas la description : filtre en deux temps
+    #: (titre, puis fiche détail ``jobPosting``).
+    LIST_HAS_DESCRIPTION = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         super().__init__(config)
@@ -239,6 +244,20 @@ class LinkedInGuestScraper(BaseScraper):
                 )
             )
         return jobs, card_keys
+
+    def _fetch_detail(self, job: RawJob) -> tuple[str, int]:
+        """Description complète pendant la collecte (cache disque d'abord)."""
+        job_id = extract_job_id(job.id_externe) or extract_job_id(job.url)
+        if not job_id:
+            return "", 0
+        cache = self.detail_cache
+        if cache is not None:
+            cached = cache.get(CACHE_NAMESPACE, job_id)
+            if cached is not None:
+                return cached, 0
+        if self._detail_calls:  # respect des serveurs : pause entre deux fiches
+            time.sleep(random.uniform(*DETAIL_SLEEP_RANGE))
+        return self.fetch_description(job_id, cache=cache), 1
 
     def fetch_description(self, url_or_id: str, cache: DiskCache | None = None) -> str:
         """Récupère la description complète d'une offre (page détail invitée).
