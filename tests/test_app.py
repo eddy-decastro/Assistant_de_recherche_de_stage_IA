@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -113,8 +115,100 @@ RERANKED = {
 
 
 def _open_database() -> Database:
-    """Base SQLite déclarée dans config.yaml (lecture du contenu réel)."""
+    """Base SQLite déclarée dans config.yaml (la base de test si la fixture est active)."""
     return Database(load_config()["database"]["path"])
+
+
+@pytest.fixture
+def seeded_database(tmp_path, monkeypatch):
+    """Base SQLite temporaire pré-remplie, substituée à la base locale de config.yaml.
+
+    Les pages Streamlit et ``_open_database`` lisent ``database.path`` dans la
+    configuration : ce chemin est redirigé vers une base jetable contenant quelques
+    offres, un run de collecte (avec ses passes) et des offres écartées. Les tests
+    d'interface ne dépendent ainsi plus du contenu de ``data/stage_copilot.db``
+    (absente, donc vide, en CI).
+    """
+    from scrapers.models import RawJob
+    from src.ingestion.bridge import ingest_raw_jobs
+
+    db_path = tmp_path / "ui_test.db"
+    db = Database(db_path)
+    ingest_raw_jobs(
+        [
+            RawJob(
+                id_externe=f"seed-{index}",
+                source=source,
+                title=title,
+                company=company,
+                location="Paris, France",
+                url=f"https://example.com/offres/seed-{index}",
+                description="Modélisation PyTorch, deep learning et NLP. " * 6,
+                published_at=datetime.now(timezone.utc) - timedelta(days=index),
+            )
+            for index, (source, title, company) in enumerate(
+                [
+                    ("linkedin", "Stage Data Scientist (H/F)", "Doctolib"),
+                    ("wttj", "Stage Recherche Deep Learning", "Owkin"),
+                    ("jobteaser", "Stage Computer Vision", "Photoroom"),
+                ]
+            )
+        ],
+        db,
+    )
+    run_id = db.start_run(["linkedin", "wttj", "jobteaser"])
+    db.record_query_stats(
+        run_id,
+        [
+            {
+                "source": "linkedin",
+                "query": "Data Scientist",
+                "mode": "freshness",
+                "pages_fetched": 2,
+                "http_requests": 4,
+                "cards_seen": 20,
+                "jobs_kept": 5,
+                "jobs_known": 10,
+                "jobs_rejected": 5,
+                "stop_reason": "early_stop",
+                "target_new": 10,
+            },
+            {
+                "source": "wttj",
+                "query": "Machine Learning",
+                "mode": "relevance",
+                "pages_fetched": 1,
+                "http_requests": 1,
+                "cards_seen": 50,
+                "jobs_kept": 8,
+                "jobs_rejected": 2,
+                "stop_reason": "quota",
+                "target_new": 10,
+            },
+        ],
+    )
+    db.finish_run(run_id, status=RUN_OK, total_found=70, total_validated=13, total_inserted=3)
+    db.upsert_seen_jobs(
+        [
+            {
+                "source": "linkedin",
+                "external_key": "seed-rejected",
+                "canonical_url": "example.com/offres/seed-rejected",
+                "title": "Stage Data Analyst Power BI",
+                "decision": "REJECTED_BI",
+                "rejection_reason": "orientation BI / reporting (« power bi »)",
+            }
+        ]
+    )
+    db.engine.dispose()
+
+    # ``load_config`` est mis en cache : tous les modules partagent le même dictionnaire.
+    monkeypatch.setitem(load_config()["database"], "path", str(db_path))
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    yield db_path
+    st.cache_resource.clear()
+    st.cache_data.clear()
 
 
 def test_helpers_score_et_alignement() -> None:
@@ -220,7 +314,7 @@ def test_filtres_entreprises_avance() -> None:
     print("  Filtres entreprises : exclusion Dassault et multi-entreprises OK")
 
 
-def test_interface_streamlit(monkeypatch) -> None:
+def test_interface_streamlit(monkeypatch, seeded_database) -> None:
     """La page Flux se rend sans exception, les filtres pilotent réellement le flux."""
     calls: list[tuple[list, dict]] = []
     monkeypatch.setattr(
@@ -368,7 +462,7 @@ def test_telemetrie_panneau() -> None:
     print("  Télémétrie : tables des runs et des raisons d'arrêt OK")
 
 
-def test_onglet_telemetrie_interface() -> None:
+def test_onglet_telemetrie_interface(seeded_database) -> None:
     """La page de télémétrie est rendue dans l'application."""
     at = AppTest.from_file(str(PROJECT_ROOT / "app_pages" / "statistiques.py"), default_timeout=60).run()
     assert not at.exception, at.exception
