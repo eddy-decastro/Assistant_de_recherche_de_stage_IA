@@ -9,26 +9,16 @@ from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
+from utils.layout import kpi_row, page_header
 from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc, is_reranked
-from utils.styles import inject_styles
 from utils.task_manager import (
     get_active_task,
-    render_sidebar_task_badge,
     render_task_monitor,
     start_background_task,
 )
 from src.config import load_config, DEFAULT_CONFIG_PATH
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-st.set_page_config(page_title="Pipeline", page_icon=":material/settings:", layout="wide")
-
-inject_styles()
-render_sidebar_task_badge()
-
-from utils.auth import require_auth, render_logout_button
-require_auth()
-render_logout_button()
 
 from src.storage.cloud_storage import (
     is_cloud_storage_configured,
@@ -148,7 +138,7 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
     default_sources = scrapers_cfg.get("enabled_sources", ["linkedin", "jobteaser"])
     default_max = int(scrapers_cfg.get("max_offers_per_source", 200))
 
-    st.markdown("### Personnaliser & Lancer la collecte")
+    st.subheader("Personnaliser et lancer la collecte", anchor=False)
     st.caption("Ajustez les requêtes, plateformes cibles et volumes d'offres pour ce run ou enregistrez-les par défaut.")
 
     queries_input = st.text_area(
@@ -194,14 +184,14 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
         launch_clicked = st.button(
             "Lancer la collecte personnalisée",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             help="Lance immédiatement la collecte en tâche de fond avec les paramètres ci-dessus sans modifier config.yaml.",
             disabled=is_task_running,
         )
     with btn_col2:
         save_clicked = st.button(
             "Enregistrer comme paramètres par défaut",
-            use_container_width=True,
+            width="stretch",
             help="Met à jour durablement la section scrapers de config.yaml avec ces valeurs.",
         )
 
@@ -237,12 +227,14 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
             st.error("Veuillez activer au moins une plateforme avant d'enregistrer.")
         else:
             save_default_settings(parsed_queries, sources_selected, max_offers)
-            st.success("Paramètres enregistrés comme nouveaux défauts dans config.yaml !")
-            st.toast("Configuration mise à jour !")
+            st.success("Paramètres enregistrés comme nouveaux défauts dans config.yaml.")
+            st.toast("Configuration mise à jour.")
 
 
 def render_base_panel(jobs: list[dict[str, Any]]) -> None:
-    """Panneau : état de la base et maintenance du pipeline."""
+    """Page Pipeline : état de la base, maintenance du scoring, synchronisation cloud et collecte."""
+    page_header("Pipeline", "Base de données, maintenance du scoring, synchronisation cloud et collecte.")
+
     # Affichage du moniteur de tâche interactive (barre, logs, bouton d'arrêt)
     render_task_monitor()
 
@@ -253,139 +245,161 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
     v1_jobs = [j for j in jobs if j.get("grading_version") == "v1" or (is_reranked(j) and not j.get("grading_version"))]
     v3_jobs = [j for j in jobs if j.get("grading_version") == "v3"]
 
-    st.markdown("### État de la base SQLite &amp; Grille de scoring", unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sc-kv">'
-        + "".join(f"<div>{_esc(label)} <b>{count}</b></div>" for label, count, _ in distribution)
-        + f"<div>Évaluées v3 <b>{len(v3_jobs)}</b></div>"
-        + f"<div>Évaluées v1 <b>{len(v1_jobs)}</b></div>"
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(f"{len(jobs)} offres en base SQLite · <b>{len(v3_jobs)}</b> offres en grille v3 · <b>{len(v1_jobs)}</b> offres en grille v1 à réévaluer")
+    with st.container(border=True):
+        st.subheader("État de la base", anchor=False)
+        kpi_row(
+            [
+                *[(label, str(count), None) for label, count, _ in distribution],
+                ("Évaluées v3", str(len(v3_jobs)), "Offres notées avec la grille v3"),
+                ("Évaluées v1", str(len(v1_jobs)), "Offres notées en v1, à réévaluer"),
+            ]
+        )
+        st.caption(f"{len(jobs)} offres en base SQLite.")
 
-    st.markdown("#### Maintenance du scoring v3")
-    col_v3_recomp, col_v3_regrade = st.columns([1.2, 1.8], gap="medium")
+    with st.container(border=True):
+        st.subheader("Maintenance du scoring v3", anchor=False)
+        col_v3_recomp, col_v3_regrade = st.columns([1.2, 1.8], gap="medium")
 
-    with col_v3_recomp:
-        st.markdown("**Recalcul déterministe (Gratuit)**")
-        st.caption("Recalcule instantanément les planchers, bonus et plafonds en code pur pour toutes les offres v3 sans aucun appel LLM.")
-        if st.button("Recalculer les notes (code pur, gratuit)", use_container_width=True, icon=":material/calculate:"):
-            with st.spinner("Recalcul en cours..."):
-                db = get_database()
-                cfg = load_config()
-                nb_recomputed = db.recompute_scores(cfg)
-                bump_data_version(sync_cloud=False)
-                st.success(f"{nb_recomputed} offres recalculées avec succès !")
-                st.rerun()
-
-    with col_v3_regrade:
-        st.markdown("**Réévaluation des offres v1 par Gemini**")
-        st.caption("Re-soumet les offres évaluées en v1 au juge LLM Gemini pour les faire basculer sur la grille v3 avec sous-scores et citations.")
-        col_regrade_limit, col_regrade_btn = st.columns([1, 1.5], vertical_alignment="bottom")
-        with col_regrade_limit:
-            regrade_limit = st.number_input("Limite (max 50)", min_value=1, max_value=50, value=min(20, max(1, len(v1_jobs)) if v1_jobs else 20), step=5)
-        with col_regrade_btn:
-            if st.button("Réévaluer les offres v1", disabled=is_task_running or len(v1_jobs) == 0, use_container_width=True, icon=":material/refresh:"):
-                cmd = [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--no-collect", "--regrade-v1", "--limit", str(regrade_limit)]
-                ok, msg = start_background_task(
-                    key="regrade_v1",
-                    name=f"Réévaluation de {regrade_limit} offres v1 vers v3",
-                    command=cmd,
-                    description="Réévaluation ciblée des offres v1 par Gemini",
-                )
-                if ok:
-                    st.toast(f"Tâche de réévaluation lancée pour {regrade_limit} offres !")
+        with col_v3_recomp:
+            st.markdown("**Recalcul déterministe (gratuit)**")
+            st.caption("Recalcule instantanément les planchers, bonus et plafonds en code pur pour toutes les offres v3 sans aucun appel LLM.")
+            if st.button("Recalculer les notes (code pur, gratuit)", width="stretch", icon=":material/calculate:"):
+                with st.spinner("Recalcul en cours..."):
+                    db = get_database()
+                    cfg = load_config()
+                    nb_recomputed = db.recompute_scores(cfg)
+                    bump_data_version(sync_cloud=False)
+                    st.success(f"{nb_recomputed} offres recalculées avec succès.")
                     st.rerun()
-                else:
-                    st.warning(msg)
 
-    if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", use_container_width=True):
-        try:
-            db = get_database()
-            db.engine.dispose()
-        except Exception:
-            pass
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        bump_data_version(sync_cloud=False)
-        st.rerun()
-
-    # Section Synchronisation Cloud
-    st.markdown("---")
-    st.markdown("### ☁️ Synchronisation Cloud (R2 / S3)")
-    if is_cloud_storage_configured():
-        meta = get_remote_metadata()
-        if meta:
-            size_mb = meta["size_bytes"] / (1024 * 1024)
-            date_str = meta["last_modified"].strftime("%d/%m/%Y à %H:%M UTC") if meta.get("last_modified") else "inconnue"
-            st.success(f"Stockage distant connecté. Base distante : **{size_mb:.2f} Mo** (modifiée le {date_str}).")
-        else:
-            st.info("Stockage distant configuré mais aucune base distante trouvée dans le bucket.")
-
-        c_sync1, c_sync2 = st.columns(2)
-        with c_sync1:
-            if st.button("⬇️ Récupérer la dernière base distante", use_container_width=True, help="Force le téléchargement de la base depuis le bucket."):
-                with st.spinner("Téléchargement de la base distante en cours..."):
-                    try:
-                        db = get_database()
-                        db.engine.dispose()
-                    except Exception:
-                        pass
-                    if download_database(force=True):
-                        st.cache_resource.clear()
-                        st.cache_data.clear()
-                        bump_data_version(sync_cloud=False)
-                        st.toast("Base locale mise à jour depuis le cloud !")
+        with col_v3_regrade:
+            st.markdown("**Réévaluation des offres v1 par Gemini**")
+            st.caption("Re-soumet les offres évaluées en v1 au juge LLM Gemini pour les faire basculer sur la grille v3 avec sous-scores et citations.")
+            col_regrade_limit, col_regrade_btn = st.columns([1, 1.5], vertical_alignment="bottom")
+            with col_regrade_limit:
+                regrade_limit = st.number_input("Limite (max 50)", min_value=1, max_value=50, value=min(20, max(1, len(v1_jobs)) if v1_jobs else 20), step=5)
+            with col_regrade_btn:
+                if st.button("Réévaluer les offres v1", disabled=is_task_running or len(v1_jobs) == 0, width="stretch", icon=":material/refresh:"):
+                    cmd = [sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--no-collect", "--regrade-v1", "--limit", str(regrade_limit)]
+                    ok, msg = start_background_task(
+                        key="regrade_v1",
+                        name=f"Réévaluation de {regrade_limit} offres v1 vers v3",
+                        command=cmd,
+                        description="Réévaluation ciblée des offres v1 par Gemini",
+                    )
+                    if ok:
+                        st.toast(f"Tâche de réévaluation lancée pour {regrade_limit} offres.")
                         st.rerun()
                     else:
-                        st.warning("Échec du téléchargement ou stockage vide.")
-        with c_sync2:
-            if st.button("⬆️ Sauvegarder la base vers le cloud", use_container_width=True, help="Envoie la base SQLite actuelle vers le bucket."):
-                with st.spinner("Envoi vers le cloud en cours..."):
-                    if upload_database():
-                        st.toast("Base sauvegardée sur le cloud avec succès !")
-                    else:
-                        st.error("Échec de l'envoi.")
-    else:
-        st.caption("Synchronisation cloud non active. Configurez les variables R2/S3 pour lier un bucket.")
+                        st.warning(msg)
+
+        if st.button("Actualiser la vue", help="Relit la base SQLite et invalide le cache de lecture du dashboard.", icon=":material/refresh:", width="stretch"):
+            try:
+                db = get_database()
+                db.engine.dispose()
+            except Exception:
+                pass
+            st.cache_resource.clear()
+            st.cache_data.clear()
+            bump_data_version(sync_cloud=False)
+            st.rerun()
+
+    with st.container(border=True):
+        st.subheader("Synchronisation cloud (R2 / S3)", anchor=False)
+        if is_cloud_storage_configured():
+            meta = get_remote_metadata()
+            if meta:
+                size_mb = meta["size_bytes"] / (1024 * 1024)
+                date_str = meta["last_modified"].strftime("%d/%m/%Y à %H:%M UTC") if meta.get("last_modified") else "inconnue"
+                st.success(f"Stockage distant connecté. Base distante : **{size_mb:.2f} Mo** (modifiée le {date_str}).")
+            else:
+                st.info("Stockage distant configuré mais aucune base distante trouvée dans le bucket.")
+
+            c_sync1, c_sync2 = st.columns(2)
+            with c_sync1:
+                confirm_download = st.checkbox(
+                    "Je confirme le remplacement de la base locale",
+                    key="confirm_download",
+                    help="Le téléchargement écrase la base SQLite locale par la version du bucket.",
+                )
+                if st.button(
+                    "Récupérer la base distante",
+                    width="stretch",
+                    icon=":material/cloud_download:",
+                    help="Force le téléchargement de la base depuis le bucket.",
+                    disabled=not confirm_download,
+                ):
+                    with st.spinner("Téléchargement de la base distante en cours..."):
+                        try:
+                            db = get_database()
+                            db.engine.dispose()
+                        except Exception:
+                            pass
+                        if download_database(force=True):
+                            st.cache_resource.clear()
+                            st.cache_data.clear()
+                            bump_data_version(sync_cloud=False)
+                            st.toast("Base locale mise à jour depuis le cloud.")
+                            st.rerun()
+                        else:
+                            st.warning("Échec du téléchargement ou stockage vide.")
+            with c_sync2:
+                if st.button(
+                    "Sauvegarder vers le cloud",
+                    width="stretch",
+                    icon=":material/cloud_upload:",
+                    help="Envoie la base SQLite actuelle vers le bucket.",
+                ):
+                    with st.spinner("Envoi vers le cloud en cours..."):
+                        if upload_database():
+                            st.toast("Base sauvegardée sur le cloud avec succès.")
+                        else:
+                            st.error("Échec de l'envoi.")
+        else:
+            st.caption("Synchronisation cloud non active. Configurez les variables R2/S3 pour lier un bucket.")
 
     is_cloud_env = bool(os.getenv("RENDER") or os.getenv("ENVIRONMENT") == "production")
 
     if is_cloud_env:
-        st.markdown("---")
-        st.markdown("### 🛡️ Collecte & Pipeline (Mode Cloud)")
-        st.warning(
-            "**Collecte automatique désactivée depuis Render** : Les requêtes vers LinkedIn et Cloudflare JobTeaser "
-            "depuis les serveurs cloud de datacenters sont fréquemment bloquées ou bannies par les systèmes anti-bot.\n\n"
-            "👉 **Pour collecter de nouvelles offres** : lancez simplement `python run_pipeline.py` sur votre machine locale. "
-            "Les nouvelles offres seront ensuite synchronisées avec ce tableau de bord."
-        )
-        with st.expander("Mode avancé (Forcer une action sur le serveur Render)"):
-            st.caption("Attention : réservé au dépannage ou aux tests.")
-            for action in PIPELINE_ACTIONS:
-                if st.button(action.label, use_container_width=True, key=f"cloud-pipeline-{action.key}", disabled=is_task_running):
-                    run_pipeline(action)
+        with st.container(border=True):
+            st.subheader("Collecte et pipeline (mode cloud)", anchor=False)
+            st.warning(
+                "**Collecte automatique désactivée depuis Render** : les requêtes vers LinkedIn et Cloudflare JobTeaser "
+                "depuis les serveurs cloud de datacenters sont fréquemment bloquées ou bannies par les systèmes anti-bot.\n\n"
+                "**Pour collecter de nouvelles offres** : lancez simplement `python run_pipeline.py` sur votre machine locale. "
+                "Les nouvelles offres seront ensuite synchronisées avec ce tableau de bord."
+            )
+            with st.expander("Mode avancé (forcer une action sur le serveur Render)"):
+                st.caption("Attention : réservé au dépannage ou aux tests.")
+                for action in PIPELINE_ACTIONS:
+                    if st.button(action.label, width="stretch", key=f"cloud-pipeline-{action.key}", disabled=is_task_running):
+                        run_pipeline(action)
     else:
-        render_custom_collection_form(is_task_running)
-        st.markdown("---")
-        st.markdown("### Actions de pipeline prédéfinies")
-        if is_task_running:
-            st.info("⏳ Un traitement est actuellement en cours. Vous pouvez suivre sa progression en direct ci-dessus.")
+        with st.container(border=True):
+            render_custom_collection_form(is_task_running)
 
-        for action in PIPELINE_ACTIONS:
-            if st.button(
-                action.label,
-                use_container_width=True,
-                help=action.help,
-                key=f"pipeline-{action.key}",
-                disabled=is_task_running,
-            ):
-                run_pipeline(action)
-        st.caption(
-            "Chaque action s'exécute en tâche de fond avec suivi en temps réel et survit à la navigation entre les pages. "
-            "Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement."
-        )
+        with st.container(border=True):
+            st.subheader("Actions prédéfinies", anchor=False)
+            if is_task_running:
+                st.info(
+                    "Un traitement est en cours : suivez sa progression en direct ci-dessus.",
+                    icon=":material/hourglass_top:",
+                )
+
+            for action in PIPELINE_ACTIONS:
+                if st.button(
+                    action.label,
+                    width="stretch",
+                    help=action.help,
+                    key=f"pipeline-{action.key}",
+                    type="primary" if action.key == "full_pipeline" else "secondary",
+                    disabled=is_task_running,
+                ):
+                    run_pipeline(action)
+            st.caption(
+                "Chaque action s'exécute en tâche de fond avec suivi en temps réel et survit à la navigation entre les pages. "
+                "Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement."
+            )
 
 
 db = get_database()
