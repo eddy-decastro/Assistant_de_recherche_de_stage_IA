@@ -152,6 +152,21 @@ class LiveRerankWorker:
                     sub_scores=result.get("sub_scores"),
                     hard_cap_triggered=result.get("hard_cap_triggered"),
                     reasoning=result.get("reasoning", ""),
+                    contract_type=result.get("contract_type"),
+                    structure_type=result.get("structure_type"),
+                    category_confidence=result.get("category_confidence"),
+                    rd_nature=result.get("rd_nature"),
+                    duration_months=result.get("duration_months"),
+                    is_cesure=result.get("is_cesure"),
+                    quality_score=result.get("quality_score"),
+                    floor_value=result.get("floor_value"),
+                    floor_reason=result.get("floor_reason"),
+                    cap_applied=result.get("cap_applied"),
+                    exclusion_reason=result.get("exclusion_reason"),
+                    scaleup_suggested=result.get("scaleup_suggested"),
+                    signals_json=result.get("signals"),
+                    company_note_json=result.get("company_note"),
+                    grading_version=result.get("grading_version", "v3"),
                 )
 
                 with self._lock:

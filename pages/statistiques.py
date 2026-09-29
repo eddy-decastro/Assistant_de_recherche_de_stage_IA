@@ -766,31 +766,132 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
 
-    # B. Jauges des 5 sous-scores moyens
+    # B. Jauges des 4 sous-scores moyens (Grille v3)
     st.markdown(
         '<div class="sc-section-title">'
-        "Moyennes des 5 sous-scores R&D (sur 5.0)</div>",
+        "Moyennes des 4 sous-scores R&amp;D (sur 5.0)</div>",
         unsafe_allow_html=True,
     )
     subscore_defs = [
-        ("modeling_depth", "Complexité DL & Théorie"),
-        ("mentorship_team", "Encadrement Chercheurs/Seniors"),
-        ("engineering_practice", "Pratiques MLOps & Ingénierie"),
-        ("option_value", "Débouchés Thèse/CDI & Notoriété"),
-        ("logistics", "Logistique & Rémunération"),
+        ("technical_depth", "Profondeur technique"),
+        ("target_alignment", "Adéquation sujet cible"),
+        ("learning_environment", "Cadre d'apprentissage"),
+        ("logistics", "Logistique &amp; Calendrier"),
     ]
     subscore_jobs = [j for j in reranked_jobs if j.get("sub_scores")]
     n_sub = len(subscore_jobs)
 
-    cols_sub = st.columns(5)
+    cols_sub = st.columns(4)
     sub_data = []
     for i, (key, label) in enumerate(subscore_defs):
         if n_sub > 0:
-            avg_val = sum(j["sub_scores"].get(key, 3) for j in subscore_jobs) / n_sub
+            avg_val = sum(coerce_sub_score(j["sub_scores"].get(key, 3)) for j in subscore_jobs) / n_sub
         else:
             avg_val = 0.0
-        cols_sub[i].metric(label, f"{avg_val:.2f} / 5")
+        cols_sub[i].metric(label.replace("&amp;", "&"), f"{avg_val:.2f} / 5")
         sub_data.append({"Critère": label, "Moyenne": round(avg_val, 2)})
+
+    st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
+
+    # C. Grille v3 : Typologie d'entreprise, Planchers, Plafonds & Citations
+    st.markdown(
+        '<div class="sc-section-title">'
+        "Grille v3 : Catégories d'entreprises, Planchers, Plafonds &amp; Citations</div>",
+        unsafe_allow_html=True,
+    )
+
+    col_st, col_fp, col_cit = st.columns([1.2, 1.2, 1.0], gap="medium")
+
+    # 1. Distribution structure_type
+    with col_st:
+        st.markdown("##### Catégories d'entreprises (LLM)")
+        st_counts: Counter[str] = Counter()
+        for j in reranked_jobs:
+            stype = j.get("structure_type") or "INCONNU"
+            st_counts[stype] += 1
+
+        st_data = []
+        for code, label in STRUCTURE_TYPE_LABELS.items():
+            cnt = st_counts.get(code, 0)
+            if cnt > 0 or code in ("SCALEUP_IA", "GRAND_GROUPE_RD", "LABO_PRIVE", "LABO_PUBLIC", "STARTUP_PETITE", "ESN_CONSEIL"):
+                st_data.append({"Catégorie": label, "Offres": cnt})
+
+        df_st = pd.DataFrame(st_data)
+        if not df_st.empty and df_st["Offres"].sum() > 0:
+            chart_st = (
+                alt.Chart(df_st)
+                .mark_bar(color="#10B981", cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+                .encode(
+                    y=alt.Y("Catégorie:N", sort="-x", title=None),
+                    x=alt.X("Offres:Q", title="Nombre d'offres"),
+                    tooltip=["Catégorie", "Offres"],
+                )
+                .properties(height=200)
+            )
+            st.altair_chart(chart_st, width="stretch")
+        else:
+            st.info("Aucune catégorie v3 évaluée pour l'instant.")
+
+    # 2. Planchers et Plafonds appliqués
+    with col_fp:
+        st.markdown("##### Planchers &amp; Plafonds appliqués")
+        floor_counts: Counter[str] = Counter()
+        cap_counts: Counter[str] = Counter()
+        for j in reranked_jobs:
+            fl_reason = j.get("floor_reason")
+            if fl_reason:
+                floor_counts[fl_reason] += 1
+            cap = j.get("cap_applied") or j.get("hard_cap_triggered")
+            if cap:
+                cap_counts[str(cap).upper()] += 1
+
+        fp_rows = []
+        for r, cnt in floor_counts.items():
+            fp_rows.append({"Règle": f"Plancher : {r}", "Offres": cnt, "Type": "Plancher"})
+        for c, cnt in cap_counts.items():
+            c_lbl = HARD_CAP_LABELS.get(c, c)
+            fp_rows.append({"Règle": f"Plafond : {c_lbl}", "Offres": cnt, "Type": "Plafond"})
+
+        if fp_rows:
+            df_fp = pd.DataFrame(fp_rows)
+            chart_fp = (
+                alt.Chart(df_fp)
+                .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+                .encode(
+                    y=alt.Y("Règle:N", sort="-x", title=None),
+                    x=alt.X("Offres:Q", title="Nombre d'offres"),
+                    color=alt.Color("Type:N", scale=alt.Scale(domain=["Plancher", "Plafond"], range=["#10B981", "#F43F5E"])),
+                    tooltip=["Règle", "Offres", "Type"],
+                )
+                .properties(height=200)
+            )
+            st.altair_chart(chart_fp, width="stretch")
+        else:
+            st.caption("Aucun plancher ni plafond appliqué sur les offres rerankées.")
+
+    # 3. Vérification des citations & Signaux
+    with col_cit:
+        st.markdown("##### Audit Citations &amp; Signaux")
+        nb_verified = 0
+        nb_failed = 0
+        for j in reranked_jobs:
+            signals = j.get("signals") or {}
+            if isinstance(signals, dict):
+                for s_key, s_val in signals.items():
+                    if isinstance(s_val, dict) and s_val.get("present"):
+                        nb_verified += 1
+            red_flags = j.get("red_flags") or []
+            for rf in red_flags:
+                if "[CITATION_NON_VERIFIEE]" in str(rf):
+                    nb_failed += 1
+
+        tot_citations = nb_verified + nb_failed
+        failure_rate = (nb_failed / tot_citations * 100.0) if tot_citations > 0 else 0.0
+
+        st.metric("Signaux vérifiés", f"{nb_verified}")
+        st.metric("Citations rejetées", f"{nb_failed}")
+        st.metric("Taux d'échec citations", f"{failure_rate:.1f} %")
+        st.caption("Une citation rejetée annule le bonus sans pénaliser l'offre.")
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
 

@@ -1,194 +1,361 @@
+"""Tests unitaires pour le juge LLM v3 (scoring, exclusions, planchers, plafonds, citations)."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.matching.llm_judge import (
-    LLMJudge,
-    calculate_score_from_sub_scores,
-    hard_cap_max,
-    _normalize_hard_cap,
-    verdict_from_score,
-)
+from src.config import load_config
 from src.constants import (
+    DEFAULT_SUB_SCORE,
     VERDICT_EXCELLENT,
     VERDICT_GOOD,
     VERDICT_MIXED,
     VERDICT_OFF_TOPIC,
 )
+from src.matching.llm_judge import (
+    LLMJudge,
+    ScoreBreakdown,
+    anonymize_cv,
+    compute_final_score,
+    is_title_excluded_contract,
+    verdict_from_score,
+    verify_citation,
+)
 
 
-def test_score_calculation_weights() -> None:
-    # 1. Bornes extrêmes
-    all_5 = {"supervision": 5, "technical_depth": 5, "real_impact": 5, "structure_fit": 5, "next_step": 5,
-        "logistics": 5}
-    assert calculate_score_from_sub_scores(all_5) == 100
+def test_neutral_and_extreme_quality_scores() -> None:
+    """Vérifie les bornes 0, 50 (neutre) et 100."""
+    job = {"title": "Stage ML", "company": "PME Tech", "description": "Modélisation standard"}
 
-    all_1 = {"supervision": 1, "technical_depth": 1, "real_impact": 1, "structure_fit": 1, "next_step": 1, "logistics": 1}
-    assert calculate_score_from_sub_scores(all_1) == 0
+    # 1. Neutre partout (3/5) -> 50
+    neutral_parsed = {
+        "contract_type": "STAGE",
+        "sub_scores": {
+            "technical_depth": 3,
+            "target_alignment": 3,
+            "learning_environment": 3,
+            "logistics": 3,
+        },
+    }
+    b_neutral = compute_final_score(neutral_parsed, job)
+    assert b_neutral.quality_score == 50
+    assert b_neutral.final_score == 50
 
-    all_3 = {"supervision": 3, "technical_depth": 3, "real_impact": 3, "structure_fit": 3, "next_step": 3, "logistics": 3}
-    assert calculate_score_from_sub_scores(all_3) == 50
+    # 2. Minima (1/5) -> 0
+    all_1 = {
+        "contract_type": "STAGE",
+        "sub_scores": {
+            "technical_depth": 1,
+            "target_alignment": 1,
+            "learning_environment": 1,
+            "logistics": 1,
+        },
+    }
+    b_min = compute_final_score(all_1, job)
+    assert b_min.quality_score == 0
+    assert b_min.final_score == 0
 
-    # Calibration example: PINNs research lab (5, 5, 3, 5, 5)
-    # W = 0.30*5 + 0.25*5 + 0.20*3 + 0.15*5 + 0.10*5 = 1.5 + 1.25 + 0.6 + 0.75 + 0.5 = 4.60
-    # Score = (4.60 - 1) / 4 * 100 = 90
-    calib_1 = {"supervision": 5, "technical_depth": 5, "real_impact": 3, "structure_fit": 5, "next_step": 5,
-        "logistics": 5}
-    s1 = calculate_score_from_sub_scores(calib_1)
-    assert s1 == 88
-    assert verdict_from_score(s1) == VERDICT_EXCELLENT
-
-
-def test_hard_caps() -> None:
-    assert hard_cap_max("ALTERNANCE") == 15
-    assert hard_cap_max("NOT_A_PFE") == 15
-    assert hard_cap_max("BI_REPORTING") == 30
-    assert hard_cap_max("SHALLOW_AI") == 40
-    assert hard_cap_max("FINANCE") == 50
-    assert hard_cap_max("NONE") is None
-    assert _normalize_hard_cap("NONE") is None
-    assert _normalize_hard_cap("BI_REPORTING") == "BI_REPORTING"
-
-
-def test_judge_parsing_new_schema() -> None:
-    judge = LLMJudge(api_key="fake")
-    job = {"final_score": 50}
-
-    fake_json = """{
-      "information_level": "COMPLET",
-      "evidence": {
-        "supervision": "PyTorch et PINNs",
-        "technical_depth": "chercheur PhD",
-        "real_impact": "cluster GPU",
-        "structure_fit": "thèse CIFRE envisagée",
-        "next_step": "embauche",
-        "logistics": "stage 6 mois début avril Paris"
-      },
-      "reasoning": "Opportunité R&D avec chercheur.",
-      "hard_cap_triggered": "NONE",
-      "hard_cap_evidence": null,
-      "sub_scores": {
-        "supervision": 5,
-        "technical_depth": 5,
-        "real_impact": 3,
-        "structure_fit": 5,
-        "next_step": 5,
-        "logistics": 5
-      },
-      "flags": ["CALENDRIER_DECALE"],
-      "match_reasons": ["R&D PINNs", "Thèse CIFRE"],
-      "red_flags": [],
-      "tech_stack_detected": ["PyTorch", "JAX"],
-      "questions_entretien": ["Quel cluster GPU ?"]
-    }"""
-
-    res = judge._parse_response(fake_json, job)
-    assert res["rerank_score"] == 88
-    assert res["verdict"] == VERDICT_EXCELLENT
-    assert res["flags"] == ["CALENDRIER_DECALE"]
-    assert res["questions_entretien"] == ["Quel cluster GPU ?"]
-    assert res["tech_stack"] == ["PyTorch", "JAX"]
-    assert res["hard_cap_triggered"] is None
+    # 3. Maxima (5/5) -> 100
+    all_5 = {
+        "contract_type": "STAGE",
+        "sub_scores": {
+            "technical_depth": 5,
+            "target_alignment": 5,
+            "learning_environment": 5,
+            "logistics": 5,
+        },
+    }
+    b_max = compute_final_score(all_5, job)
+    assert b_max.quality_score == 100
+    assert b_max.final_score == 100
 
 
-def test_judge_parsing_hard_cap_capping() -> None:
-    judge = LLMJudge(api_key="fake")
-    job = {"final_score": 50}
+def test_signals_bonuses_and_penalties() -> None:
+    """Bonus plafonné à +10, citations vérifiées, pénalité benchmark -5."""
+    desc = (
+        "Rejoignez notre équipe R&D. Vous serez encadré par un Senior ML Scientist (PhD). "
+        "Vous travaillerez sur les données réelles de nos hôpitaux partenaires. "
+        "Possibilité de thèse CIFRE à l'issue du stage."
+    )
+    job = {"title": "Stage ML Santé", "company": "Hopital Hub", "description": desc}
 
-    fake_json_cap = """{
-      "information_level": "COMPLET",
-      "reasoning": "Mission BI dashboards.",
-      "hard_cap_triggered": "BI_REPORTING",
-      "hard_cap_evidence": "dashboards Power BI",
-      "sub_scores": {
-        "supervision": 3,
-        "technical_depth": 4,
-        "real_impact": 3,
-        "structure_fit": 3,
-        "next_step": 5,
-        "logistics": 5
-      }
-    }"""
-    res_cap = judge._parse_response(fake_json_cap, job)
-    assert res_cap["rerank_score"] <= 30
-    assert res_cap["hard_cap_triggered"] == "BI_REPORTING"
-    assert res_cap["verdict"] == VERDICT_OFF_TOPIC
+    parsed = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "signals": {
+            "encadrant_explicite": {"present": True, "evidence": "Senior ML Scientist (PhD)"},
+            "donnees_reelles_explicites": {"present": True, "evidence": "données réelles de nos hôpitaux"},
+            "suite_explicite": {"present": True, "evidence": "Possibilité de thèse CIFRE"},
+        },
+    }
+    # 50 + 6 + 3 + 3 = 62, plafonné à +10 bonus => 60
+    b = compute_final_score(parsed, job)
+    assert b.quality_score == 60
 
+    # Si la citation est fausse ou absente du texte -> pas de bonus
+    parsed_fake = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "signals": {
+            "encadrant_explicite": {"present": True, "evidence": "encadrement exceptionnel par Turing"},
+        },
+    }
+    b_fake = compute_final_score(parsed_fake, job)
+    assert b_fake.quality_score == 50  # Pas de bonus accordé
 
-def test_build_content_limits() -> None:
-    judge = LLMJudge(api_key="fake")
-    long_desc = "A" * 15000
-    long_cv = "B" * 8000
-    job = {"title": "Stage ML", "company": "Test", "description": long_desc}
-
-    content = judge._build_content(job, cv_text=long_cv)
-    # Vérifie que la description est tronquée exactement à 12000 caractères
-    assert ("A" * 12000) in content
-    assert ("A" * 12001) not in content
-    # Vérifie que le CV est tronqué exactement à 6000 caractères
-    assert ("B" * 6000) in content
-    assert ("B" * 6001) not in content
-
-
-def test_judge_api_error_handling() -> None:
-    """Vérifie qu'une erreur API (429 ou réseau) ne produit pas de fausse note 0.0."""
-    from unittest.mock import patch
-    from google.genai.errors import APIError
-
-    judge = LLMJudge(api_key="fake")
-    job = {"title": "Stage ML", "final_score": 75.0}
-
-    # 1. Simulation d'une erreur 429 (quota dépassé)
-    mock_err = APIError(429, "Quota exceeded for quota metric 'GenerateContent'")
-    with patch.object(judge, "_post_chat", side_effect=mock_err):
-        res = judge.judge(job)
-        assert res["api_error"] is True
-        assert res["rerank_score"] is None
-        assert res["verdict"] is None
-        assert res["information_level"] == "API_ERROR"
-        assert any("429" in flag for flag in res["red_flags"])
-
-    # 2. Simulation d'une panne réseau inattendue
-    with patch.object(judge, "_post_chat", side_effect=ConnectionResetError("Connexion perdue")):
-        res = judge.judge(job)
-        assert res["api_error"] is True
-        assert res["rerank_score"] is None
-        assert res["verdict"] is None
-        assert res["information_level"] == "API_ERROR"
+    # Pénalité benchmark -5 si présent et vérifié
+    desc_bench = "Projet académique : évaluation sur les benchmarks publics de référence ImageNet."
+    job_bench = {"title": "Stage Benchmark", "company": "PME", "description": desc_bench}
+    parsed_bench = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "signals": {
+            "donnees_benchmark_seulement": {"present": True, "evidence": "benchmarks publics de référence ImageNet"},
+        },
+    }
+    b_bench = compute_final_score(parsed_bench, job_bench)
+    assert b_bench.quality_score == 45
 
 
-def test_judge_missing_key_handling() -> None:
-    """Vérifie qu'une clé API manquante ne corrompt pas l'offre."""
-    judge = LLMJudge(api_key="")
-    job = {"title": "Stage ML", "final_score": 75.0}
-    res = judge.judge(job)
-    assert res["api_error"] is True
-    assert res["rerank_score"] is None
-    assert res["verdict"] is None
+def test_exclusions_amont_et_aval() -> None:
+    """CDI, alternance seule, césure, 3 mois (exclus) ; stage ou alternance et 5 mois (non exclus)."""
+    exclusion_kws = ["cdi", "cdd", "alternance", "apprentissage", "contrat pro", "freelance", "vie"]
+
+    # 1. Exclusion amont titre
+    assert is_title_excluded_contract("Data Scientist CDI", exclusion_kws)[0] is True
+    assert is_title_excluded_contract("Alternance Data Analyst", exclusion_kws)[0] is True
+    # "Stage de pré-embauche CDI" contient le mot stage => non exclu en amont
+    assert is_title_excluded_contract("Stage de pré-embauche CDI", exclusion_kws)[0] is False
+
+    # 2. Exclusion aval (LLM)
+    job = {"title": "Offre Data", "company": "PME", "description": "Offre d'alternance"}
+    # Alternance seule => exclu
+    assert compute_final_score({"contract_type": "ALTERNANCE"}, job).excluded is True
+    # CDI/CDD => exclu
+    assert compute_final_score({"contract_type": "CDI_CDD"}, job).excluded is True
+    # Césure => exclu
+    assert compute_final_score({"contract_type": "STAGE", "is_cesure": True}, job).excluded is True
+    # 3 mois (< 4 mois) => exclu
+    assert compute_final_score({"contract_type": "STAGE", "duration_months": 3}, job).excluded is True
+
+    # 3. Non exclus : STAGE_OU_ALTERNANCE et stage 5 mois
+    b_mix = compute_final_score({"contract_type": "STAGE_OU_ALTERNANCE", "sub_scores": {}}, job)
+    assert b_mix.excluded is False
+    b_5m = compute_final_score({"contract_type": "STAGE", "duration_months": 5, "sub_scores": {}}, job)
+    assert b_5m.excluded is False
 
 
-def test_gemini_rate_limiter_spacing() -> None:
-    import time
-    from src.matching.llm_judge import GeminiRateLimiter
-    limiter = GeminiRateLimiter(rpm=600)  # intervalle 0.1s
+def test_floors_application_and_condition() -> None:
+    """Planchers 70 (scale-up), 60 (R&D groupe), 50 (labo public) conditionnés à technical_depth >= 3."""
+    # Scale-up (Owkin est dans la liste scaleup) avec technical_depth = 4
+    job_owkin = {"title": "Stage ML", "company": "Owkin", "description": "Recherche Deep Learning"}
+    parsed_owkin = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 4, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    # Base quality = ((0.35*4 + 0.20*3 + 0.30*3 + 0.15*3 - 1)/4)*100 = ((3.35 - 1)/4)*100 = 58.75 -> 59
+    b_owkin = compute_final_score(parsed_owkin, job_owkin)
+    assert b_owkin.quality_score == 59
+    assert b_owkin.floor_value == 70
+    assert b_owkin.final_score == 70  # Plancher 70 appliqué
+
+    # Même offre mais technical_depth = 2 : PAS de plancher !
+    parsed_low_tech = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 2, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    b_low = compute_final_score(parsed_low_tech, job_owkin)
+    assert b_low.floor_value is None
+    assert b_low.final_score == b_low.quality_score  # La qualité fait foi
+
+    # Grand groupe R&D (EDF R&D) : plancher 60
+    job_edf = {"title": "Stage R&D", "company": "EDF R&D", "description": "Optimisation stochastique"}
+    parsed_edf = {
+        "contract_type": "STAGE",
+        "structure_type": "GRAND_GROUPE_RD",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    b_edf = compute_final_score(parsed_edf, job_edf)
+    assert b_edf.floor_value == 60
+    assert b_edf.final_score == 60
+
+    # Labo public : plancher 50
+    job_inria = {"title": "Stage Inria", "company": "Inria", "description": "Modélisation théorique"}
+    parsed_inria = {
+        "contract_type": "STAGE",
+        "structure_type": "LABO_PUBLIC",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    b_inria = compute_final_score(parsed_inria, job_inria)
+    assert b_inria.floor_value == 50
+    assert b_inria.final_score == 50
+
+    # Offre à note de qualité supérieure au plancher : max(quality, floor) conserve la note de qualité
+    parsed_excellent = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 5, "target_alignment": 5, "learning_environment": 5, "logistics": 4},
+    }
+    b_exc = compute_final_score(parsed_excellent, job_owkin)
+    assert b_exc.quality_score >= 85
+    assert b_exc.final_score == b_exc.quality_score  # Ne baisse pas à 70
+
+
+def test_mistral_ai_defense_cap_overrides_floor() -> None:
+    """Mistral AI est dans le Next40 mais exclu pour l'éthique : DEFENSE 10 l'emporte sur son plancher 70."""
+    job_mistral = {"title": "Stage LLM", "company": "Mistral AI", "description": "Modèles de fondation"}
+    parsed = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 5, "target_alignment": 5, "learning_environment": 5, "logistics": 5},
+    }
+    b = compute_final_score(parsed, job_mistral)
+    assert b.quality_score == 100
+    assert b.cap_applied == "DEFENSE"
+    assert b.cap_value == 10
+    assert b.final_score == 10  # Plafond DEFENSE l'emporte
+
+
+def test_cap_citation_verification() -> None:
+    """Un plafond avec citation absente du texte n'est pas appliqué."""
+    job = {"title": "Stage ML", "company": "PME", "description": "Projet de modélisation classique sans BI."}
+    parsed = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 4, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "hard_cap_triggered": "BI_REPORTING",
+        "hard_cap_evidence": "dashboards Power BI pour la direction",
+    }
+    # Citation inventée par le LLM (non présente dans la description)
+    b = compute_final_score(parsed, job)
+    assert b.cap_applied is None
+    assert b.final_score == b.quality_score
+
+
+def test_cv_anonymization() -> None:
+    """Retrait des emails, numéros de téléphone et URLs de réseaux sociaux."""
+    raw_cv = (
+        "Eddy DE CASTRO\n"
+        "Téléphone : 06 98 82 44 85\n"
+        "Email : eddyprepa123@gmail.com\n"
+        "LinkedIn : https://www.linkedin.com/in/eddy-de-castro/\n"
+        "GitHub : https://github.com/eddy-decastro\n"
+        "Expérience PyTorch et Graph ML."
+    )
+    anon = anonymize_cv(raw_cv)
+    assert "06 98 82 44 85" not in anon
+    assert "[TÉLÉPHONE_MASQUÉ]" in anon
+    assert "eddyprepa123@gmail.com" not in anon
+    assert "[EMAIL_MASQUÉ]" in anon
+    assert "https://www.linkedin.com" not in anon
+    assert "[PROFIL_MASQUÉ]" in anon
+    assert "Expérience PyTorch et Graph ML." in anon
+
+
+def test_gemini_rate_limiter_rpd_quota() -> None:
+    """Vérifie que l'atteinte du quota journalier (RPD) lève DailyQuotaExceededError."""
+    import pytest
+    from src.matching.llm_judge import GeminiRateLimiter, DailyQuotaExceededError
+
+    limiter = GeminiRateLimiter(rpm=600, rpd=2)
     limiter.wait_for_slot()
-    t1 = time.time()
     limiter.wait_for_slot()
-    t2 = time.time()
-    assert (t2 - t1) >= 0.08  # Espacement respecté
+    with pytest.raises(DailyQuotaExceededError) as exc:
+        limiter.wait_for_slot()
+    assert "Quota journalier" in str(exc.value)
 
 
-def test_gemini_rate_limiter_429_block() -> None:
-    import time
-    from src.matching.llm_judge import GeminiRateLimiter
-    limiter = GeminiRateLimiter(rpm=600)
-    limiter.report_429(0.15)
-    t0 = time.time()
-    limiter.wait_for_slot()
-    t1 = time.time()
-    assert (t1 - t0) >= 0.12  # Pause globale respectée
+def test_openai_compatible_provider_structure() -> None:
+    """Vérifie l'instanciation de l'abstraction de secours compatible OpenAI."""
+    from src.matching.llm_judge import OpenAICompatibleProvider
+    provider = OpenAICompatibleProvider(api_key="fake", base_url="https://api.groq.com/openai/v1", model="llama-3.3-70b-versatile")
+    assert provider.model == "llama-3.3-70b-versatile"
+    assert provider.base_url == "https://api.groq.com/openai/v1"
+
+
+def test_sliding_window_citation_verification() -> None:
+    """Vérifie la fenêtre glissante, la tolérance de 80% et l'insensibilité casse/accents."""
+    doc = (
+        "Dans le cadre de ce stage, vous travaillerez au sein d'une équipe de 5 chercheurs seniors "
+        "spécialisés en Vision 3D et Apprentissage profond. L'environnement repose sur PyTorch et Slurm."
+    )
+    # 1. Correspondance exacte
+    assert verify_citation("équipe de 5 chercheurs seniors", doc) is True
+    # 2. Insensibilité casse et accents
+    assert verify_citation("ÉQUIPE DE 5 CHERCHEURS SENIORS", doc) is True
+    assert verify_citation("apprentissage profond", doc) is True
+    # 3. Tolérance 80% : 5 mots dont 1 absent/différent (4/5 = 80%)
+    assert verify_citation("équipe de cinq chercheurs seniors", doc) is True
+    # 4. Citation absente
+    assert verify_citation("direction générale des finances publiques", doc) is False
+    # 5. Citation vide
+    assert verify_citation("", doc) is False
+
+
+def test_trust_llm_scaleup_option() -> None:
+    """Vérifie le comportement de l'option trust_llm_scaleup pour une entreprise hors liste."""
+    job = {"title": "Stage ML", "company": "StartUpInconnue123", "description": "Modélisation LLM"}
+    parsed = {
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {"technical_depth": 4, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+    }
+    # Cas par défaut : trust_llm_scaleup = False
+    cfg_default = load_config()
+    cfg_default.setdefault("scoring_v3", {}).setdefault("floors", {})["trust_llm_scaleup"] = False
+    b_default = compute_final_score(parsed, job, config=cfg_default)
+    assert b_default.scaleup_suggested is True
+    assert b_default.floor_value is None  # Aucun plancher 70 par défaut
+
+    # Cas avec trust_llm_scaleup = True
+    cfg_trusted = load_config()
+    cfg_trusted.setdefault("scoring_v3", {}).setdefault("floors", {})["trust_llm_scaleup"] = True
+    b_trusted = compute_final_score(parsed, job, config=cfg_trusted)
+    assert b_trusted.scaleup_suggested is True
+    assert b_trusted.floor_value == 70  # Plancher 70 accordé car option activée
+    assert b_trusted.final_score == 70
+
+
+def test_citation_failure_adds_red_flag_without_penalty() -> None:
+    """Une citation échouée ajoute un tag dans red_flags sans pénaliser la note de qualité."""
+    doc = "Stage de recherche en modélisation PyTorch."
+    job = {"title": "Stage ML", "company": "PME", "description": doc}
+    parsed = {
+        "contract_type": "STAGE",
+        "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
+        "signals": {
+            "encadrant_explicite": {"present": True, "evidence": "Citation imaginaire non présente dans le doc"},
+        },
+        "red_flags": [],
+    }
+    b = compute_final_score(parsed, job)
+    # Qualité neutre 50 préservée (pas de pénalité négative)
+    assert b.quality_score == 50
+    # Tag ajouté dans red_flags
+    assert any("[CITATION_NON_VERIFIEE] encadrant_explicite" in rf for rf in parsed.get("red_flags", []))
+
+
+def test_short_company_name_matching_boundaries() -> None:
+    """Vérifie que les noms d'entreprises courts (NW, TSE, Bump, Swan) ne créent pas de faux positifs."""
+    from src.matching.scorer import _name_matches
+
+    # Vrais positifs avec mot entier ou alias
+    assert _name_matches("NW Groupe", "NW") is True
+    assert _name_matches("NW", "NW") is True
+    assert _name_matches("TSE Energy", "TSE") is True
+    assert _name_matches("Bump", "Bump") is True
+    assert _name_matches("Swan Banking", "Swan") is True
+
+    # Faux positifs (sous-chaînes dans des mots plus longs)
+    assert _name_matches("Downwards Tech", "NW") is False
+    assert _name_matches("Mouche Tsetse Lab", "TSE") is False
+    assert _name_matches("Bumping along", "Bump") is False
+    assert _name_matches("Swans Lake", "Swan") is False
+
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
-from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc
+from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc, is_reranked
 from utils.layout import page_setup, render_page_header
 from utils.task_manager import (
     get_active_task,
@@ -269,15 +269,71 @@ def render_actions(actions: tuple[PipelineAction, ...], is_task_running: bool, k
                     run_pipeline(action)
 
 
+def _grading_split(jobs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Offres évaluées en grille v3 et offres encore en grille v1 (à réévaluer)."""
+    v3 = [j for j in jobs if j.get("grading_version") == "v3"]
+    v1 = [j for j in jobs if j.get("grading_version") == "v1" or (is_reranked(j) and not j.get("grading_version"))]
+    return v3, v1
+
+
+def render_scoring_maintenance(jobs: list[dict[str, Any]], is_task_running: bool) -> None:
+    """Maintenance de la grille v3 : recalcul déterministe et réévaluation des offres v1."""
+    v3_jobs, v1_jobs = _grading_split(jobs)
+    _section("Maintenance du scoring v3", f"{len(v3_jobs)} offres en v3 · {len(v1_jobs)} en v1 à réévaluer")
+    col_recomp, col_regrade = st.columns(2, gap="small")
+
+    with col_recomp:
+        with st.container(border=True, key="card-action-recompute"):
+            st.markdown("**Recalcul déterministe**")
+            st.caption("Recalcule planchers, bonus et plafonds en code pur pour toutes les offres v3, sans appel LLM (gratuit).")
+            if st.button("Recalculer les notes", icon=":material/calculate:", disabled=is_task_running, key="recompute-scores"):
+                with st.spinner("Recalcul en cours…"):
+                    nb_recomputed = get_database().recompute_scores(load_config())
+                    bump_data_version(sync_cloud=False)
+                st.toast(f"{nb_recomputed} offres recalculées.")
+                st.rerun()
+
+    with col_regrade:
+        with st.container(border=True, key="card-action-regrade"):
+            st.markdown("**Réévaluation des offres v1**")
+            st.caption("Re-soumet des offres v1 au juge LLM pour les basculer sur la grille v3 (sous-scores et citations).")
+            regrade_limit = st.number_input(
+                "Nombre d'offres (max 50)",
+                min_value=1,
+                max_value=50,
+                value=min(20, max(1, len(v1_jobs))),
+                step=5,
+            )
+            if st.button(
+                "Réévaluer les offres v1",
+                icon=":material/refresh:",
+                disabled=is_task_running or not v1_jobs,
+                key="regrade-v1",
+            ):
+                ok, msg = start_background_task(
+                    key="regrade_v1",
+                    name=f"Réévaluation de {regrade_limit} offres v1 vers v3",
+                    command=[sys.executable, str(PROJECT_ROOT / "run_scrapers.py"), "--no-collect", "--regrade-v1", "--limit", str(regrade_limit)],
+                    description="Réévaluation ciblée des offres v1 par le juge LLM",
+                )
+                if ok:
+                    st.toast(f"Réévaluation lancée pour {regrade_limit} offres.")
+                    st.rerun()
+                else:
+                    st.warning(msg)
+
+
 def render_database_section(jobs: list[dict[str, Any]]) -> None:
     """État de la base SQLite, rafraîchissement et synchronisation cloud (R2 / S3)."""
     _section("Base de données", f"{len(jobs)} offres en base SQLite")
+    v3_jobs, v1_jobs = _grading_split(jobs)
     distribution = source_distribution(jobs)
     c_stats, c_refresh = st.columns([3, 1], vertical_alignment="center")
     with c_stats:
         st.markdown(
             '<div class="sc-kv">'
             + "".join(f"<div>{_esc(label)} <b>{count}</b></div>" for label, count, _ in distribution)
+            + f"<div>Grille v3 <b>{len(v3_jobs)}</b></div><div>Grille v1 <b>{len(v1_jobs)}</b></div>"
             + "</div>",
             unsafe_allow_html=True,
         )
@@ -367,6 +423,8 @@ def render_base_panel(jobs: list[dict[str, Any]]) -> None:
         st.caption("Sans clé GEMINI_API_KEY, l'étape de juge LLM est ignorée proprement.")
         st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
         render_custom_collection_form(is_task_running)
+        st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
+        render_scoring_maintenance(jobs, is_task_running)
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
     render_database_section(jobs)

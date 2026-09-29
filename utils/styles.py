@@ -393,6 +393,7 @@ div[class*="st-key-card-kb-"] [data-testid="stPopover"] button { min-height: 32p
 .sc-score-bar { width: 100%; height: 4px; border-radius: 999px; background: var(--sc-surface-2); overflow: hidden; }
 .sc-score-bar i { display: block; height: 100%; border-radius: 999px; background: var(--sc-tone-fg, var(--sc-accent)); }
 .sc-align { font-size: 11px; font-weight: 600; color: var(--sc-tone-fg, var(--sc-text-3)); white-space: nowrap; }
+.sc-quality-sub { display: block; margin-top: 2px; font-size: 11px; color: var(--sc-text-3); font-variant-numeric: tabular-nums; }
 .sc-score-sm .sc-score { padding: 2px 8px; }
 .sc-score-sm .sc-score b { font-size: 13.5px; }
 
@@ -419,10 +420,10 @@ div[class*="st-key-card-kb-"] [data-testid="stPopover"] button { min-height: 32p
 .sc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .sc-chip {
   padding: 1px 8px;
-  border: 1px solid var(--sc-border);
+  border: 1px solid var(--sc-tone-bd, var(--sc-border));
   border-radius: 6px;
-  background: var(--sc-surface);
-  color: var(--sc-text-2);
+  background: var(--sc-tone-bg, var(--sc-surface));
+  color: var(--sc-tone-fg, var(--sc-text-2));
   font-family: var(--sc-mono);
   font-size: 11.5px;
   font-weight: 500;

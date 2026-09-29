@@ -23,7 +23,7 @@ DEFAULT_MODEL = "gemini-3-flash-preview"
 
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
-    "title": "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action",
+    "title": "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)",
     "phone": "06 98 82 44 85",
     "email": "eddyprepa123@gmail.com",
     "linkedin": "https://www.linkedin.com/in/eddy-de-castro/",
@@ -56,7 +56,7 @@ def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
     """Construit le prompt système intégrant les coordonnées et le parcours d'excellence du candidat."""
     cand = candidate or DEFAULT_CANDIDATE
     name = cand.get("name", "Eddy DE CASTRO")
-    title = cand.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action")
+    title = cand.get("title", "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)")
     phone = cand.get("phone", "")
     email = cand.get("email", "")
     linkedin = cand.get("linkedin", "")
@@ -70,13 +70,16 @@ def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
         sig_lines.append(" | ".join(contacts))
     signature_block = "\n".join(sig_lines)
 
-    return f"""Tu es un expert en recrutement scientifique & tech de haut niveau et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (Mines Saint-Étienne / IMT Mines Alès).
+    return f"""Tu es un expert en recrutement scientifique & tech de haut niveau et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (IMT Mines Alès / Mines Saint-Étienne).
 Ton rôle est de rédiger une lettre de motivation complète, substantielle, argumentée et hautement personnalisée (format développé d'environ 1 à 1,5 pages, soit 500 à 650 mots) pour une offre de stage de fin d'études spécifique, à partir du CV du candidat et de la description du poste.
 
 RÈGLE D'OR ABSOLUE : ZÉRO CROCHET, ZÉRO PLACEHOLDER.
 - Il est STRICTEMENT INTERDIT d'utiliser des crochets `[...]` ou des variables non résolues (comme [Nom du Recruteur], [Votre Téléphone], [Adresse de l'Entreprise], etc.).
 - Tout doit être rédigé de façon naturelle, précise et directement exploitable. Le candidat doit pouvoir copier-coller ou exporter la lettre immédiatement sans la moindre retouche manuelle obligatoire.
 - Ne pas mettre d'adresses postales physiques en en-tête.
+
+POSITIONNEMENT CIBLE DU CANDIDAT :
+"Ingénieur ML à formation mathématique, spécialisé dans les modèles dont on peut mesurer la fiabilité (incertitude, robustesse, évaluation), capable de les mettre en production."
 
 STRUCTURE ET CONTENU DÉTAILLÉ DE LA LETTRE (1 à 1,5 pages, ~500-650 mots) :
 1. Objet clair et professionnel :
@@ -91,18 +94,21 @@ STRUCTURE ET CONTENU DÉTAILLÉ DE LA LETTRE (1 à 1,5 pages, ~500-650 mots) :
 
    b. FORMATION D'EXCELLENCE & TRIPLE PARCOURS MATHS / IA (Moi) :
       Valoriser le profil académique particulièrement robuste du candidat :
-      - Double diplôme Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne co-accrédité Centrale Lyon et ENS Lyon) et cursus ingénieur IMT Mines Alès (spécialisation IA & Data Science).
+      - Cursus ingénieur généraliste à l'IMT Mines Alès (spécialisation IA & Data Science).
+      - Double diplôme Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon).
       - MENTIONNER EXPLICITEMENT la Licence 3 de Mathématiques Générales à l'Université de Montpellier menée en parallèle de l'école d'ingénieurs.
-      - Souligner l'atout de cette double compétence rare : un socle théorique de haut niveau (algèbre linéaire, calcul différentiel, optimisation convexe/non convexe, modélisation stochastique, statistiques inférentielles) combiné à une solide rigueur en génie logiciel et Machine Learning appliqué.
+      - Souligner l'atout de cette double compétence rare : un socle théorique de haut niveau (algèbre linéaire, calcul différentiel, optimisation convexe/non convexe, modélisation stochastique, statistiques inférentielles, quantification d'incertitudes) combiné à une solide rigueur en génie logiciel et Machine Learning appliqué.
 
    c. RÉALISATIONS CONCRÈTES & PROJETS TECHNIQUES EN MIROIR (Moi) :
       Illustrer vos compétences en vous appuyant sur 2 réalisations techniques majeures du CV qui font directement écho aux missions du poste :
-      - Le stage R&D à l'UPC Barcelone : modélisation en graphes (Graph ML, similarité spectrale), contournement d'obfuscation par substitut différentiable sous PyTorch (BPDA), et rigueur d'évaluation statistique (test de McNemar, bootstrap apparié).
-      - Un projet applicatif ciblé du CV : par exemple MedStay-CI (quantification d'incertitude certifiée à 89,9 %, régression quantile conforme sous LightGBM/MAPIE, pipeline FastAPI/Docker avec 124 tests) ou CinéFilm IA (recherche sémantique vectorielle sous 100 ms avec bi-encodeur E5-Large, PyTorch, scoring hybride).
-      Faire un pont technique direct et convaincant avec la stack et les responsabilités mentionnées dans l'offre.
+      - Projet #1 (IA de confiance & mise en production) : MedStay-CI (quantification d'incertitude certifiée à 89,9 %, régression quantile conforme avec MAPIE / Conformal Prediction, analyse systématique de robustesse face aux dérives de distribution, API REST FastAPI et conteneurisation Docker avec 124 tests automatisés).
+      - Stage R&D à l'UPC Barcelone (Recherche appliquée en robustesse et Graph ML) : modélisation mathématique et expérimentale en graphes de similarité spectrale, benchmarking d'attaques adaptatives sous PyTorch (substitut différentiable BPDA face à PGD/FGSM), rigueur d'évaluation statistique d'hypothèses (test de McNemar, bootstrap apparié), rapport de synthèse R&D et benchmarking. Présenter ce travail avec exactitude comme un projet de recherche appliquée approfondi (pas de prétention de mise en production industrielle).
+      - Autre projet ciblé si pertinent : ML médical sur 420 Go d'images 3D NIfTI (dataset PanTS 2025, descripteurs statistiques HU, Random Forest) ou CinéFilm IA (recherche sémantique vectorielle bilingue temps réel avec bi-encodeur E5-Large sous PyTorch).
+      Faire un pont technique direct et convaincant avec la stack et les responsabilités mentionnées dans l'offre. Aucune mention d'outils no-code comme n8n.
 
    d. COLLABORATION, VALEUR AJOUTÉE & PROJECTION (Nous) :
       Expliquer comment le candidat compte s'intégrer, collaborer avec l'équipe et monter rapidement en puissance sur les problématiques du projet.
+      Si l'offre mentionne une perspective de suite ou de thèse, évoquer l'intérêt sincère d'Eddy pour une poursuite en thèse CIFRE ou doctorat académique, sans en faire un prérequis bloquant.
 
    e. MODALITÉS PRATIQUES & DISPONIBILITÉ :
       Confirmer la disponibilité pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à partir de début avril 2027.
@@ -290,14 +296,41 @@ def generate_algorithmic_cover_letter(
         if custom_instruction and custom_instruction.strip():
             custom_block = f"\n\nEn accord avec vos priorités opérationnelles : {custom_instruction.strip()}.\n"
 
-        p_fit = (
-            f"Intégrer les équipes de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
-            f"au service direct de vos projets d'innovation. Autonome, rigoureux et habitué à explorer la littérature scientifique internationale "
-            f"comme à transformer des concepts théoriques en code robuste et performant, je saurai m'adapter rapidement à votre environnement "
-            f"technique et contribuer efficacement à vos objectifs R&D."
-        )
+        structure_type = str(job.get("structure_type") or "").upper()
+        signals = job.get("signals")
+        if not signals and job.get("signals_json"):
+            try:
+                import json
+                signals = json.loads(job["signals_json"]) if isinstance(job["signals_json"], str) else job["signals_json"]
+            except Exception:
+                signals = {}
+        signals = signals or {}
+        has_suite = bool((signals.get("suite_explicite") or {}).get("present"))
 
-        p_logistics = "Je suis disponible pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à compter de début avril 2027."
+        if structure_type == "LABO_PUBLIC":
+            p_fit = (
+                f"Intégrer le laboratoire de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
+                f"au service direct de vos programmes de recherche. Autonome, rigoureux et habitué à explorer la littérature scientifique internationale "
+                f"comme à formaliser des protocoles d'expérimentation rigoureux, je saurai m'adapter rapidement à vos thématiques et contribuer "
+                f"activement à vos travaux R&D."
+            )
+        elif structure_type == "SCALEUP_IA":
+            p_fit = (
+                f"Intégrer les équipes de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
+                f"au service direct de vos défis technologiques et de vos produits. Autonome, rigoureux et attentif à l'impact utilisateur comme à "
+                f"la fiabilité des modèles en production, je saurai m'adapter rapidement à votre rythme d'itération et contribuer efficacement à "
+                f"votre roadmap technique."
+            )
+        else:
+            p_fit = (
+                f"Intégrer les équipes de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
+                f"au service direct de vos projets d'innovation. Autonome, rigoureux et habitué à explorer la littérature scientifique internationale "
+                f"comme à transformer des concepts théoriques en code robuste et performant, je saurai m'adapter rapidement à votre environnement "
+                f"technique et contribuer efficacement à vos objectifs R&D."
+            )
+
+        thesis_sentence = " Particulièrement motivé par les perspectives de ce sujet, je serais également très enthousiaste à l'idée d'envisager une poursuite en thèse CIFRE ou doctorat à l'issue de ce stage." if has_suite else ""
+        p_logistics = f"Je suis disponible pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à compter de début avril 2027.{thesis_sentence}"
         p_politeness = (
             "Dans l'attente d'un échange au cours duquel je serai ravi de vous exposer plus en détail la convergence entre mes compétences "
             "et vos besoins, je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations les plus distinguées."
@@ -387,6 +420,52 @@ class CoverLetterGenerator:
             f"{cv_text}",
             "--------------------------------------------------",
         ]
+
+        # Signaux & adaptation du ton selon structure_type et perspective de suite
+        signals = job.get("signals")
+        if not signals and job.get("signals_json"):
+            try:
+                import json
+                signals = json.loads(job["signals_json"]) if isinstance(job["signals_json"], str) else job["signals_json"]
+            except Exception:
+                signals = {}
+        signals = signals or {}
+
+        structure_type = str(job.get("structure_type") or "").upper()
+        tone_instructions = []
+
+        if structure_type == "LABO_PUBLIC":
+            tone_instructions.append(
+                "- ORIENTATION DU TON (Laboratoire public de recherche) : Adopte un ton académique, rigoureux et approfondi. "
+                "Mets en valeur la curiosité intellectuelle, l'état de l'art scientifique, la démarche expérimentale "
+                "et le socle mathématique d'Eddy."
+            )
+        elif structure_type == "SCALEUP_IA":
+            tone_instructions.append(
+                "- ORIENTATION DU TON (Scale-up IA de pointe) : Adopte un ton dynamique et orienté produit / impact. "
+                "Mets en valeur l'ingénierie logicielle robuste, la vitesse d'exécution, la fiabilité des modèles en conditions réelles "
+                "et la capacité à mettre en production des systèmes d'apprentissage efficaces."
+            )
+        elif structure_type in ("GRAND_GROUPE_RD", "LABO_PRIVE"):
+            tone_instructions.append(
+                "- ORIENTATION DU TON (R&D industrielle / labo privé) : Équilibre démarche de recherche appliquée rigoureuse et conscience "
+                "des cas d'usage métiers, du passage à l'échelle et du prototypage industriel."
+            )
+
+        suite_sig = signals.get("suite_explicite") or {}
+        if isinstance(suite_sig, dict) and suite_sig.get("present"):
+            tone_instructions.append(
+                "- PERSPECTIVE DE SUITE / THÈSE (Signal explicite dans l'offre) : L'offre mentionne une perspective de continuité ou de thèse. "
+                "Mentionne avec enthousiasme l'intérêt d'Eddy pour une éventuelle poursuite en thèse CIFRE ou doctorat académique "
+                "à l'issue du stage, sans en faire un prérequis bloquant."
+            )
+
+        if tone_instructions:
+            parts.extend([
+                "ORIENTATIONS SPÉCIFIQUES POUR CETTE OFFRE :",
+                *tone_instructions,
+                "--------------------------------------------------",
+            ])
 
         if custom_instruction and custom_instruction.strip():
             parts.extend([

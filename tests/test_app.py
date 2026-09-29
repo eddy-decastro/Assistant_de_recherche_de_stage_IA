@@ -291,6 +291,8 @@ def test_interface_streamlit() -> None:
         "Plateformes",
         "Statut de candidature",
         "Typologie d'entreprise",
+        "Catégorie d'entreprise",
+        "Signaux d'attention / Flags",
         "Exclure des entreprises",
         "Cibler des entreprises",
     ]
@@ -298,6 +300,8 @@ def test_interface_streamlit() -> None:
     assert [widget.label for widget in at.sidebar.toggle] == [
         "Verdict LLM uniquement",
         "Masquer les offres traitées",
+        "Masquer les offres exclues",
+        "Masquer Défense et Éthique",
         "Exclure les ESN",
         "Exclure Dassault",
     ]

@@ -195,6 +195,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="live_scoring",
         help="Désactive l'évaluation LLM au fil de l'eau (attend la fin de la collecte).",
     )
+    parser.add_argument(
+        "--regrade-v1",
+        action="store_true",
+        help="Réévalue les offres v1 avec le nouveau juge v3.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Plafond d'offres pour --regrade-v1 (défaut : 20 offres).",
+    )
+    parser.add_argument(
+        "--recompute-scores",
+        action="store_true",
+        help="Recalcule en code pur les notes finales, planchers et plafonds v3 sans appel LLM.",
+    )
     return parser.parse_args(argv)
 
 
@@ -300,8 +316,9 @@ def _rerank_top(
     top_n: int | None,
     concurrency: int | None = None,
     backfill_missing: bool = False,
+    candidates: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Étape 2 : évalue le Top-N des offres non analysées avec le juge LLM.
+    """Étape 2 : évalue les offres candidates avec le juge LLM Gemini (Grille v3).
 
     Retourne le nombre d'offres analysées (0 si la clé API est absente : l'étape
     reste optionnelle et ne bloque jamais le pipeline).
@@ -321,9 +338,10 @@ def _rerank_top(
         return 0
 
     limit = top_n or int(config.get("ranking", {}).get("top_n_rerank", 20))
-    candidates = db.get_unranked_jobs(limit=limit)
+    if candidates is None:
+        candidates = db.get_unranked_jobs(limit=limit)
     if not candidates:
-        logger.info("Reranking : aucune offre non analysée (toutes les offres actives sont déjà évaluées).")
+        logger.info("Reranking : aucune offre à analyser.")
         return 0
 
     if backfill_missing:
@@ -400,13 +418,28 @@ def _rerank_top(
                 db.update_rerank(
                     job["id"],
                     result["rerank_score"],
-                    result["verdict"],
-                    result["match_reasons"],
-                    result["red_flags"],
-                    result["tech_stack"],
-                    sub_scores=result["sub_scores"],
-                    hard_cap_triggered=result["hard_cap_triggered"],
+                    verdict=result.get("verdict"),
+                    match_reasons=result.get("match_reasons"),
+                    red_flags=result.get("red_flags"),
+                    tech_stack=result.get("tech_stack"),
+                    sub_scores=result.get("sub_scores"),
+                    hard_cap_triggered=result.get("hard_cap_triggered"),
                     reasoning=result.get("reasoning", ""),
+                    contract_type=result.get("contract_type"),
+                    structure_type=result.get("structure_type"),
+                    category_confidence=result.get("category_confidence"),
+                    rd_nature=result.get("rd_nature"),
+                    duration_months=result.get("duration_months"),
+                    is_cesure=result.get("is_cesure"),
+                    quality_score=result.get("quality_score"),
+                    floor_value=result.get("floor_value"),
+                    floor_reason=result.get("floor_reason"),
+                    cap_applied=result.get("cap_applied"),
+                    exclusion_reason=result.get("exclusion_reason"),
+                    scaleup_suggested=result.get("scaleup_suggested"),
+                    signals_json=result.get("signals"),
+                    company_note_json=result.get("company_note"),
+                    grading_version=result.get("grading_version", "v3"),
                 )
                 evaluated_count += 1
                 cap_note = (
@@ -454,13 +487,28 @@ def _rerank_top(
             db.update_rerank(
                 job["id"],
                 result["rerank_score"],
-                result["verdict"],
-                result["match_reasons"],
-                result["red_flags"],
-                result["tech_stack"],
-                sub_scores=result["sub_scores"],
-                hard_cap_triggered=result["hard_cap_triggered"],
+                verdict=result.get("verdict"),
+                match_reasons=result.get("match_reasons"),
+                red_flags=result.get("red_flags"),
+                tech_stack=result.get("tech_stack"),
+                sub_scores=result.get("sub_scores"),
+                hard_cap_triggered=result.get("hard_cap_triggered"),
                 reasoning=result.get("reasoning", ""),
+                contract_type=result.get("contract_type"),
+                structure_type=result.get("structure_type"),
+                category_confidence=result.get("category_confidence"),
+                rd_nature=result.get("rd_nature"),
+                duration_months=result.get("duration_months"),
+                is_cesure=result.get("is_cesure"),
+                quality_score=result.get("quality_score"),
+                floor_value=result.get("floor_value"),
+                floor_reason=result.get("floor_reason"),
+                cap_applied=result.get("cap_applied"),
+                exclusion_reason=result.get("exclusion_reason"),
+                scaleup_suggested=result.get("scaleup_suggested"),
+                signals_json=result.get("signals"),
+                company_note_json=result.get("company_note"),
+                grading_version=result.get("grading_version", "v3"),
             )
             evaluated_count += 1
             cap_note = (
@@ -599,6 +647,32 @@ def main(argv: list[str] | None = None) -> None:
 
     config = load_config()
     db = Database(config["database"]["path"])
+
+    if args.recompute_scores:
+        logger.info("Recalcul en code pur des notes v3 (--recompute-scores)...")
+        updated = db.recompute_scores(config)
+        logger.info("Recalcul terminé : %d offre(s) mise(s) à jour.", updated)
+        db.engine.dispose()
+        return
+
+    if args.regrade_v1:
+        limit = args.limit or 20
+        logger.info("Ré-évaluation v3 des offres v1 (--regrade-v1, limit=%d)...", limit)
+        v1_jobs = db.get_v1_jobs(limit=limit)
+        if not v1_jobs:
+            logger.info("Aucune offre v1 à réévaluer.")
+        else:
+            regraded = _rerank_top(
+                db,
+                config,
+                top_n=limit,
+                concurrency=args.concurrency,
+                backfill_missing=args.backfill_missing,
+                candidates=v1_jobs,
+            )
+            logger.info("Ré-évaluation v3 terminée : %d offre(s) réévaluée(s).", regraded)
+        db.engine.dispose()
+        return
 
     # 0. Hygiène de la base (optionnelle) : doublons, puis re-validation métier sur
     #    les fiches complètes (le filtre de collecte ne voyait que les titres).

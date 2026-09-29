@@ -259,6 +259,11 @@ class Filters:
     selected_companies: tuple[str, ...] = ()
     group_by_source: bool = False
     limit: int | None = None
+    # v3 filters
+    structure_types: tuple[str, ...] = ()
+    flags: tuple[str, ...] = ()
+    hide_excluded: bool = True
+    hide_defense_ethics: bool = True
 
     def is_default(self) -> bool:
         """Vrai si aucun critère restrictif n'est appliqué.
@@ -275,6 +280,10 @@ class Filters:
             or getattr(self, "exclude_dassault", False)
             or getattr(self, "exclude_companies", ())
             or getattr(self, "selected_companies", ())
+            or getattr(self, "structure_types", ())
+            or getattr(self, "flags", ())
+            or not getattr(self, "hide_excluded", True)
+            or not getattr(self, "hide_defense_ethics", True)
             or (self.statuses and len(self.statuses) != len(STATUS_ORDER))
             or (self.tiers and len(self.tiers) != len(TIER_LABELS))
             or self.limit is not None
@@ -293,12 +302,51 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     excluded_comps = {c.strip().lower() for c in exclude_comps_raw if c and c.strip()}
     selected_comps = {c.strip().lower() for c in selected_comps_raw if c and c.strip()}
     
+    # v3 filters
+    hide_excluded = getattr(filters, "hide_excluded", True)
+    hide_defense_ethics = getattr(filters, "hide_defense_ethics", True)
+    structure_types = set(getattr(filters, "structure_types", ()))
+    selected_flags = set(getattr(filters, "flags", ()))
+
     # Pré-calcul pour les vérifications de sous-chaînes (>= 3 chars)
     excluded_comps_sub = [c for c in excluded_comps if len(c) >= 3]
     selected_comps_sub = [c for c in selected_comps if len(c) >= 3]
     
     selected: list[dict[str, Any]] = []
     for job in jobs:
+        # V3 : Filtre « Masquer les EXCLU »
+        is_exclu = (
+            job.get("status") == STATUS_EXCLUDED
+            or job.get("verdict") == "EXCLU"
+            or bool(job.get("exclusion_reason"))
+        )
+        if hide_excluded and is_exclu:
+            continue
+
+        # V3 : Filtre « Masquer DÉFENSE et ETHIQUE_A_EXAMINER »
+        if hide_defense_ethics:
+            job_flags = [str(f).upper() for f in (job.get("flags") or [])]
+            cap = str(job.get("cap_applied") or job.get("hard_cap_triggered") or "").upper()
+            if (
+                "DEFENSE" in job_flags
+                or "DEFENSE_INDIRECTE" in job_flags
+                or "ETHIQUE_A_EXAMINER" in job_flags
+                or cap == "DEFENSE"
+            ):
+                continue
+
+        # V3 : Filtre structure_type
+        if structure_types:
+            st_val = str(job.get("structure_type") or "INCONNU").upper()
+            if st_val not in structure_types:
+                continue
+
+        # V3 : Filtre flags
+        if selected_flags:
+            job_flags = {str(f).upper() for f in (job.get("flags") or [])}
+            if not job_flags.intersection(selected_flags):
+                continue
+
         # Les offres écartées par la re-validation métier ne polluent pas le flux :
         # elles n'apparaissent que si l'utilisateur coche explicitement « Rejeté ».
         if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in statuses:
