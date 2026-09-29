@@ -232,3 +232,25 @@ def test_apply_status_action() -> None:
         raise RuntimeError("base verrouillée")
 
     assert apply_status_action(db, {"type": "status", "id": "a1", "status": STATUS_NEW}, boom) == "failed"
+
+
+def test_job_feed_se_monte_sans_exception(tmp_path: Path) -> None:
+    from streamlit.testing.v1 import AppTest
+
+    script = tmp_path / "mount_feed.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+        "import streamlit as st\n"
+        # Le registre de composants est propre à chaque runtime AppTest : ré-enregistrer à l'import.
+        "for name in [n for n in sys.modules if n == 'components' or n.startswith('components.')]:\n"
+        "    del sys.modules[name]\n"
+        "from components.job_feed import job_feed\n"
+        "from tests.test_job_feed import JOB, RERANKED\n"
+        "event = job_feed([JOB, RERANKED], (), hide_processed=False, grouped=True)\n"
+        "st.write('event', event)\n",
+        encoding="utf-8",
+    )
+    at = AppTest.from_file(str(script), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert any("None" in element.value for element in at.markdown)
