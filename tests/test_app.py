@@ -481,12 +481,14 @@ def test_compteurs_de_collecte_et_refus() -> None:
 
 
 def test_kanban_interface() -> None:
-    """La page Kanban de suivi des candidatures est rendue sans erreur."""
+    """La page Candidatures est rendue sans erreur, avec cinq colonnes et un en-tête natif."""
     at = AppTest.from_file(str(PROJECT_ROOT / "app_pages" / "kanban.py"), default_timeout=60).run()
     assert not at.exception, at.exception
-    markup = " ".join(element.value for element in at.markdown)
-    assert "Tableau Kanban" in markup, "Le titre Kanban doit être rendu."
-    print("  Interface : page Kanban OK")
+    assert any("Candidatures" in header.value for header in at.header)
+    column_titles = " ".join(element.value for element in at.markdown)
+    for label in ("Nouveau", "Postulé", "Entretien", "Refusé", "Archivé"):
+        assert label in column_titles, label
+    print("  Interface : page Candidatures OK")
 
 
 def test_parametres_interface() -> None:

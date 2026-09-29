@@ -12,6 +12,7 @@ EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-⛿✅❌✨⭐️]")
 # Fichiers déjà migrés : chaque tâche de la refonte ajoute les siens.
 CLEAN_FILES = [
     "app_pages/flux.py",
+    "app_pages/kanban.py",
     "utils/components.py",
     "utils/layout.py",
     "components/job_feed/__init__.py",
