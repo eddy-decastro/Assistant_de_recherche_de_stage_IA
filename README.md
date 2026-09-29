@@ -220,12 +220,12 @@ $$\text{quality} = \text{clamp}\left( \frac{\sum w_i s_i - 1}{4} \times 100 + \t
 
 ## 💻 Console de Pilotage Streamlit
 
-L'interface multi-pages couvre l'intégralité du workflow :
+L'interface multi-pages (`app.py` = routeur `st.navigation`, pages dans `app_pages/`) couvre l'intégralité du workflow, organisée en trois sections : **Veille** (Flux, Candidatures), **Analyse** (Statistiques) et **Système** (Pipeline, Paramètres) :
 
 | Page | Fonctionnalités |
 |---|---|
-| **Flux d'offres (`app.py`)** | Liste des offres triées par score R&D, filtres avancés (score, source, localisation, contrat), jauges de score et modale de lettre de motivation. |
-| **Kanban (`app_pages/kanban.py`)** | Suivi visuel des candidatures en 5 colonnes (*À postuler*, *Postulé*, *Entretien*, *Refusé*, *Archivé*) avec date d'envoi mémorisée. |
+| **Flux (`app_pages/flux.py`)** | Liste dense des offres triées par score R&D et panneau de détail (grille d'évaluation, verdict du juge, fiche), filtres latéraux avancés, actions de candidature et modale de lettre de motivation. Le flux est un composant Streamlit v2 (`components/job_feed/`) avec raccourcis clavier (`j`/`k` naviguer, `o` ouvrir, `l` lettre, `p` postulé, `x` archiver, `?` aide) et annulation des changements de statut. `streamlit run tools/feed_demo.py` lance une démonstration isolée avec des offres factices. |
+| **Candidatures (`app_pages/kanban.py`)** | Suivi visuel des candidatures en 5 colonnes (*À postuler*, *Postulé*, *Entretien*, *Refusé*, *Archivé*) avec date d'envoi mémorisée. |
 | **Statistiques (`app_pages/statistiques.py`)** | Analytics du marché (distribution des technologies demandées, salaires observés, répartition géographique) et télémétrie des passes de scraping. |
 | **Pipeline (`app_pages/pipeline.py`)** | Déclenchement manuel ou asynchrone des passes de collecte et de reranking avec streaming des logs en temps réel. |
 | **Paramètres (`app_pages/parametres.py`)** | Dépôt de CV (PDF/TXT), mise à jour no-code des coordonnées candidat (téléphone, email, profils) et édition des critères de recherche. |

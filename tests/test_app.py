@@ -296,7 +296,7 @@ def test_palette_sombre_claire_et_repli() -> None:
     for theme, css in styles.items():
         assert css.startswith("<style>") and css.endswith("</style>"), theme
         assert "$" not in css, f"Jeton non substitué dans la palette {theme}."
-        assert ".sc-card" in css and ".sc-badge" in css and ".sc-kpis" in css, theme
+        assert ".sc-badge" in css and ".sc-kpis" in css, theme
     assert styles["dark"] != styles["light"], "Les palettes sombre et claire doivent différer."
     print("  Palette : jetons complets pour les thèmes sombre, clair et « auto » OK")
 

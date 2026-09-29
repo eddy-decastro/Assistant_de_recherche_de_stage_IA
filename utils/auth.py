@@ -94,7 +94,7 @@ def require_auth() -> None:
             label_visibility="collapsed",
             key="auth_master_password_input",
         )
-        if st.button("Déverrouiller la console", use_container_width=True, type="primary"):
+        if st.button("Déverrouiller la console", width="stretch", type="primary"):
             if check_password(password):
                 st.session_state["authenticated"] = True
                 st.rerun()
@@ -111,7 +111,7 @@ def render_logout_button() -> None:
 
     if st.session_state.get("authenticated", False):
         st.sidebar.markdown("---")
-        if st.sidebar.button("Déconnexion", use_container_width=True, type="secondary"):
+        if st.sidebar.button("Déconnexion", width="stretch", type="secondary"):
             st.session_state["authenticated"] = False
             st.rerun()
 
