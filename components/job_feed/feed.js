@@ -74,6 +74,35 @@ function actionsFor(status, statuses) {
   ]
 }
 
+// Réconcilie les changements optimistes avec la donnée serveur : un changement confirmé (ou dont
+// l'offre a disparu des données) est abandonné ; un changement perdu (rerun fusionné par Streamlit)
+// est renvoyé, un seul par mise à jour, avec un nombre d'essais borné.
+function reconcileOverrides(overrides, jobs, attempts, maxAttempts = 2) {
+  const byId = new Map(jobs.map((j) => [j.id, j]))
+  const kept = {}
+  const nextAttempts = {}
+  let resend = null
+  for (const [id, status] of Object.entries(overrides)) {
+    const job = byId.get(id)
+    if (!job || job.status === status) continue
+    const tries = attempts[id] || 0
+    if (tries >= maxAttempts) continue
+    kept[id] = status
+    if (resend === null) {
+      resend = { id, status }
+      nextAttempts[id] = tries + 1
+    } else if (tries) {
+      nextAttempts[id] = tries
+    }
+  }
+  return { overrides: kept, attempts: nextAttempts, resend }
+}
+
+// L'annulation n'est proposée que vers un statut que le serveur accepte.
+function canUndo(previous, statuses) {
+  return Object.values(statuses).includes(previous)
+}
+
 // ---------- Rendu DOM ----------
 function h(tag, props, ...kids) {
   const el = document.createElement(tag)
@@ -130,6 +159,7 @@ function createInstance(root) {
     toastTimer: null,
     lastDetailId: null,
     pendingSelect: null,
+    attempts: {},
     setTrigger: () => {},
   }
   try { inst.selected = sessionStorage.getItem(STORAGE_KEY) } catch (_) { /* stockage indisponible */ }
@@ -367,7 +397,11 @@ function createInstance(root) {
       inst.mobileDetail = false
     }
     inst.setTrigger('action', { type: 'status', id: job.id, status })
-    showToast(`${inst.data.status_labels[status] || status} : ${shorten(job.title)}`, () => undo(job.id, previous))
+    if (canUndo(previous, inst.data.statuses)) {
+      showToast(`${inst.data.status_labels[status] || status} : ${shorten(job.title)}`, () => undo(job.id, previous))
+    } else {
+      hideToast()
+    }
     render()
     root.focus({ preventScroll: true })
   }
@@ -433,7 +467,10 @@ function createInstance(root) {
   inst.update = (data, setTrigger) => {
     inst.data = data
     inst.setTrigger = setTrigger
-    inst.overrides = {} // la donnée serveur fait foi après chaque rerun
+    const settled = reconcileOverrides(inst.overrides, data.jobs, inst.attempts)
+    inst.overrides = settled.overrides
+    inst.attempts = settled.attempts
+    if (settled.resend) setTrigger('action', { type: 'status', ...settled.resend })
     let restored = false
     if (inst.pendingSelect && data.jobs.some((j) => j.id === inst.pendingSelect)) {
       inst.selected = inst.pendingSelect

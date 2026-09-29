@@ -267,12 +267,11 @@ def test_interface_streamlit(monkeypatch) -> None:
     for emoji in BANNED_EMOJI:
         assert emoji not in rendered, f"Emoji décoratif détecté : {emoji}"
 
-    # 4. Recherche infructueuse : message d'état vide, composant non monté.
+    # 4. Recherche infructueuse : le composant reste monté (état vide et annulation gérés côté composant).
     calls.clear()
     at.sidebar.text_input[0].set_value("zz-introuvable-zz").run()
     assert not at.exception, at.exception
-    assert calls == []
-    assert any("Aucune offre ne correspond" in info.value for info in at.info)
+    assert calls and calls[-1][0] == []
 
     # 5. Vue groupée par plateforme : le mode est transmis au composant.
     at.sidebar.text_input[0].set_value("").run()

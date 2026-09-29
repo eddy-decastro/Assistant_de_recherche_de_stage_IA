@@ -136,7 +136,10 @@ def test_serialize_ne_echappe_pas_le_html() -> None:
 
 def test_serialize_description_tronquee_et_json_serialisable() -> None:
     data = serialize_job({**RERANKED, "description": "x" * (DESCRIPTION_LIMIT * 3)}, ())
-    assert len(data["description"]) == DESCRIPTION_LIMIT
+    assert data["description"].startswith("x" * DESCRIPTION_LIMIT)
+    assert data["description"].endswith("fiche tronquée : voir l'offre)"), "Une coupe doit être signalée."
+    short = serialize_job({**RERANKED, "description": "court"}, ())
+    assert short["description"] == "court", "Une fiche courte ne porte aucun marqueur."
     json.dumps(data)  # aucune valeur datetime / non sérialisable
 
 

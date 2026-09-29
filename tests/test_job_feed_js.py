@@ -12,7 +12,7 @@ FEED_JS = PROJECT_ROOT / "components" / "job_feed" / "feed.js"
 NODE = shutil.which("node")
 EXPORTS = (
     "\nexport { SEGMENTS, keyToCommand, excerpt, visibleJobs, pickAfterRemoval,"
-    " moveSelection, actionsFor, safeUrl }\n"
+    " moveSelection, actionsFor, safeUrl, reconcileOverrides, canUndo }\n"
 )
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js absent")
@@ -116,4 +116,37 @@ assert.equal(feed.safeUrl('http://a.example'), 'http://a.example')
 for (const bad of ['javascript:alert(1)', 'data:text/html,1', '//evil.example', '', null, undefined]) {
   assert.equal(feed.safeUrl(bad), '', String(bad))
 }
+"""))
+
+
+def test_reconciliation_des_changements_en_attente(tmp_path: Path) -> None:
+    _assert_ok(_run(tmp_path, """
+const jobs = [{ id: 'a', status: 'NOUVEAU' }, { id: 'b', status: 'NOUVEAU' }, { id: 'c', status: 'POSTULÉ' }]
+// a confirmé par le serveur, b perdu (coalescence), c absent des données (filtré côté serveur)
+let r = feed.reconcileOverrides({ a: 'POSTULÉ', b: 'IGNORÉ', d: 'IGNORÉ' }, [{ id: 'a', status: 'POSTULÉ' }, jobs[1]], {})
+assert.deepEqual(r.overrides, { b: 'IGNORÉ' })
+assert.deepEqual(r.resend, { id: 'b', status: 'IGNORÉ' })
+assert.deepEqual(r.attempts, { b: 1 })
+// un seul renvoi par mise à jour ; les autres restent en attente sans consommer d'essai
+r = feed.reconcileOverrides({ a: 'IGNORÉ', b: 'IGNORÉ' }, jobs, {})
+assert.deepEqual(r.resend, { id: 'a', status: 'IGNORÉ' })
+assert.deepEqual(r.overrides, { a: 'IGNORÉ', b: 'IGNORÉ' })
+assert.deepEqual(r.attempts, { a: 1 })
+// essais bornés : on abandonne, la donnée serveur fait foi
+r = feed.reconcileOverrides({ b: 'IGNORÉ' }, jobs, { b: 2 })
+assert.deepEqual(r.overrides, {})
+assert.equal(r.resend, null)
+r = feed.reconcileOverrides({}, jobs, {})
+assert.equal(r.resend, null)
+"""))
+
+
+def test_annulation_seulement_vers_un_statut_valide(tmp_path: Path) -> None:
+    _assert_ok(_run(tmp_path, """
+const S = { new: 'NOUVEAU', applied: 'POSTULÉ', interview: 'ENTRETIEN', ignored: 'IGNORÉ' }
+assert.equal(feed.canUndo('NOUVEAU', S), true)
+assert.equal(feed.canUndo('IGNORÉ', S), true)
+assert.equal(feed.canUndo('EXCLU', S), false)
+assert.equal(feed.canUndo('REJETÉ', S), false)
+assert.equal(feed.canUndo(undefined, S), false)
 """))

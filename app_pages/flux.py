@@ -29,12 +29,10 @@ selected = filter_jobs(jobs, filters)
 render_header(jobs, config)
 render_kpis(selected, llm_model, len(jobs), not filters.is_default())
 
-if not selected:
-    st.info(
-        "Aucune offre ne correspond aux filtres courants. Relancez la collecte ou élargissez les critères.",
-        icon=":material/search_off:",
-    )
+if not jobs:
+    st.info("La base est vide : lancez la collecte depuis la page Pipeline.", icon=":material/database:")
 else:
+    # Monté même sans résultat : l'état vide et l'annulation du dernier changement vivent dans le composant.
     event = job_feed(
         selected,
         keywords,

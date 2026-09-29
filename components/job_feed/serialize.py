@@ -40,6 +40,7 @@ from utils.data import (
 )
 
 DESCRIPTION_LIMIT = 4000
+TRUNCATION_MARK = "\n… (fiche tronquée : voir l'offre)"
 
 # (clé du signal, libellé, tonalité) — mêmes signaux que la grille v3.
 SIGNAL_DEFS = (
@@ -61,6 +62,11 @@ def _multiline(value: Any) -> str:
     """Compacte les espaces mais conserve les sauts de ligne (fiche de poste)."""
     text = re.sub(r"[\t\r ]+", " ", str(value or ""))
     return re.sub(r"\n{2,}", "\n", text).strip()
+
+
+def _limited(text: str) -> str:
+    """Borne la fiche de poste et signale la coupe."""
+    return text if len(text) <= DESCRIPTION_LIMIT else text[:DESCRIPTION_LIMIT] + TRUNCATION_MARK
 
 
 def _texts(values: Any) -> list[str]:
@@ -192,7 +198,7 @@ def serialize_job(job: dict[str, Any], keywords: Sequence[str], group: str = "")
         "strengths": _texts(job.get("match_reasons")),
         "red_flags": _texts(job.get("red_flags")),
         "reasoning": _multiline(job.get("reasoning")) if reranked else "",
-        "description": _multiline(job.get("description"))[:DESCRIPTION_LIMIT],
+        "description": _limited(_multiline(job.get("description"))),
         "rejection_reason": (job.get("rejection_reason") or "").strip(),
         "url": _http_url(job.get("url")),
         "group": group,
