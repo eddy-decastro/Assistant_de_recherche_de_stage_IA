@@ -24,6 +24,18 @@ jobs:
       - name: Installation des dépendances
         run: pip install -r requirements.txt
 
+      # Cache des fiches d'offres (descriptions stables) conservé entre les runs :
+      # évite de relire les mêmes fiches LinkedIn (et les 429 qui vont avec).
+      # Clé unique par run pour ré-enregistrer le cache enrichi ; restore-keys
+      # reprend le plus récent.
+      - name: Restauration du cache des fiches
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: scrape-detail-cache-${{ github.run_id }}
+          restore-keys: |
+            scrape-detail-cache-
+
       - name: Lancement du Pipeline (Scraping + IA + Cloud Sync)
         env:
           # Clés API IA

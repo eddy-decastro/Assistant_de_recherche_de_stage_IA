@@ -34,6 +34,7 @@ except ImportError:
     CurlRequestsError = None  # curl_cffi absent : le guard ne sera jamais atteint
 
 from .cache import DiskCache
+from .http import RetryingClient
 from .known import KnownIndex, NullKnownIndex
 from .models import (
     MIN_WEAK_SIGNALS_IN_DESCRIPTION,
@@ -294,7 +295,10 @@ class BaseScraper(ABC):
         self._detail_failures = 0
         self._detail_disabled_reason = ""
         self._filter_version = self.config.filter_fingerprint()
-        self.client = httpx.Client(
+        self.client = RetryingClient(
+            max_retries=self.config.http_max_retries,
+            backoff_seconds=self.config.http_backoff_seconds,
+            max_wait_seconds=self.config.http_max_wait_seconds,
             headers={
                 "User-Agent": self.config.user_agent,
                 "Accept": "application/json, text/html;q=0.9, */*;q=0.8",

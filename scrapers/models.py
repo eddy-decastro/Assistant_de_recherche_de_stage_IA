@@ -550,6 +550,12 @@ class ScraperConfig(BaseModel):
     #: Au-delà, les offres restantes sont filtrées sur leur titre seul.
     max_detail_fetches_per_source: int = 200
     request_timeout_seconds: float = 30.0
+    #: Nouvelles tentatives sur erreur passagère (429, 5xx, réseau) : nombre max,
+    #: attente de base (doublée à chaque essai) et plafond d'attente (y compris
+    #: pour ``Retry-After`` : au-delà, la passe s'arrête en ``rate_limit``).
+    http_max_retries: int = 3
+    http_backoff_seconds: float = 2.0
+    http_max_wait_seconds: float = 30.0
     user_agent: str = DEFAULT_USER_AGENT
     enabled_sources: list[Source] = Field(
         default_factory=lambda: ["wttj", "linkedin", "jobteaser"]

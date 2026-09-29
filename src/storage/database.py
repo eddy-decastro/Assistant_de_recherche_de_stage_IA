@@ -1176,6 +1176,35 @@ class Database:
             )
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
 
+    def get_source_card_history(
+        self, runs: int = 5, exclude_run_id: str | None = None
+    ) -> dict[str, list[int]]:
+        """Cartes vues par source lors des ``runs`` derniers runs (hors ``exclude_run_id``).
+
+        Base de la détection de source dégradée : total ``cards_seen`` de toutes
+        les passes d'une source, un entier par run, du plus récent au plus ancien.
+        """
+        with self.SessionLocal() as session:
+            stmt = (
+                select(
+                    ScrapeQueryStat.run_id,
+                    ScrapeQueryStat.source,
+                    func.sum(ScrapeQueryStat.cards_seen),
+                    func.min(ScrapeQueryStat.started_at),
+                )
+                .group_by(ScrapeQueryStat.run_id, ScrapeQueryStat.source)
+            )
+            if exclude_run_id:
+                stmt = stmt.where(ScrapeQueryStat.run_id != exclude_run_id)
+            rows = session.execute(stmt).all()
+        by_source: dict[str, list[tuple[Any, int]]] = {}
+        for _run_id, source, total, started in rows:
+            by_source.setdefault(source, []).append((started, int(total or 0)))
+        return {
+            source: [total for _, total in sorted(items, key=lambda i: i[0], reverse=True)[: max(0, runs)]]
+            for source, items in by_source.items()
+        }
+
     def get_recent_query_stats(
         self, limit: int = 50, run_id: str | None = None
     ) -> list[dict[str, Any]]:

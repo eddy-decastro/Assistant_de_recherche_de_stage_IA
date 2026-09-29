@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> None:
     print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & JobTeaser)")
     print("=" * 60)
     # Lancement de la collecte (hybride)
-    run_scrapers_main([])
+    degraded_sources = run_scrapers_main([])
 
     print("\n" + "=" * 60)
     print(" 📖 ÉTAPE 2 : ENRICHISSEMENT DES DESCRIPTIONS (Backfill)")
@@ -127,6 +127,12 @@ def main(argv: list[str] | None = None) -> None:
     print("\n" + "=" * 60)
     print(" ✅ PIPELINE TERMINÉ ! Le dashboard est prêt et à jour partout.")
     print("=" * 60)
+
+    # Données publiées d'abord ; le job est ensuite marqué en échec pour qu'une
+    # source silencieusement cassée ne passe pas inaperçue.
+    if degraded_sources:
+        logger.error("%d source(s) de scraping dégradée(s) : voir les alertes ci-dessus.", degraded_sources)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
