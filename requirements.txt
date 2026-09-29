@@ -19,7 +19,7 @@ PyYAML
 SQLAlchemy
 
 # --- Interface Web & Visualisation ---
-streamlit
+streamlit>=1.53
 pandas
 altair
 

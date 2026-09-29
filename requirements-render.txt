@@ -17,7 +17,7 @@ PyYAML
 SQLAlchemy
 
 # --- Tableau de bord & Visualisation ---
-streamlit
+streamlit>=1.53
 pandas
 altair
 
