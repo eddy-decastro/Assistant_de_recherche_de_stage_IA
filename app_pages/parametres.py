@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config, save_config
+from utils.layout import page_header
 from utils.data import bump_data_version, get_database, load_jobs, _esc
 from utils.task_manager import (
     get_active_task,
@@ -31,14 +32,13 @@ from utils.task_manager import (
 
 CV_PATH = PROJECT_ROOT / "data" / "cv_eddy.txt"
 
-st.markdown("<h1>Paramètres &amp; Profil</h1>", unsafe_allow_html=True)
-st.caption("Personnalisez votre CV, vos critères de scraping et pilotez la ré-évaluation par Gemini.")
+page_header("Paramètres et profil", "Personnalisez votre CV, vos critères de collecte et la ré-évaluation par Gemini.")
 
 tab_cv, tab_scraping, tab_v3, tab_rerank = st.tabs([
-    "📄 Mon CV & Profil",
-    "🔍 Recherches & Scraping",
-    "⚖️ Grille de scoring v3",
-    "🔄 Re-notation des offres",
+    "CV et profil",
+    "Recherches et collecte",
+    "Grille de scoring v3",
+    "Re-notation des offres",
 ])
 
 
@@ -46,7 +46,7 @@ tab_cv, tab_scraping, tab_v3, tab_rerank = st.tabs([
 # ONGLET 1 : MON CV & PROFIL
 # =========================================================================== #
 with tab_cv:
-    st.markdown("### Profil du candidat &amp; CV actif", unsafe_allow_html=True)
+    st.subheader("Profil du candidat et CV actif", anchor=False)
     st.write(
         "Ce texte sert de référence pour le calcul de pertinence des offres et pour la rédaction "
         "automatique de vos lettres de motivation personnalisées."
@@ -93,16 +93,25 @@ with tab_cv:
     st.markdown("#### 2. Consulter et ajuster le profil")
     editor_default = st.session_state.get("cv_editor_content", current_cv)
 
-    edited_cv = st.text_area(
-        "Texte du CV utilisé par le juge LLM et le générateur de lettre :",
-        value=editor_default,
-        height=450,
-        help="Vous pouvez éditer directement ce texte. N'oubliez pas de cliquer sur 'Enregistrer le profil'.",
-    )
+    preview_lines = [line.strip() for line in editor_default.splitlines() if line.strip()][:4]
+    with st.container(border=True):
+        if preview_lines:
+            st.markdown("  \n".join(preview_lines))
+            st.caption(f"{len(editor_default)} caractères · aperçu des premières lignes")
+        else:
+            st.caption("Aucun CV enregistré : importez un document ci-dessus ou saisissez le texte.")
+
+    with st.expander("Modifier le texte du CV", icon=":material/edit:", expanded=not editor_default.strip()):
+        edited_cv = st.text_area(
+            "Texte du CV utilisé par le juge LLM et le générateur de lettre :",
+            value=editor_default,
+            height=450,
+            help="Éditez directement ce texte, puis cliquez sur « Enregistrer le profil ».",
+        )
 
     c1, c2, _ = st.columns([1.5, 1.5, 3], gap="small")
     with c1:
-        if st.button("Enregistrer le profil", type="primary", use_container_width=True, icon=":material/save:"):
+        if st.button("Enregistrer le profil", type="primary", width="stretch", icon=":material/save:"):
             CV_PATH.parent.mkdir(parents=True, exist_ok=True)
             CV_PATH.write_text(edited_cv, encoding="utf-8")
             st.session_state["cv_editor_content"] = edited_cv
@@ -115,7 +124,7 @@ with tab_cv:
             data=edited_cv,
             file_name="CV_Actif.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
             icon=":material/download:",
         )
 
@@ -166,7 +175,7 @@ with tab_cv:
 # ONGLET 2 : RECHERCHES & SCRAPING
 # =========================================================================== #
 with tab_scraping:
-    st.markdown("### Paramètres des collecteurs (LinkedIn &amp; JobTeaser)", unsafe_allow_html=True)
+    st.subheader("Paramètres des collecteurs (LinkedIn et JobTeaser)", anchor=False)
     st.write(
         "Ajustez ici les requêtes de recherche et les stratégies de collecte. "
         "Les modifications sont écrites directement dans `config.yaml`."
@@ -179,7 +188,7 @@ with tab_scraping:
     rel_cfg = passes_cfg.get("relevance", {})
 
     with st.form("scraping_config_form"):
-        st.markdown("#### 1. Mots-clés &amp; Requêtes cibles", unsafe_allow_html=True)
+        st.markdown("#### 1. Mots-clés et requêtes cibles")
         current_queries = scrapers_cfg.get("target_queries", [])
         queries_text = st.text_area(
             "Requêtes recherchées (une par ligne) :",
@@ -459,7 +468,7 @@ with tab_v3:
 # ONGLET 4 : RE-NOTATION & NOTATION DES OFFRES
 # =========================================================================== #
 with tab_rerank:
-    st.markdown("### Notation &amp; Ré-évaluation des offres par Gemini", unsafe_allow_html=True)
+    st.subheader("Notation et ré-évaluation des offres par Gemini", anchor=False)
     st.write(
         "Pilotez l'évaluation LLM : notez vos offres récemment collectées ou réévaluez les offres existantes "
         "suite à une mise à jour de votre profil ou de votre CV."
@@ -518,7 +527,7 @@ with tab_rerank:
         est_sec = int(actual_count * (60.0 / max(1, llm_rpm)))
         est_str = f"{est_sec // 60} min {est_sec % 60:02d} s" if est_sec >= 60 else f"{est_sec} s"
         tier_badge = "Gratuit (15 req/min max)" if llm_tier == "free" else "Payant (rapide)"
-        st.caption(f"⏱️ Durée estimée pour **{actual_count} offre(s)** : **~{est_str}** *(Forfait {tier_badge})*")
+        st.caption(f"Durée estimée pour **{actual_count} offre(s)** : **~{est_str}** *(Forfait {tier_badge})*")
 
     with c_opts:
         st.write("")

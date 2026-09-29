@@ -15,6 +15,7 @@ CLEAN_FILES = [
     "app_pages/kanban.py",
     "app_pages/statistiques.py",
     "app_pages/pipeline.py",
+    "app_pages/parametres.py",
     "utils/components.py",
     "utils/layout.py",
     "components/job_feed/__init__.py",
