@@ -182,3 +182,53 @@ def test_serialize_feed_volume_borne() -> None:
     jobs = [{**RERANKED, "id": f"j{i}", "description": "mot " * 5000} for i in range(1000)]
     payload = json.dumps(serialize_feed(jobs, ()))
     assert len(payload.encode("utf-8")) < 8_000_000, "Le mode « Tout » doit rester sous 8 Mo de charge utile."
+
+
+from components.job_feed.actions import ALLOWED_STATUSES, apply_status_action, parse_action  # noqa: E402
+from src.constants import STATUS_IGNORED, STATUS_INTERVIEW, STATUS_REJECTED  # noqa: E402
+
+
+def test_parse_action_valide() -> None:
+    assert parse_action({"type": "status", "id": "a1", "status": STATUS_APPLIED}) == {
+        "type": "status", "id": "a1", "status": STATUS_APPLIED,
+    }
+    assert parse_action({"type": "letter", "id": "a1", "extra": "ignoré"}) == {"type": "letter", "id": "a1"}
+    assert ALLOWED_STATUSES == {STATUS_NEW, STATUS_APPLIED, STATUS_INTERVIEW, STATUS_IGNORED}
+
+
+def test_parse_action_forgee_ignoree() -> None:
+    forged = [
+        None, "status", 42, [], {},
+        {"type": "status", "id": "", "status": STATUS_APPLIED},
+        {"type": "status", "id": None, "status": STATUS_APPLIED},
+        {"type": "status", "id": 5, "status": STATUS_APPLIED},
+        {"type": "status", "id": "a1", "status": "DROP TABLE jobs"},
+        {"type": "status", "id": "a1", "status": STATUS_REJECTED},
+        {"type": "status", "id": "a1"},
+        {"type": "delete", "id": "a1"},
+        {"type": "letter", "id": ""},
+    ]
+    for raw in forged:
+        assert parse_action(raw) is None, raw
+
+
+def test_apply_status_action() -> None:
+    calls: list[tuple] = []
+
+    def fake_set_status(db, job_id, status):
+        calls.append((db, job_id, status))
+
+    db = object()
+    assert apply_status_action(db, {"type": "status", "id": "a1", "status": STATUS_APPLIED}, fake_set_status) == "applied"
+    assert calls == [(db, "a1", STATUS_APPLIED)]
+
+    # Lettre, action forgée ou absente : aucune écriture.
+    assert apply_status_action(db, {"type": "letter", "id": "a1"}, fake_set_status) == "ignored"
+    assert apply_status_action(db, {"type": "status", "id": "a1", "status": "X"}, fake_set_status) == "ignored"
+    assert apply_status_action(db, None, fake_set_status) == "ignored"
+    assert len(calls) == 1
+
+    def boom(db, job_id, status):
+        raise RuntimeError("base verrouillée")
+
+    assert apply_status_action(db, {"type": "status", "id": "a1", "status": STATUS_NEW}, boom) == "failed"
