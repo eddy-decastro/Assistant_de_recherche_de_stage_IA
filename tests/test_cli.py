@@ -156,7 +156,7 @@ def test_total_inserted_compte_les_insertions_live(tmp_path, monkeypatch):
             pass
 
         def run(self, modes=None, on_batch_collected=None):
-            ingest_raw_jobs(jobs, Database(db_path))  # simule le callback live
+            ingest_raw_jobs(jobs, db_path)  # simule le callback live
             return ScrapeResult(jobs=jobs, found=2, rejected_bi=0)
 
     monkeypatch.setattr(run_scrapers, "ScraperManager", _FakeManager)
