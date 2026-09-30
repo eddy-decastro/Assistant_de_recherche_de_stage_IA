@@ -207,6 +207,7 @@ StopReason = Literal[
     "window_end",
     "stream_end",
     "max_pages",
+    "max_pages_saturated",
     "duplicate_page",
     "rate_limit",
     "http_error",
@@ -228,6 +229,11 @@ INCOMPLETE_STOP_REASONS: tuple[str, ...] = (
     "max_pages",
     "error",
 )
+
+#: Part minimale d'offres déjà vues (mémoire de collecte ou doublons du run) sur
+#: la DERNIÈRE page pour qu'un arrêt au plafond de pages soit jugé sans perte :
+#: le flux ne faisait plus que repasser sur du connu.
+SATURATION_RATIO: float = 0.8
 
 
 def is_incomplete_stop(reason: str | None) -> bool:

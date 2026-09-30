@@ -362,6 +362,7 @@ STOP_REASON_LABELS = {
     "window_end": "Hors fenêtre temporelle (flux épuisé)",
     "stream_end": "Fin de flux (plus de résultats)",
     "max_pages": "Plafond de pages atteint (flux potentiellement tronqué)",
+    "max_pages_saturated": "Plafond de pages atteint sur des offres déjà connues (rien de perdu)",
     "duplicate_page": "Page déjà vue (pagination stagnante)",
     "rate_limit": "Rate limit (429) — flux perdu",
     "http_error": "Erreur HTTP — flux perdu",

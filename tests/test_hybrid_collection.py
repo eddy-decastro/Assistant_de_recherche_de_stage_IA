@@ -619,5 +619,33 @@ def main() -> None:
     print("[OK] test_hybrid_collection.py : tous les tests passent.")
 
 
+def test_max_pages_sature_n_est_pas_une_perte() -> None:
+    """Plafond atteint sur une page déjà connue à 80 % : vivier épuisé, pas de perte."""
+    from scrapers.models import is_incomplete_stop
+
+    config = _config("relevance", max_pages_per_query=2, window_days=None)
+    known = InMemoryKnownIndex(
+        pairs={("linkedin", k) for k in ("k1", "k2", "k3", "k4")}
+    )
+    scraper = _ScriptedScraper(
+        config,
+        pages=[["n1", "n2"], ["k1", "k2", "k3", "k4", "n3"], ["n4"]],
+    )
+    report = scraper.run(known).query_reports[0]
+    assert report.stop_reason == "max_pages_saturated", report.stop_reason
+    assert not is_incomplete_stop(report.stop_reason)
+    scraper.close()
+
+
+def test_max_pages_avec_offres_nouvelles_reste_perte() -> None:
+    """Plafond atteint alors que la dernière page apportait du neuf : perte signalée."""
+    config = _config("relevance", max_pages_per_query=2, window_days=None)
+    known = InMemoryKnownIndex(pairs={("linkedin", "k1")})
+    scraper = _ScriptedScraper(config, pages=[["n1", "n2"], ["n3", "n4", "k1"], ["n5"]])
+    report = scraper.run(known).query_reports[0]
+    assert report.stop_reason == "max_pages", report.stop_reason
+    scraper.close()
+
+
 if __name__ == "__main__":
     main()

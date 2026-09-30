@@ -39,6 +39,7 @@ from .known import KnownIndex, NullKnownIndex
 from .models import (
     MIN_WEAK_SIGNALS_IN_DESCRIPTION,
     PASS_FRESHNESS,
+    SATURATION_RATIO,
     SEEN_DUPLICATE,
     SEEN_KNOWN,
     SEEN_OUT_OF_WINDOW,
@@ -689,6 +690,8 @@ class BaseScraper(ABC):
         cursor: Any = None
         page_number = 0
         halt = False
+        #: Part d'offres déjà vues sur la dernière page traitée (voir SATURATION_RATIO).
+        last_page_seen_ratio = 0.0
 
         while page_number < plan.max_pages:
             if len(kept) >= limit:  # limite atteinte (quota de passe ou de source)
@@ -728,6 +731,7 @@ class BaseScraper(ABC):
             stop_page = page_number
             new_keys_in_page = 0
             duplicates_in_page = 0
+            seen_in_page = 0
 
             for entry in page.entries:
                 counters["cards_seen"] += 1
@@ -788,6 +792,7 @@ class BaseScraper(ABC):
                             )
                         )
                     streak += 1
+                    seen_in_page += 1
                     if (
                         plan.early_stop_threshold
                         and counters["pages_fetched"] >= plan.early_stop_min_pages
@@ -859,6 +864,7 @@ class BaseScraper(ABC):
 
             if halt:
                 break
+            last_page_seen_ratio = seen_in_page / len(page.entries) if page.entries else 0.0
             if page.exhausted:
                 stop_reason = "stream_end"
                 stop_detail = f"flux épuisé (page {page_number})"
@@ -884,10 +890,17 @@ class BaseScraper(ABC):
                 break
             cursor = page.next_cursor
         else:
-            stop_reason = "max_pages"
-            stop_detail = (
-                f"plafond de {plan.max_pages} page(s) atteint — flux potentiellement tronqué"
-            )
+            if last_page_seen_ratio >= SATURATION_RATIO:
+                stop_reason = "max_pages_saturated"
+                stop_detail = (
+                    f"plafond de {plan.max_pages} page(s) atteint, dernière page déjà vue à "
+                    f"{last_page_seen_ratio:.0%} : vivier de fait épuisé"
+                )
+            else:
+                stop_reason = "max_pages"
+                stop_detail = (
+                    f"plafond de {plan.max_pages} page(s) atteint — flux potentiellement tronqué"
+                )
 
         finished = datetime.now(timezone.utc)
         report = PassReport(
