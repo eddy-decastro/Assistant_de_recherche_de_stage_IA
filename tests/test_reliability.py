@@ -149,3 +149,103 @@ def test_historique_des_cartes_par_source(tmp_path):
     history = db.get_source_card_history(runs=2, exclude_run_id=current)
     assert history["linkedin"] == [30, 20]
     db.engine.dispose()
+
+
+def _seed_run(db, source, cards, notes=None):
+    run_id = db.start_run([source])
+    db.record_query_stats(run_id, [{"source": source, "query": "q", "mode": "freshness",
+                                    "cards_seen": cards, "stop_reason": "quota"}])
+    db.finish_run(run_id, status="OK", notes=notes)
+    time.sleep(0.01)
+    return run_id
+
+
+def test_historique_ignore_runs_adhoc_degrades_et_vides(tmp_path):
+    """La référence ne contient que des runs standards et sains de la source."""
+    from src.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    _seed_run(db, "jobteaser", 100)
+    _seed_run(db, "jobteaser", 90)
+    _seed_run(db, "jobteaser", 5, notes="adhoc")          # collecte personnalisée
+    _seed_run(db, "jobteaser", 3, notes="degraded:jobteaser")  # panne déjà signalée
+    _seed_run(db, "jobteaser", 0)                          # panne non signalée
+    assert db.get_source_card_history()["jobteaser"] == [90, 100]
+    db.engine.dispose()
+
+
+def test_panne_persistante_reste_alertee(tmp_path):
+    """Trois runs en panne d'affilée ne font pas taire l'alerte (référence préservée)."""
+    from src.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    for cards in (100, 110, 90):
+        _seed_run(db, "jobteaser", cards)
+    for _ in range(3):
+        _seed_run(db, "jobteaser", 0, notes="degraded:jobteaser")
+    history = db.get_source_card_history()
+    assert detect_degraded_sources([_report("jobteaser", 0)], history)
+    db.engine.dispose()
+
+
+def _fake_manager(reports):
+    from scrapers.models import ScrapeResult
+
+    class _FakeManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, modes=None, on_batch_collected=None):
+            return ScrapeResult(jobs=[], found=0, rejected_bi=0, query_reports=reports)
+
+    return _FakeManager
+
+
+def test_collecte_personnalisee_sans_alerte_ni_echec(tmp_path, monkeypatch):
+    """--queries/--sources/--passes... : pas d'alerte, code 0, run exclu de la référence."""
+    import run_scrapers
+    from src.storage.database import Database
+
+    db_path = str(tmp_path / "t.db")
+    db = Database(db_path)
+    for cards in (100, 110, 90):
+        _seed_run(db, "linkedin", cards)
+    monkeypatch.setattr(run_scrapers, "load_config",
+                        lambda: {"database": {"path": db_path}, "scrapers": {"enabled_sources": ["linkedin"]}})
+    monkeypatch.setattr(run_scrapers, "ScraperManager", _fake_manager([_report("linkedin", 2)]))
+    assert run_scrapers.main(["--queries", "NLP", "--max-offers", "5"]) == 0
+    last = Database(db_path).get_recent_runs(limit=1)[0]
+    assert "adhoc" in (last["notes"] or ""), last
+    assert "degraded" not in (last["notes"] or ""), last
+
+
+def test_run_standard_degrade_alerte(tmp_path, monkeypatch):
+    """Run standard qui s'effondre : alerte et code non nul."""
+    import run_scrapers
+    from src.storage.database import Database
+
+    db_path = str(tmp_path / "t.db")
+    db = Database(db_path)
+    for cards in (100, 110, 90):
+        _seed_run(db, "linkedin", cards)
+    monkeypatch.setattr(run_scrapers, "load_config",
+                        lambda: {"database": {"path": db_path}, "scrapers": {"enabled_sources": ["linkedin"]}})
+    monkeypatch.setattr(run_scrapers, "ScraperManager", _fake_manager([_report("linkedin", 2)]))
+    assert run_scrapers.main([]) == 1
+
+
+def test_cache_ci_sauvegarde_meme_en_echec():
+    """Le cache des fiches est sauvegardé même quand le job échoue (source dégradée)."""
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / ".github/workflows/daily_scraper.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["scrape-and-sync"]["steps"]
+    saves = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache/save")]
+    restores = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache/restore")]
+    assert restores and saves, steps
+    assert "always()" in str(saves[0].get("if", ""))
+    assert "run_attempt" in saves[0]["with"]["key"]

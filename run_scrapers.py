@@ -56,6 +56,8 @@ from scrapers.models import (  # noqa: E402
 )
 from src.config import load_config  # noqa: E402
 from src.constants import (  # noqa: E402
+    RUN_NOTE_ADHOC,
+    RUN_NOTE_DEGRADED,
     RUN_OK,
     RUN_PARTIAL,
     STATUS_REJECTED,
@@ -820,8 +822,14 @@ def main(argv: list[str] | None = None) -> int:
                 telemetry.retention_days,
             )
     lost_passes = _log_pass_summary(result.query_reports)
+    # Run personnalisé : volume réduit par construction, il n'est ni comparé à la
+    # référence ni retenu dans celle-ci (voir ``get_source_card_history``).
+    adhoc_run = bool(
+        args.queries or args.sources or args.passes or args.only_source
+        or args.max_offers is not None
+    )
     degraded: list[SourceAlert] = []
-    if telemetry.enabled and run_id and result.query_reports:
+    if telemetry.enabled and run_id and result.query_reports and not adhoc_run:
         degraded = detect_degraded_sources(
             result.query_reports, db.get_source_card_history(exclude_run_id=run_id)
         )
@@ -841,7 +849,8 @@ def main(argv: list[str] | None = None) -> int:
             total_duplicates=stats["duplicates_skipped"],
             notes="; ".join(
                 sorted({report.stop_reason for report in lost_passes})
-                + [f"degraded:{alert.source}" for alert in degraded]
+                + [f"{RUN_NOTE_DEGRADED}{alert.source}" for alert in degraded]
+                + ([RUN_NOTE_ADHOC] if adhoc_run else [])
             )
             or None,
         )

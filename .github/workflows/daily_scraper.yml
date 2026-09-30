@@ -26,13 +26,15 @@ jobs:
 
       # Cache des fiches d'offres (descriptions stables) conservé entre les runs :
       # évite de relire les mêmes fiches LinkedIn (et les 429 qui vont avec).
-      # Clé unique par run pour ré-enregistrer le cache enrichi ; restore-keys
-      # reprend le plus récent.
+      # Restauration et sauvegarde séparées : la sauvegarde a lieu même si le job
+      # échoue (source dégradée), sinon le cache enrichi serait perdu chaque jour
+      # de panne. Clé unique par run et par tentative ; restore-keys reprend le
+      # plus récent.
       - name: Restauration du cache des fiches
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/cache
-          key: scrape-detail-cache-${{ github.run_id }}
+          key: scrape-detail-cache-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             scrape-detail-cache-
 
@@ -56,3 +58,10 @@ jobs:
           LINKEDIN_JSESSIONID: ${{ secrets.LINKEDIN_JSESSIONID }}
           
         run: python run_pipeline.py
+
+      - name: Sauvegarde du cache des fiches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: scrape-detail-cache-${{ github.run_id }}-${{ github.run_attempt }}

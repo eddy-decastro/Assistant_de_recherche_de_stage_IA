@@ -36,6 +36,8 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from src.constants import (
     DEFAULT_SUB_SCORE,
     RUN_INTERRUPTED,
+    RUN_NOTE_ADHOC,
+    RUN_NOTE_DEGRADED,
     RUN_RUNNING,
     SEEN_KNOWN,
     SEEN_VALIDATED,
@@ -1183,6 +1185,10 @@ class Database:
 
         Base de la détection de source dégradée : total ``cards_seen`` de toutes
         les passes d'une source, un entier par run, du plus récent au plus ancien.
+        Seuls les runs **sains et standards** servent de référence : un run
+        personnalisé (volume réduit par construction), une panne déjà signalée ou
+        un total nul feraient baisser le médian, et une panne durable finirait par
+        ne plus être alertée.
         """
         with self.SessionLocal() as session:
             stmt = (
@@ -1191,15 +1197,22 @@ class Database:
                     ScrapeQueryStat.source,
                     func.sum(ScrapeQueryStat.cards_seen),
                     func.min(ScrapeQueryStat.started_at),
+                    ScrapeRun.notes,
                 )
+                .join(ScrapeRun, ScrapeRun.id == ScrapeQueryStat.run_id, isouter=True)
                 .group_by(ScrapeQueryStat.run_id, ScrapeQueryStat.source)
             )
             if exclude_run_id:
                 stmt = stmt.where(ScrapeQueryStat.run_id != exclude_run_id)
             rows = session.execute(stmt).all()
         by_source: dict[str, list[tuple[Any, int]]] = {}
-        for _run_id, source, total, started in rows:
-            by_source.setdefault(source, []).append((started, int(total or 0)))
+        for _run_id, source, total, started, notes in rows:
+            flags = set((notes or "").split("; "))
+            if RUN_NOTE_ADHOC in flags or f"{RUN_NOTE_DEGRADED}{source}" in flags:
+                continue
+            if not total:
+                continue
+            by_source.setdefault(source, []).append((started, int(total)))
         return {
             source: [total for _, total in sorted(items, key=lambda i: i[0], reverse=True)[: max(0, runs)]]
             for source, items in by_source.items()

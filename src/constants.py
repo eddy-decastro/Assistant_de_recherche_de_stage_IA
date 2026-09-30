@@ -338,6 +338,11 @@ RUN_ERROR = "ERROR"
 #: Run jamais clos (processus tué, coupure) : marqué au démarrage du run suivant.
 #: C'est un signal d'observabilité à part entière : la collecte a pu être tronquée.
 RUN_INTERRUPTED = "INTERRUPTED"
+#: Marqueurs de ``scrape_runs.notes`` lus par la détection de source dégradée :
+#: un run personnalisé (requêtes, sources, passes ou plafond forcés) et une source
+#: déjà signalée en panne ne doivent pas servir de référence.
+RUN_NOTE_ADHOC = "adhoc"
+RUN_NOTE_DEGRADED = "degraded:"
 
 #: Libellés affichés pour l'état d'un run de collecte (dashboard télémétrie).
 RUN_LABELS = {
