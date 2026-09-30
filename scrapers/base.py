@@ -54,6 +54,7 @@ from .models import (
     ScrapeResult,
     ScraperConfig,
     SeenEntry,
+    SessionExpiredError,
     Source,
     canonical_url,
     is_incomplete_stop,
@@ -707,6 +708,10 @@ class BaseScraper(ABC):
                     stop_reason, stop_detail = "rate_limit", "HTTP 429 (quota plateforme)"
                 else:
                     stop_reason, stop_detail = "http_error", f"HTTP {status}"
+                error = stop_detail
+                break
+            except SessionExpiredError as exc:
+                stop_reason, stop_detail = "auth_expired", str(exc)[:300]
                 error = stop_detail
                 break
             except httpx.RequestError as exc:

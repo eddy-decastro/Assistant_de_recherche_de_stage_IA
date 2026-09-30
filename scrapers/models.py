@@ -213,6 +213,7 @@ StopReason = Literal[
     "http_error",
     "network_error",
     "auth_missing",
+    "auth_expired",
     "unsupported",
     "disabled",
     "error",
@@ -227,6 +228,7 @@ INCOMPLETE_STOP_REASONS: tuple[str, ...] = (
     "http_error",
     "network_error",
     "max_pages",
+    "auth_expired",
     "error",
 )
 
@@ -259,6 +261,14 @@ SEEN_DECISIONS: tuple[str, ...] = (
     SEEN_DUPLICATE,
     SEEN_KNOWN,
 )
+
+
+class SessionExpiredError(RuntimeError):
+    """La plateforme a renvoyé sa page de connexion : cookies de session expirés.
+
+    Distinct d'une recherche sans résultat : sans ce signal, une session expirée
+    passerait pour un vivier vide (``stream_end``) et la panne resterait muette.
+    """
 
 
 class SeenEntry(BaseModel):

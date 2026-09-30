@@ -373,6 +373,7 @@ STOP_REASON_LABELS = {
     "http_error": "Erreur HTTP — flux perdu",
     "network_error": "Erreur réseau — flux perdu",
     "auth_missing": "Authentification absente (cookies / jeton)",
+    "auth_expired": "Session expirée (page de connexion) — flux perdu",
     "unsupported": "Tri ou pagination non supporté par la source",
     "disabled": "Passe désactivée par configuration",
     "error": "Erreur inattendue",
