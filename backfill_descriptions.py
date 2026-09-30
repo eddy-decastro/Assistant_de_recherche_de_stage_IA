@@ -324,7 +324,11 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config()
     db = Database(config["database"]["path"])
     cache = DiskCache(args.cache_dir)
-    sources = None if args.source == "all" else [args.source]  # None = sources activées
+    # « all » = sources supportées ET activées dans config.yaml.
+    enabled = set(ScraperConfig.from_config(config).enabled_sources)
+    sources = (
+        [s for s in SUPPORTED_SOURCES if s in enabled] if args.source == "all" else [args.source]
+    )
 
     runner = DescriptionBackfill(
         config,

@@ -121,3 +121,15 @@ def test_rattrapage_ignore_les_sources_desactivees(tmp_path):
         runner.close()
         db.engine.dispose()
     assert set(report.per_source) == {"linkedin"}, report.per_source
+
+
+def test_rattrapage_main_sans_source_explicite(tmp_path, monkeypatch):
+    """Point d'entrée par défaut (--source all) : aucun plantage, sources activées seules."""
+    import backfill_descriptions
+
+    db_path = str(tmp_path / "t.db")
+    monkeypatch.setattr(
+        backfill_descriptions, "load_config",
+        lambda: {"database": {"path": db_path}, "scrapers": {"enabled_sources": ["linkedin", "wttj"]}},
+    )
+    assert backfill_descriptions.main(["--dry-run", "--cache-dir", str(tmp_path / "c")]) == 0
