@@ -716,6 +716,10 @@ def main(argv: list[str] | None = None) -> int:
     run_id: str | None = None
     known_index: Any = NullKnownIndex()
 
+    # Compté en base plutôt que via ``ingest_raw_jobs`` : la notation live insère
+    # déjà pendant la collecte, l'ingestion finale ne verrait que des doublons.
+    jobs_before = db.count_jobs()
+
     if args.no_collect:
         logger.info(" Collecte ignorée (--no-collect) : travail sur la base existante.")
         result = ScrapeResult(jobs=[], found=0, rejected_bi=0)
@@ -790,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
+    inserted = max(0, db.count_jobs() - jobs_before)
     if args.dedupe:
         _dedupe_jobs(db, dry_run=args.dry_run)
 
@@ -832,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
             total_found=result.found,
             total_validated=len(result.jobs),
             total_rejected=result.rejected_bi,
-            total_inserted=stats["new_inserted"],
+            total_inserted=inserted,
             total_duplicates=stats["duplicates_skipped"],
             notes="; ".join(
                 sorted({report.stop_reason for report in lost_passes})
@@ -847,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("=" * 60)
     logger.info(" Offres collectées (validées) : %d", len(result.jobs))
     logger.info(" Offres BI/analyst rejetées   : %d", result.rejected_bi)
-    logger.info(" Nouvelles offres persistées  : %d", stats["new_inserted"])
+    logger.info(" Nouvelles offres persistées  : %d", inserted)
     logger.info(" Doublons ignorés             : %d", stats["duplicates_skipped"])
     logger.info(" Total en base SQLite         : %d", db.count_jobs())
     for source, count in db.get_source_counts():
