@@ -647,5 +647,49 @@ def test_max_pages_avec_offres_nouvelles_reste_perte() -> None:
     scraper.close()
 
 
+def test_pertinence_arret_anticipe_arme() -> None:
+    """Armé par configuration, l'arrêt anticipé coupe aussi la passe Pertinence."""
+    config = _config(
+        "relevance",
+        window_days=None,
+        early_stop_after_known=3,
+        arm_early_stop=True,
+        early_stop_min_pages=1,
+    )
+    known = InMemoryKnownIndex(pairs={("linkedin", k) for k in ("k1", "k2", "k3", "k4")})
+    scraper = _ScriptedScraper(config, pages=[["n1", "k1", "k2", "k3"], ["k4", "n2"]])
+    report = scraper.run(known).query_reports[0]
+    assert report.stop_reason == "early_stop", report.stop_reason
+    assert report.pages_fetched == 1, report.pages_fetched
+    scraper.close()
+
+
+def test_pertinence_serie_interrompue() -> None:
+    """Des offres nouvelles intercalées remettent la série à zéro : pas d'arrêt."""
+    config = _config(
+        "relevance",
+        window_days=None,
+        early_stop_after_known=3,
+        arm_early_stop=True,
+        early_stop_min_pages=1,
+    )
+    known = InMemoryKnownIndex(pairs={("linkedin", k) for k in ("k1", "k2", "k3", "k4")})
+    scraper = _ScriptedScraper(config, pages=[["k1", "k2", "n1", "k3", "k4", "n2"]])
+    report = scraper.run(known).query_reports[0]
+    assert report.stop_reason == "stream_end", report.stop_reason
+    scraper.close()
+
+
+def test_config_yaml_arme_l_arret_anticipe_en_pertinence() -> None:
+    """La configuration livrée arme l'arrêt anticipé de la passe Pertinence."""
+    import yaml
+
+    raw = yaml.safe_load((PROJECT_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    relevance = ScraperConfig.from_config(raw).pass_config("relevance")
+    assert relevance.early_stop_after_known == 30
+    assert relevance.arm_early_stop is True
+    assert relevance.early_stop_min_pages == 3
+
+
 if __name__ == "__main__":
     main()
