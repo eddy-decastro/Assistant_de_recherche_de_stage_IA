@@ -103,3 +103,21 @@ def test_wttj_stages_en_france_par_defaut(monkeypatch):
 
 def test_wttj_filtre_pays_desactivable(monkeypatch):
     assert _wttj_filters(monkeypatch, "") == "contract_type:internship"
+
+
+def test_rattrapage_ignore_les_sources_desactivees(tmp_path):
+    """Sans source explicite, le rattrapage ne touche que les sources activées."""
+    from backfill_descriptions import DescriptionBackfill
+    from scrapers.cache import DiskCache
+    from src.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    runner = DescriptionBackfill(
+        {"scrapers": {"enabled_sources": ["linkedin", "wttj"]}}, db, DiskCache(tmp_path / "c"), sleep=0
+    )
+    try:
+        report = runner.run()
+    finally:
+        runner.close()
+        db.engine.dispose()
+    assert set(report.per_source) == {"linkedin"}, report.per_source

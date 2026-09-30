@@ -1,7 +1,8 @@
 scrapers:
+  # JobTeaser désactivé (30/09/2026) : accès au compte école perdu et scraping
+  # contraire aux conditions d'utilisation. Réactiver en ajoutant « - jobteaser ».
   enabled_sources:
   - linkedin
-  - jobteaser
   - wttj
   # Pas de « Stage » dans les requêtes : chaque source filtre déjà le contrat côté
   # serveur (LinkedIn f_JT=I, WTTJ contract_type:internship, JobTeaser

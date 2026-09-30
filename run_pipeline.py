@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     print("\n" + "=" * 60)
-    print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & JobTeaser)")
+    print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & WTTJ)")
     print("=" * 60)
     # Lancement de la collecte (hybride)
     degraded_sources = run_scrapers_main([])

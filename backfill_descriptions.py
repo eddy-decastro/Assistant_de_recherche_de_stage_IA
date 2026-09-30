@@ -126,7 +126,12 @@ class DescriptionBackfill:
     ) -> BackfillReport:
         """Enrichit les offres des sources demandées et retourne le bilan."""
         self.report = BackfillReport()
-        selected = list(sources) if sources else list(SUPPORTED_SOURCES)
+        # Par défaut, uniquement les sources activées dans config.yaml : une source
+        # désactivée (ex. JobTeaser sans accès) ne doit plus être interrogée.
+        enabled = set(ScraperConfig.from_config(self.config).enabled_sources)
+        selected = (
+            list(sources) if sources else [s for s in SUPPORTED_SOURCES if s in enabled]
+        )
 
         for source in selected:
             jobs = self._select_jobs(source, limit, refresh)
@@ -319,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config()
     db = Database(config["database"]["path"])
     cache = DiskCache(args.cache_dir)
-    sources = list(SUPPORTED_SOURCES) if args.source == "all" else [args.source]
+    sources = None if args.source == "all" else [args.source]  # None = sources activées
 
     runner = DescriptionBackfill(
         config,
