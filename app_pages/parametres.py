@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.candidate import get_candidate_info, get_cv_path, get_cv_text, save_local_candidate
 from src.config import load_config, save_config
 from utils.layout import page_header
 from utils.data import bump_data_version, get_database, load_jobs, _esc
@@ -30,7 +31,7 @@ from utils.task_manager import (
     start_background_task,
 )
 
-CV_PATH = PROJECT_ROOT / "data" / "cv_eddy.txt"
+CV_PATH = get_cv_path()
 
 page_header("Paramètres et profil", "Personnalisez votre CV, vos critères de collecte et la ré-évaluation par Gemini.")
 
@@ -53,9 +54,7 @@ with tab_cv:
     )
 
     # Lecture du CV actuel
-    current_cv = ""
-    if CV_PATH.exists():
-        current_cv = CV_PATH.read_text(encoding="utf-8")
+    current_cv = get_cv_text()
 
     # Zone d'importation de fichier
     st.markdown("#### 1. Importer un nouveau document")
@@ -116,7 +115,7 @@ with tab_cv:
             CV_PATH.write_text(edited_cv, encoding="utf-8")
             st.session_state["cv_editor_content"] = edited_cv
             bump_data_version()
-            st.success("Profil candidat enregistré avec succès dans `data/cv_eddy.txt` !")
+            st.success(f"CV enregistré dans `{CV_PATH.relative_to(PROJECT_ROOT).as_posix()}` (fichier local, non versionné).")
 
     with c2:
         st.download_button(
@@ -130,44 +129,45 @@ with tab_cv:
 
     st.markdown("---")
     st.markdown("#### 3. Coordonnées de contact (Lettres de motivation & Export PDF)")
-    st.caption("Ces coordonnées sont injectées automatiquement dans vos lettres pour un copier-coller immédiat sans aucun placeholder.")
+    st.caption(
+        "Injectées dans les lettres et l'export PDF. Enregistrées dans `data/candidate.local.yaml`, "
+        "jamais versionné ; en ligne, définissez plutôt les secrets `CANDIDATE_PHONE`, `CANDIDATE_EMAIL`…"
+    )
 
-    cfg_main = load_config()
-    candidate_cfg = cfg_main.get("candidate", {})
+    candidate_cfg = get_candidate_info()
 
     col_nom, col_tel = st.columns(2)
     with col_nom:
-        c_name = st.text_input("Nom & Prénom", value=candidate_cfg.get("name", "Eddy DE CASTRO"), key="c_name_input")
+        c_name = st.text_input("Nom & Prénom", value=candidate_cfg.get("name", ""), key="c_name_input")
     with col_tel:
-        c_phone = st.text_input("Téléphone", value=candidate_cfg.get("phone", "06 98 82 44 85"), key="c_phone_input")
+        c_phone = st.text_input("Téléphone", value=candidate_cfg.get("phone", ""), key="c_phone_input")
 
     col_mail, col_loc = st.columns(2)
     with col_mail:
-        c_email = st.text_input("Email", value=candidate_cfg.get("email", "eddyprepa123@gmail.com"), key="c_email_input")
+        c_email = st.text_input("Email", value=candidate_cfg.get("email", ""), key="c_email_input")
     with col_loc:
-        c_location = st.text_input("Ville / Localisation", value=candidate_cfg.get("location", "Paris, France"), key="c_location_input")
+        c_location = st.text_input("Ville / Localisation", value=candidate_cfg.get("location", ""), key="c_location_input")
 
     col_li, col_gh = st.columns(2)
     with col_li:
-        c_linkedin = st.text_input("Profil LinkedIn", value=candidate_cfg.get("linkedin", "https://www.linkedin.com/in/eddy-de-castro/"), key="c_linkedin_input")
+        c_linkedin = st.text_input("Profil LinkedIn", value=candidate_cfg.get("linkedin", ""), key="c_linkedin_input")
     with col_gh:
-        c_github = st.text_input("Profil GitHub", value=candidate_cfg.get("github", "https://github.com/eddy-decastro"), key="c_github_input")
+        c_github = st.text_input("Profil GitHub", value=candidate_cfg.get("github", ""), key="c_github_input")
 
-    c_title = st.text_input("Titre / Formation", value=candidate_cfg.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action"), key="c_title_input")
+    c_title = st.text_input("Titre / Formation", value=candidate_cfg.get("title", ""), key="c_title_input")
 
     if st.button("Enregistrer les coordonnées", type="primary", icon=":material/badge:", key="save_candidate_btn"):
-        cfg_main["candidate"] = {
-            "name": c_name.strip(),
-            "title": c_title.strip(),
-            "phone": c_phone.strip(),
-            "email": c_email.strip(),
-            "linkedin": c_linkedin.strip(),
-            "github": c_github.strip(),
-            "location": c_location.strip(),
-        }
-        save_config(cfg_main)
+        save_local_candidate({
+            "name": c_name,
+            "title": c_title,
+            "phone": c_phone,
+            "email": c_email,
+            "linkedin": c_linkedin,
+            "github": c_github,
+            "location": c_location,
+        })
         bump_data_version()
-        st.success("Coordonnées enregistrées avec succès dans `config.yaml` !")
+        st.success("Coordonnées enregistrées dans `data/candidate.local.yaml` (non versionné).")
 
 
 

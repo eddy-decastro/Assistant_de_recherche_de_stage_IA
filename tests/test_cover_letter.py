@@ -11,13 +11,39 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from google.genai.errors import APIError
+from src import candidate as candidate_module
+from src.candidate import CANDIDATE_FIELDS, save_local_candidate
 from src.matching.cover_letter import (
     CoverLetterGenerator,
     get_cv_text,
-    SYSTEM_PROMPT,
     generate_algorithmic_cover_letter,
     is_english_text,
 )
+
+FAKE_CANDIDATE = {
+    "name": "Camille TESTEUR",
+    "title": "Élève-ingénieure — M2 Mathématiques appliquées",
+    "phone": "06 00 00 00 00",
+    "email": "camille.testeur@example.com",
+    "linkedin": "https://www.linkedin.com/in/camille-testeur/",
+    "github": "https://github.com/camille-testeur",
+    "location": "Lyon, France",
+}
+
+
+@pytest.fixture(autouse=True)
+def fake_candidate(tmp_path, monkeypatch) -> dict[str, str]:
+    """Profil et CV fictifs isolés : ni fichiers locaux du développeur, ni secrets CANDIDATE_*."""
+    for field in CANDIDATE_FIELDS:
+        monkeypatch.delenv(f"CANDIDATE_{field.upper()}", raising=False)
+    monkeypatch.delenv("CANDIDATE_CV", raising=False)
+    local = tmp_path / "candidate.local.yaml"
+    save_local_candidate(FAKE_CANDIDATE, local)
+    monkeypatch.setattr(candidate_module, "LOCAL_CANDIDATE_PATH", local)
+    cv_file = tmp_path / "cv_fictif.txt"
+    cv_file.write_text("=== PROFIL ===\nM2 Mathématiques appliquées, PyTorch, Graph ML.", encoding="utf-8")
+    monkeypatch.setattr(candidate_module, "get_cv_path", lambda config=None: cv_file)
+    return FAKE_CANDIDATE
 
 SAMPLE_JOB = {
     "title": "Stage R&D Deep Learning / NLP",
@@ -28,11 +54,8 @@ SAMPLE_JOB = {
 
 
 def test_get_cv_text() -> None:
-    """Vérifie que le texte du CV est chargé depuis data/cv_eddy.txt."""
-    cv = get_cv_text()
-    assert isinstance(cv, str)
-    assert len(cv.strip()) > 0
-    assert "EXPÉRIENCE" in cv or "COMPÉTENCES" in cv or "PROFIL" in cv
+    """Le générateur lit le CV via src.candidate (priorités testées dans test_candidate.py)."""
+    assert "=== PROFIL ===" in get_cv_text()
 
 
 def test_generator_prompt_building() -> None:
@@ -64,26 +87,23 @@ def test_generator_mock_client() -> None:
     assert "Objet : Candidature" in result
     mock_client.models.generate_content.assert_called_once()
     call_kwargs = mock_client.models.generate_content.call_args[1]
-    assert call_kwargs["config"].system_instruction == SYSTEM_PROMPT
+    assert call_kwargs["config"].system_instruction == generator.system_prompt
 
 
 def test_candidate_info_loading() -> None:
     """Vérifie le chargement des coordonnées du candidat."""
     from src.matching.cover_letter import get_candidate_info
     info = get_candidate_info()
-    assert "Eddy" in info["name"]
-    assert "06 98 82 44 85" in info["phone"]
-    assert "eddyprepa123@gmail.com" in info["email"]
-    assert "linkedin.com/in/eddy-de-castro" in info["linkedin"]
+    assert info == FAKE_CANDIDATE
 
 
 def test_system_prompt_content() -> None:
     """Vérifie que le prompt système intègre les coordonnées et bannit les crochets."""
     from src.matching.cover_letter import build_system_prompt
-    prompt = build_system_prompt()
-    assert "Eddy DE CASTRO" in prompt
-    assert "06 98 82 44 85" in prompt
-    assert "eddyprepa123@gmail.com" in prompt
+    prompt = build_system_prompt(FAKE_CANDIDATE)
+    assert "Camille TESTEUR" in prompt
+    assert "06 00 00 00 00" in prompt
+    assert "camille.testeur@example.com" in prompt
     assert "ZÉRO CROCHET" in prompt
 
 
@@ -94,8 +114,8 @@ def test_postprocess_letter_brackets_cleanup() -> None:
     cleaned = generator._postprocess_letter(raw)
     assert "[Nom du Responsable]" not in cleaned
     assert "l'équipe recrutement" in cleaned
-    assert "06 98 82 44 85" in cleaned
-    assert "eddyprepa123@gmail.com" in cleaned
+    assert "06 00 00 00 00" in cleaned
+    assert "camille.testeur@example.com" in cleaned
     assert "avril 2027" in cleaned
     assert "[" not in cleaned
     assert "]" not in cleaned

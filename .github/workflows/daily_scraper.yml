@@ -44,6 +44,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           
+          # CV du candidat (absent du dépôt public), lu par le juge LLM
+          CANDIDATE_CV: ${{ secrets.CANDIDATE_CV }}
+
           # Accès Cloudflare R2
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
