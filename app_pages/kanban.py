@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 import streamlit as st
 
 from src.constants import (
+    SOURCE_MANUAL,
     STATUS_APPLIED,
     STATUS_IGNORED,
     STATUS_INTERVIEW,
@@ -19,6 +21,7 @@ from utils.data import (
     Filters,
     VERDICT_TONES,
     _set_status,
+    bump_data_version,
     effective_score,
     filter_jobs,
     get_database,
@@ -89,6 +92,36 @@ def _render_card(job: dict[str, Any], db: Any, current_status: str) -> None:
 page_header("Candidatures", "Faites évoluer le statut de vos candidatures d'une colonne à l'autre.")
 
 db = get_database()
+
+with st.expander("Ajouter une candidature", icon=":material/add:"):
+    with st.form("kb_add_application", clear_on_submit=True, border=False):
+        col_company, col_title = st.columns(2)
+        company_input = col_company.text_input("Entreprise")
+        title_input = col_title.text_input("Intitulé du poste")
+        url_input = st.text_input("Lien de l'offre (facultatif)")
+        col_date, col_status = st.columns(2)
+        date_input = col_date.date_input("Date de candidature", value="today", format="DD/MM/YYYY")
+        status_input = col_status.selectbox(
+            "Statut",
+            options=[STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED],
+            format_func={STATUS_APPLIED: "Postulé", STATUS_INTERVIEW: "Entretien", STATUS_REJECTED: "Refusé"}.get,
+        )
+        if st.form_submit_button("Ajouter", icon=":material/add:"):
+            try:
+                _, created = db.record_application(
+                    company_input,
+                    title_input,
+                    status=status_input,
+                    applied_at=datetime.combine(date_input, datetime.min.time()),
+                    url=url_input.strip() or None,
+                    source=SOURCE_MANUAL,
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                bump_data_version()
+                st.toast("Candidature ajoutée." if created else "Offre existante mise à jour.")
+
 data_version = int(st.session_state.setdefault("data_version", 0))
 jobs = load_jobs(db, data_version)
 

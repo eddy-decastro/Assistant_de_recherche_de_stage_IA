@@ -414,7 +414,11 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
         st.info("Aucune donnée disponible.")
         return
 
-    applied_jobs = [j for j in jobs if j.get("status") in (STATUS_APPLIED, STATUS_INTERVIEW)]
+    # Une candidature refusée par l'entreprise a bien été envoyée : elle compte aussi.
+    refused_jobs = [
+        j for j in jobs if j.get("status") == STATUS_REJECTED and j.get("rejection_reason") == REFUSAL_REASON
+    ]
+    applied_jobs = [j for j in jobs if j.get("status") in (STATUS_APPLIED, STATUS_INTERVIEW)] + refused_jobs
     interview_jobs = [j for j in jobs if j.get("status") == STATUS_INTERVIEW]
     archived_jobs = [j for j in jobs if j.get("status") == STATUS_IGNORED]
     new_jobs = [j for j in jobs if j.get("status") == STATUS_NEW]
@@ -480,8 +484,9 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
         )
         status_data = [
             {"Statut": "Nouveau", "Nombre": len(new_jobs)},
-            {"Statut": "Postulé", "Nombre": len(applied_jobs) - len(interview_jobs)},
+            {"Statut": "Postulé", "Nombre": len(applied_jobs) - len(interview_jobs) - len(refused_jobs)},
             {"Statut": "Entretien", "Nombre": len(interview_jobs)},
+            {"Statut": "Refusé", "Nombre": len(refused_jobs)},
             {"Statut": "Archivé", "Nombre": len(archived_jobs)},
         ]
         df_status = pd.DataFrame(status_data)
@@ -489,11 +494,11 @@ def _render_personal_analytics(jobs: list[dict[str, Any]]) -> None:
             alt.Chart(df_status)
             .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
             .encode(
-                y=alt.Y("Statut:N", sort=["Nouveau", "Postulé", "Entretien", "Archivé"], title=None),
+                y=alt.Y("Statut:N", sort=["Nouveau", "Postulé", "Entretien", "Refusé", "Archivé"], title=None),
                 x=alt.X("Nombre:Q", title="Nombre d'offres"),
                 color=alt.Color("Statut:N", scale=alt.Scale(
-                    domain=["Nouveau", "Postulé", "Entretien", "Archivé"],
-                    range=["#64748b", "#2563eb", "#059669", "#d97706"]
+                    domain=["Nouveau", "Postulé", "Entretien", "Refusé", "Archivé"],
+                    range=["#64748b", "#2563eb", "#059669", "#dc2626", "#d97706"]
                 ), legend=None),
                 tooltip=["Statut", "Nombre"],
             )
