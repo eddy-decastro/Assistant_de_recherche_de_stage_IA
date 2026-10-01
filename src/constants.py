@@ -423,7 +423,6 @@ def seen_decision_label(decision: str | None) -> str:
 # ré-exportés ici avec leurs libellés d'affichage.
 from scrapers.models import (  # noqa: E402  (ré-export volontaire)
     PASS_FRESHNESS,
-    PASS_MODES,
     PASS_RELEVANCE,
 )
 

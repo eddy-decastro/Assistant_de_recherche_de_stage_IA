@@ -16,7 +16,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_config
 from utils.data import get_database
 
 
@@ -70,7 +69,6 @@ def evaluate_model(
 
 
 def main() -> None:
-    config = load_config()
     db = get_database()
     jobs = db.get_jobs(limit=100)
 

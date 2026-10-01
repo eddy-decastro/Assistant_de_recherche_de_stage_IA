@@ -9,10 +9,10 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from scrapers.models import RawJob
+from src.candidate import get_cv_text
 from src.ingestion.bridge import ingest_raw_jobs, raw_job_to_dict
 from src.matching.llm_judge import LLMJudge
 from src.storage.database import Database, make_job_id
@@ -39,8 +39,7 @@ class LiveRerankWorker:
         self.backfill_missing = backfill_missing
 
         self.judge = LLMJudge(config)
-        cv_path = Path(config.get("scoring", {}).get("cv_path", "data/cv_eddy.txt"))
-        self.cv_text = cv_path.read_text(encoding="utf-8") if cv_path.exists() else ""
+        self.cv_text = get_cv_text(config)
 
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._enqueued_keys: set[str] = set()
@@ -214,7 +213,7 @@ def create_batch_callback(
         if not raw_jobs:
             return
         # 1. Ingestion immédiate
-        stats = ingest_raw_jobs(raw_jobs, db)
+        ingest_raw_jobs(raw_jobs, db)
         # 2. Envoi au worker de notation live
         if worker is not None and worker.available:
             job_dicts = [raw_job_to_dict(rj) for rj in raw_jobs]

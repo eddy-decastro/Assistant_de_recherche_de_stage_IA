@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,7 +28,6 @@ from utils.data import (
     source_distribution,
     group_jobs_by_source,
     DISPLAY_GROUPED,
-    QUALIFIED_SCORE,
     tone_class,
 )
 from utils.styles import (
@@ -46,12 +44,8 @@ from src.constants import (
     STATUS_APPLIED,
     STATUS_ORDER,
     TIER_1,
-    TIER_NEUTRAL,
     TIER_ESN,
     VERDICT_EXCELLENT,
-    VERDICT_GOOD,
-    VERDICT_MIXED,
-    VERDICT_OFF_TOPIC,
     RUN_OK,
     RUN_PARTIAL,
     SOURCE_COLORS,

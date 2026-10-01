@@ -20,7 +20,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, markup_to_text

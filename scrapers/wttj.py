@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-import httpx
 
 from .base import BaseScraper
 from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
