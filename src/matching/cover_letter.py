@@ -1,6 +1,6 @@
 """Générateur de lettres de motivation personnalisées (Gemini).
 
-Utilise le profil candidat (data/cv_eddy.txt et config.yaml) et la fiche de poste
+Utilise le profil candidat (CV et coordonnées, voir src.candidate) et la fiche de poste
 pour produire une lettre de motivation complète, académique et percutante (1 à 1,5 pages,
 environ 500 à 650 mots), directement prête à l'envoi sans aucun placeholder ni crochet.
 """
@@ -16,40 +16,23 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from src.config import PROJECT_ROOT, load_config
+from src.candidate import get_candidate_info, get_cv_text  # noqa: F401  (ré-export)
+from src.config import load_config
 from src.matching.llm_judge import load_env_file
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
 
+# Repli quand aucun profil n'est fourni : champs publics seulement. Téléphone et
+# email viennent de src.candidate (fichier local ou secrets), jamais du code.
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
     "title": "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)",
-    "phone": "06 98 82 44 85",
-    "email": "eddyprepa123@gmail.com",
+    "phone": "",
+    "email": "",
     "linkedin": "https://www.linkedin.com/in/eddy-de-castro/",
     "github": "https://github.com/eddy-decastro",
     "location": "Paris, France",
 }
-
-
-def get_candidate_info(config: dict[str, Any] | None = None) -> dict[str, str]:
-    """Récupère les coordonnées du candidat depuis config.yaml ou les valeurs par défaut."""
-    cfg = config or load_config()
-    raw = cfg.get("candidate", {})
-    info = dict(DEFAULT_CANDIDATE)
-    if isinstance(raw, dict):
-        for k, v in raw.items():
-            if v and str(v).strip():
-                info[k] = str(v).strip()
-    return info
-
-
-def get_cv_text() -> str:
-    """Charge le texte du CV par défaut (data/cv_eddy.txt)."""
-    cv_path = PROJECT_ROOT / "data" / "cv_eddy.txt"
-    if cv_path.exists():
-        return cv_path.read_text(encoding="utf-8")
-    return ""
 
 
 def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
@@ -163,8 +146,8 @@ def generate_algorithmic_cover_letter(
     cand = candidate or DEFAULT_CANDIDATE
     name = cand.get("name", "Eddy DE CASTRO")
     title_cand = cand.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action")
-    phone = cand.get("phone", "06 98 82 44 85")
-    email = cand.get("email", "eddyprepa123@gmail.com")
+    phone = cand.get("phone", "")
+    email = cand.get("email", "")
     linkedin = cand.get("linkedin", "https://www.linkedin.com/in/eddy-de-castro/")
     github = cand.get("github", "https://github.com/eddy-decastro")
 
@@ -585,7 +568,7 @@ class CoverLetterGenerator:
 
         cv = cv_text or get_cv_text()
         if not cv.strip():
-            return "⚠️ Aucun profil candidat trouvé dans data/cv_eddy.txt."
+            return "⚠️ Aucun CV trouvé : enregistrez-le dans Paramètres ou définissez le secret CANDIDATE_CV."
 
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
 

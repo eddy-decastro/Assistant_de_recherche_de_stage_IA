@@ -8,11 +8,11 @@ from __future__ import annotations
 import re
 import threading
 import unicodedata
-from pathlib import Path
 from typing import Any
 
 _model_lock = threading.Lock()
 
+from src.candidate import get_cv_text
 from src.config import load_config
 from src.constants import TIER_1, TIER_ESN, TIER_NEUTRAL
 
@@ -85,8 +85,7 @@ class Scorer:
             TIER_ESN: float(tier_scores.get("esn", 20.0)),
         }
 
-        cv_path = Path(scoring.get("cv_path", "data/cv_eddy.txt"))
-        self.cv_text = cv_path.read_text(encoding="utf-8") if cv_path.exists() else ""
+        self.cv_text = get_cv_text({"scoring": scoring})
 
         # Chargés paresseusement pour ne pas imposer torch à l'import.
         self._model = None

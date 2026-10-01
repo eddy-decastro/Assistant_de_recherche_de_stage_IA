@@ -241,17 +241,17 @@ def test_cap_citation_verification() -> None:
 def test_cv_anonymization() -> None:
     """Retrait des emails, numéros de téléphone et URLs de réseaux sociaux."""
     raw_cv = (
-        "Eddy DE CASTRO\n"
-        "Téléphone : 06 98 82 44 85\n"
-        "Email : eddyprepa123@gmail.com\n"
-        "LinkedIn : https://www.linkedin.com/in/eddy-de-castro/\n"
-        "GitHub : https://github.com/eddy-decastro\n"
+        "Camille TESTEUR\n"
+        "Téléphone : 06 00 00 00 00\n"
+        "Email : camille.testeur@example.com\n"
+        "LinkedIn : https://www.linkedin.com/in/camille-testeur/\n"
+        "GitHub : https://github.com/camille-testeur\n"
         "Expérience PyTorch et Graph ML."
     )
     anon = anonymize_cv(raw_cv)
-    assert "06 98 82 44 85" not in anon
+    assert "06 00 00 00 00" not in anon
     assert "[TÉLÉPHONE_MASQUÉ]" in anon
-    assert "eddyprepa123@gmail.com" not in anon
+    assert "camille.testeur@example.com" not in anon
     assert "[EMAIL_MASQUÉ]" in anon
     assert "https://www.linkedin.com" not in anon
     assert "[PROFIL_MASQUÉ]" in anon

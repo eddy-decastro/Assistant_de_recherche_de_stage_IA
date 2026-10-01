@@ -54,12 +54,12 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         col_title, col_apply = st.columns([2.8, 1.2], vertical_alignment="center")
         with col_title:
             st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
-            st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
+            st.caption("Rédigée sur mesure à partir de votre CV (page Paramètres).")
         with col_apply:
             st.link_button("Postuler à l'offre ↗", url, type="primary", width="stretch")
     else:
         st.markdown(f"**Poste :** {_esc(title)} — **{_esc(company)}**")
-        st.caption("Rédigée sur mesure par Gemini à partir de votre profil `data/cv_eddy.txt`.")
+        st.caption("Rédigée sur mesure à partir de votre CV (page Paramètres).")
 
     session_key = f"cover_letter_{job_id}"
     source_key = f"cover_letter_source_{job_id}"

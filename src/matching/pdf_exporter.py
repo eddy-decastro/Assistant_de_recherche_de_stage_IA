@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfgen import canvas
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
-from src.matching.cover_letter import get_candidate_info
+from src.candidate import get_candidate_info
 
 # Palette sobre et élégante
 COLOR_PRIMARY = colors.HexColor("#1E3A8A")     # Bleu marine profond
@@ -87,8 +87,8 @@ def generate_cover_letter_pdf(
     candidate = candidate_info or get_candidate_info()
     name = candidate.get("name", "Eddy DE CASTRO")
     title = candidate.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action")
-    phone = candidate.get("phone", "06 98 82 44 85")
-    email = candidate.get("email", "eddyprepa123@gmail.com")
+    phone = candidate.get("phone", "")
+    email = candidate.get("email", "")
     linkedin = candidate.get("linkedin", "linkedin.com/in/eddy-de-castro")
     github = candidate.get("github", "github.com/eddy-decastro")
     location = candidate.get("location", "Paris, France")
