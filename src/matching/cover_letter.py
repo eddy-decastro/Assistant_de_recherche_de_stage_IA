@@ -556,8 +556,8 @@ class CoverLetterGenerator:
         """Génère une lettre de motivation.
 
         Cascade de résilience :
-        1. Google Gemini (modèle configuré ou variantes Flash)
-        2. Deuxième IA de secours : DeepSeek V3 (deepseek-chat)
+        1. DeepSeek V3 (deepseek-chat), prioritaire si DEEPSEEK_API_KEY est définie
+        2. Google Gemini (modèle configuré puis variantes Flash), en secours
         3. Moteur algorithmique déterministe (zéro API, 100% garanti)
         """
         if not self.available:
