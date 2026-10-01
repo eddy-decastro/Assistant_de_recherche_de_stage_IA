@@ -515,16 +515,16 @@ database:
 ranking:
   top_n_rerank: 20
 llm:
-  provider: google
-  base_url: ''
-  model: gemini-3.8-flash
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
   cover_letter_model: gemini-3-flash-preview
   temperature: 0.0
   timeout_seconds: 60
   tier: free
-  rate_limit_rpm: 15
-  rate_limit_rpd: 1500
-  concurrency: 1
+  rate_limit_rpm: 60
+  rate_limit_rpd: 5000
+  concurrency: 4
   fallback_provider: null
 candidate:
   name: "Eddy DE CASTRO"

@@ -336,8 +336,9 @@ def _rerank_top(
     judge = LLMJudge(config)
     if not judge.available:
         logger.warning(
-            "Reranking ignoré : GEMINI_API_KEY absente (.env). "
-            "Renseignez votre clé Gemini dans le fichier .env."
+            "Reranking ignoré : %s absente (.env). "
+            "Renseignez la clé du fournisseur LLM dans le fichier .env.",
+            judge.api_key_env,
         )
         return 0
 

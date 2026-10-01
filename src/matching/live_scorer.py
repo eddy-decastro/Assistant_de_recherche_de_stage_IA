@@ -63,7 +63,7 @@ class LiveRerankWorker:
     def start(self) -> None:
         """Démarre le ou les threads d'évaluation en arrière-plan."""
         if not self.available:
-            logger.warning("Notation live ignorée : GEMINI_API_KEY absente (.env).")
+            logger.warning("Notation live ignorée : %s absente (.env).", self.judge.api_key_env)
             return
         self._stop_event.clear()
         for i in range(self.concurrency):
