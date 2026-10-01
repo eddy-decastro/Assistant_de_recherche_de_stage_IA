@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import requests
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -44,6 +45,7 @@ from src.constants import (
 from src.matching.scorer import Scorer
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -476,7 +478,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             "temperature": 0.0,
             "response_format": {"type": "json_object"},
         }
-        resp = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=60)
+        resp = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         return str(data["choices"][0]["message"]["content"])
@@ -681,6 +683,11 @@ def _is_api_retryable(exc: BaseException) -> bool:
         return False
     if isinstance(exc, APIError):
         return exc.code in (503, 429) or "quota" in str(exc).lower() or "demand" in str(exc).lower()
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(exc.response, "status_code", None)
+        return status in (429, 500, 502, 503, 504)
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
     return False
 
 
@@ -735,12 +742,26 @@ class LLMJudge:
         self.rpd = int(llm_cfg.get("rate_limit_rpd", 1500))
         self.rate_limiter = rate_limiter or get_global_rate_limiter(self.rpm, self.rpd)
         self._client = client  # injectable pour mock
+        self.provider = str(llm_cfg.get("provider") or "google").casefold()
+        self.base_url = str(llm_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL)
 
         if api_key is not None:
             self.api_key = api_key
         else:
             load_env_file()
-            self.api_key = os.environ.get("GEMINI_API_KEY", "")
+            self.api_key = os.environ.get(self.api_key_env, "")
+
+    @property
+    def openai_compatible(self) -> bool:
+        """True si le juge passe par un endpoint compatible OpenAI (DeepSeek, Groq...)."""
+        return self.provider != "google"
+
+    @property
+    def api_key_env(self) -> str:
+        """Nom de la variable d'environnement qui porte la clé du fournisseur actif."""
+        if self.provider == "google":
+            return "GEMINI_API_KEY"
+        return f"{self.provider.upper()}_API_KEY"
 
     @property
     def available(self) -> bool:
@@ -780,7 +801,16 @@ class LLMJudge:
         reraise=True
     )
     def _post_chat(self, user_content: str) -> str:
-        """Appelle l'API Gemini et retourne le contenu texte (avec retries défensifs)."""
+        """Appelle l'API du fournisseur actif et retourne le contenu texte (avec retries défensifs)."""
+        if self.openai_compatible:
+            self.rate_limiter.wait_for_slot()
+            system_prompt = (
+                f"{get_system_prompt()}\n\nRéponds uniquement par un objet JSON respectant "
+                f"ce JSON Schema :\n{json.dumps(get_response_schema(), ensure_ascii=False)}"
+            )
+            return OpenAICompatibleProvider(
+                api_key=self.api_key, base_url=self.base_url, model=self.model
+            ).generate(user_content, system_prompt)
         logging.getLogger("google_genai.models").setLevel(logging.ERROR)
         client = self._client or genai.Client(api_key=self.api_key)
         
@@ -1051,7 +1081,7 @@ class LLMJudge:
 
         if not self.available:
             return self._fallback(
-                job, reason="GEMINI_API_KEY absente — analyse LLM ignorée.", is_api_error=True
+                job, reason=f"{self.api_key_env} absente — analyse LLM ignorée.", is_api_error=True
             )
         try:
             content = self._post_chat(self._build_content(job, cv_text))
@@ -1059,6 +1089,10 @@ class LLMJudge:
         except APIError as exc:
             return self._fallback(
                 job, reason=f"Erreur API Gemini ({exc.code} - {exc.message}).", is_api_error=True
+            )
+        except requests.RequestException as exc:
+            return self._fallback(
+                job, reason=f"Erreur API {self.provider} ({exc}).", is_api_error=True
             )
         except Exception as exc:
             return self._fallback(
