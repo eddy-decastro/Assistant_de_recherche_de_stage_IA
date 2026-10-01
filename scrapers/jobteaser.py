@@ -34,7 +34,14 @@ from bs4 import BeautifulSoup
 
 from .base import BaseScraper, load_env_file, markup_to_text
 from .cache import DiskCache
-from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
+from .models import (
+    CardEntry,
+    PageResult,
+    PassPlan,
+    RawJob,
+    ScraperConfig,
+    SessionExpiredError,
+)
 
 try:  # Transport optionnel : impersonation TLS (contourne le challenge Cloudflare).
     from curl_cffi import requests as curl_requests
@@ -183,6 +190,8 @@ class JobTeaserScraper(BaseScraper):
         # Cookies (Cloudflare + session JobTeaser).
         self._cookie_pairs = self._parse_cookie_string(self.cookies_raw)
         self._cookies = self._build_cookie_dict()
+        #: Motif d'expiration de session constaté pendant ce run (voir ``_iter_pages``).
+        self._session_expired = ""
         for name, value in self._cookie_pairs:
             self.client.cookies.set(name, value, domain=self.cookie_domain)
         if self.session_cookie:
@@ -331,6 +340,8 @@ class JobTeaserScraper(BaseScraper):
         if page_param and page_number > self._page_start():
             params[page_param] = str(page_number)
 
+        if self._session_expired:  # inutile de réinterroger : la session est morte
+            raise SessionExpiredError(self._session_expired)
         status, html_text = self._fetch_html(self.offers_url, params)
         if status >= 400:
             request = httpx.Request("GET", self.offers_url)
@@ -344,6 +355,12 @@ class JobTeaserScraper(BaseScraper):
         cards = [job for raw in raw_jobs if (job := self._to_raw_job(raw)) is not None]
         by_key = {(job.id_externe or job.url): job for job in cards}
         entries = [CardEntry(key=key, job=by_key.get(key)) for key in by_key]
+        if not entries and self._is_login_page(html_text):
+            self._session_expired = (
+                "session JobTeaser expirée : page de connexion reçue au lieu des offres — "
+                "renouvelez JOBTEASER_COOKIES / JOBTEASER_SESSION / JOBTEASER_CF_CLEARANCE"
+            )
+            raise SessionExpiredError(self._session_expired)
         return PageResult(
             entries=entries,
             next_cursor=page_number + 1,
@@ -351,6 +368,19 @@ class JobTeaserScraper(BaseScraper):
             http_calls=1,
         )
 
+
+    @staticmethod
+    def _is_login_page(html_text: str) -> bool:
+        """Page de connexion (redirection vers ``connect.jobteaser.com``) ?
+
+        Marqueurs relevés le 30/09/2026 sur la page réelle : formulaire
+        ``action="/sign_in…"`` et champ mot de passe. Les deux sont exigés pour ne
+        pas confondre une recherche vide avec une session expirée.
+        """
+        return bool(
+            re.search(r'<input[^>]+type="password"', html_text, re.I)
+            and re.search(r'action="[^"]*sign_in', html_text, re.I)
+        )
 
     # ------------------------------------------------------------------ #
     # Extraction des offres (cartes SSR -> JSON embarqué -> liens)

@@ -132,6 +132,50 @@ def test_options_personnalisation_collecte() -> None:
     print("  CLI : options de personnalisation OK (--queries / --max-offers / --sources / --no-scoring / --concurrency)")
 
 
+def test_total_inserted_compte_les_insertions_live(tmp_path, monkeypatch):
+    """Offres insérées pendant la collecte (notation live) : comptées dans le run."""
+    import run_scrapers
+    from scrapers.models import RawJob, ScrapeResult
+    from src.ingestion.bridge import ingest_raw_jobs
+    from src.storage.database import Database
+
+    db_path = str(tmp_path / "t.db")
+    monkeypatch.setattr(
+        run_scrapers, "load_config",
+        lambda: {"database": {"path": db_path}, "scrapers": {"enabled_sources": ["wttj"]}},
+    )
+    jobs = [
+        RawJob(id_externe=f"j{i}", source="wttj", title=f"Stage Data Scientist {i}",
+               company=f"Acme{i}", location="Paris", url=f"https://example.com/j{i}",
+               description="PyTorch", is_internship=True)
+        for i in range(2)
+    ]
+
+    class _FakeManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, modes=None, on_batch_collected=None):
+            ingest_raw_jobs(jobs, db_path)  # simule le callback live
+            return ScrapeResult(jobs=jobs, found=2, rejected_bi=0)
+
+    monkeypatch.setattr(run_scrapers, "ScraperManager", _FakeManager)
+    run_scrapers.main([])
+    run = Database(db_path).get_recent_runs(limit=1)[0]
+    assert run["total_inserted"] == 2, run
+
+
+def test_no_collect_n_ouvre_pas_de_run(tmp_path, monkeypatch):
+    """--no-collect : aucun run, aucun compteur négatif, aucune exception."""
+    import run_scrapers
+    from src.storage.database import Database
+
+    db_path = str(tmp_path / "t.db")
+    monkeypatch.setattr(run_scrapers, "load_config", lambda: {"database": {"path": db_path}})
+    assert run_scrapers.main(["--no-collect"]) == 0
+    assert Database(db_path).get_recent_runs(limit=1) == []
+
+
 if __name__ == "__main__":
     test_options_par_defaut()
     test_options_actives()

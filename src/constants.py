@@ -338,6 +338,11 @@ RUN_ERROR = "ERROR"
 #: Run jamais clos (processus tué, coupure) : marqué au démarrage du run suivant.
 #: C'est un signal d'observabilité à part entière : la collecte a pu être tronquée.
 RUN_INTERRUPTED = "INTERRUPTED"
+#: Marqueurs de ``scrape_runs.notes`` lus par la détection de source dégradée :
+#: un run personnalisé (requêtes, sources, passes ou plafond forcés) et une source
+#: déjà signalée en panne ne doivent pas servir de référence.
+RUN_NOTE_ADHOC = "adhoc"
+RUN_NOTE_DEGRADED = "degraded:"
 
 #: Libellés affichés pour l'état d'un run de collecte (dashboard télémétrie).
 RUN_LABELS = {
@@ -362,11 +367,13 @@ STOP_REASON_LABELS = {
     "window_end": "Hors fenêtre temporelle (flux épuisé)",
     "stream_end": "Fin de flux (plus de résultats)",
     "max_pages": "Plafond de pages atteint (flux potentiellement tronqué)",
+    "max_pages_saturated": "Plafond de pages atteint sur des offres déjà connues (rien de perdu)",
     "duplicate_page": "Page déjà vue (pagination stagnante)",
     "rate_limit": "Rate limit (429) — flux perdu",
     "http_error": "Erreur HTTP — flux perdu",
     "network_error": "Erreur réseau — flux perdu",
     "auth_missing": "Authentification absente (cookies / jeton)",
+    "auth_expired": "Session expirée (page de connexion) — flux perdu",
     "unsupported": "Tri ou pagination non supporté par la source",
     "disabled": "Passe désactivée par configuration",
     "error": "Erreur inattendue",

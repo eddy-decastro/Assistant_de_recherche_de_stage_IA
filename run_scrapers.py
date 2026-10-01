@@ -44,6 +44,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scrapers.base import describe_rejection  # noqa: E402
 from scrapers.cache import DiskCache  # noqa: E402
+from scrapers.health import SourceAlert, detect_degraded_sources  # noqa: E402
 from scrapers.known import NullKnownIndex  # noqa: E402
 from scrapers.manager import ScraperManager  # noqa: E402
 from scrapers.models import (  # noqa: E402
@@ -55,6 +56,8 @@ from scrapers.models import (  # noqa: E402
 )
 from src.config import load_config  # noqa: E402
 from src.constants import (  # noqa: E402
+    RUN_NOTE_ADHOC,
+    RUN_NOTE_DEGRADED,
     RUN_OK,
     RUN_PARTIAL,
     STATUS_REJECTED,
@@ -632,7 +635,25 @@ def _log_recent_telemetry(db: Database, limit: int) -> None:
         )
 
 
-def main(argv: list[str] | None = None) -> None:
+def _report_degraded(alerts: Sequence[SourceAlert]) -> None:
+    """Rend les sources dégradées visibles : log, annotation et résumé GitHub Actions."""
+    for alert in alerts:
+        logger.error(" ALERTE %s", alert.message())
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Source de scraping dégradée::{alert.message()}")
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if alerts and summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("### Sources de scraping dégradées\n")
+                for alert in alerts:
+                    fh.write(f"- {alert.message()}\n")
+        except OSError:
+            pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Point d'entrée. Retourne le nombre de sources dégradées détectées (0 = sain)."""
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -654,7 +675,7 @@ def main(argv: list[str] | None = None) -> None:
         updated = db.recompute_scores(config)
         logger.info("Recalcul terminé : %d offre(s) mise(s) à jour.", updated)
         db.engine.dispose()
-        return
+        return 0
 
     if args.regrade_v1:
         limit = args.limit or 20
@@ -673,7 +694,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             logger.info("Ré-évaluation v3 terminée : %d offre(s) réévaluée(s).", regraded)
         db.engine.dispose()
-        return
+        return 0
 
     # 0. Hygiène de la base (optionnelle) : doublons, puis re-validation métier sur
     #    les fiches complètes (le filtre de collecte ne voyait que les titres).
@@ -696,6 +717,10 @@ def main(argv: list[str] | None = None) -> None:
     telemetry = scraper_config.telemetry
     run_id: str | None = None
     known_index: Any = NullKnownIndex()
+
+    # Compté en base plutôt que via ``ingest_raw_jobs`` : la notation live insère
+    # déjà pendant la collecte, l'ingestion finale ne verrait que des doublons.
+    jobs_before = db.count_jobs()
 
     if args.no_collect:
         logger.info(" Collecte ignorée (--no-collect) : travail sur la base existante.")
@@ -749,8 +774,12 @@ def main(argv: list[str] | None = None) -> None:
                 live_worker.start()
                 on_batch_cb = create_batch_callback(db, worker=live_worker)
 
+        detail_cache = DiskCache()
+        purged = detail_cache.prune()
+        if purged:
+            logger.info(" Cache des fiches purgé       : %d entrée(s) > 45 j", purged)
         manager = ScraperManager(
-            scraper_config, known_index=known_index, detail_cache=DiskCache()
+            scraper_config, known_index=known_index, detail_cache=detail_cache
         )
         result = manager.run(modes=modes, on_batch_collected=on_batch_cb)
 
@@ -767,6 +796,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
+    inserted = max(0, db.count_jobs() - jobs_before)
     if args.dedupe:
         _dedupe_jobs(db, dry_run=args.dry_run)
 
@@ -792,6 +822,18 @@ def main(argv: list[str] | None = None) -> None:
                 telemetry.retention_days,
             )
     lost_passes = _log_pass_summary(result.query_reports)
+    # Run personnalisé : volume réduit par construction, il n'est ni comparé à la
+    # référence ni retenu dans celle-ci (voir ``get_source_card_history``).
+    adhoc_run = bool(
+        args.queries or args.sources or args.passes or args.only_source
+        or args.max_offers is not None
+    )
+    degraded: list[SourceAlert] = []
+    if telemetry.enabled and run_id and result.query_reports and not adhoc_run:
+        degraded = detect_degraded_sources(
+            result.query_reports, db.get_source_card_history(exclude_run_id=run_id)
+        )
+        _report_degraded(degraded)
     # La consultation de la télémétrie est indépendante du run courant : elle doit
     # fonctionner aussi avec ``--no-collect`` (aucun run ouvert).
     if args.top_telemetry:
@@ -799,13 +841,18 @@ def main(argv: list[str] | None = None) -> None:
     if telemetry.enabled and run_id:
         db.finish_run(
             run_id,
-            status=RUN_PARTIAL if lost_passes else RUN_OK,
+            status=RUN_PARTIAL if (lost_passes or degraded) else RUN_OK,
             total_found=result.found,
             total_validated=len(result.jobs),
             total_rejected=result.rejected_bi,
-            total_inserted=stats["new_inserted"],
+            total_inserted=inserted,
             total_duplicates=stats["duplicates_skipped"],
-            notes="; ".join(sorted({report.stop_reason for report in lost_passes})) or None,
+            notes="; ".join(
+                sorted({report.stop_reason for report in lost_passes})
+                + [f"{RUN_NOTE_DEGRADED}{alert.source}" for alert in degraded]
+                + ([RUN_NOTE_ADHOC] if adhoc_run else [])
+            )
+            or None,
         )
 
     # 5. Résumé.
@@ -814,7 +861,7 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("=" * 60)
     logger.info(" Offres collectées (validées) : %d", len(result.jobs))
     logger.info(" Offres BI/analyst rejetées   : %d", result.rejected_bi)
-    logger.info(" Nouvelles offres persistées  : %d", stats["new_inserted"])
+    logger.info(" Nouvelles offres persistées  : %d", inserted)
     logger.info(" Doublons ignorés             : %d", stats["duplicates_skipped"])
     logger.info(" Total en base SQLite         : %d", db.count_jobs())
     for source, count in db.get_source_counts():
@@ -885,7 +932,8 @@ def main(argv: list[str] | None = None) -> None:
         logger.info(" Aucune nouvelle offre notée (base inchangée).")
 
     db.engine.dispose()
+    return len(degraded)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(1 if main() else 0)

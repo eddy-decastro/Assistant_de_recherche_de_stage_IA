@@ -1,7 +1,8 @@
 scrapers:
+  # JobTeaser désactivé (30/09/2026) : accès au compte école perdu et scraping
+  # contraire aux conditions d'utilisation. Réactiver en ajoutant « - jobteaser ».
   enabled_sources:
   - linkedin
-  - jobteaser
   - wttj
   # Pas de « Stage » dans les requêtes : chaque source filtre déjà le contrat côté
   # serveur (LinkedIn f_JT=I, WTTJ contract_type:internship, JobTeaser
@@ -45,7 +46,12 @@ scrapers:
       target_new_per_source: 50
       max_offers_per_query: 50
       window_days: null
-      early_stop_after_known: 0
+      # Arrêt anticipé armé : 3 pages LinkedIn pleines d'offres déjà connues
+      # (mesuré : ~80 % de connues en Pertinence) = plus rien à gagner, et
+      # chaque page de trop rapproche du 429.
+      early_stop_after_known: 30
+      arm_early_stop: true
+      early_stop_min_pages: 3
       max_pages_per_query: 20
       stop_when_older_than_window: false
       use_server_window_filter: false

@@ -75,3 +75,24 @@ class DiskCache:
         if not base.exists():
             return 0
         return sum(1 for path in base.rglob("*.txt") if path.is_file())
+
+    def prune(self, max_age_days: float = 45.0) -> int:
+        """Supprime les entrées plus vieilles que ``max_age_days`` (nombre supprimé).
+
+        Le cache est conservé entre les runs du cron : sans purge il grossirait
+        indéfiniment (une offre expirée n'est jamais relue).
+        """
+        if not self.root.exists():
+            return 0
+        import time
+
+        threshold = time.time() - max_age_days * 86400
+        removed = 0
+        for path in self.root.rglob("*.txt"):
+            try:
+                if path.is_file() and path.stat().st_mtime < threshold:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed

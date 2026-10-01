@@ -9,6 +9,7 @@ de l'index peut évoluer.
 from __future__ import annotations
 
 import html
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -27,6 +28,9 @@ ALGOLIA_QUERIES_ENDPOINT = f"{ALGOLIA_HOST}/1/indexes/*/queries"
 
 HITS_PER_PAGE = 50
 CONTRACT_FILTER = "internship"
+#: Pays des bureaux retenus (``WTTJ_COUNTRY``, vide = tous pays). Mesuré le
+#: 30/09/2026 : ~30 % des stages de l'index FR sont hors France (scoring LLM gaspillé).
+DEFAULT_COUNTRY = "FR"
 SITE_BASE = "https://www.welcometothejungle.com"
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -132,10 +136,17 @@ class WelcomeToTheJungleScraper(BaseScraper):
     # ------------------------------------------------------------------ #
     # Requête Algolia
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _filters() -> str:
+        """Filtre Algolia : contrat de stage, et pays des bureaux si configuré."""
+        country = os.getenv("WTTJ_COUNTRY", DEFAULT_COUNTRY).strip().upper()
+        filters = f"contract_type:{CONTRACT_FILTER}"
+        return f"{filters} AND offices.country_code:{country}" if country else filters
+
     def _search(self, query: str, page: int) -> list[dict[str, Any]]:
         params = (
             f"query={quote(query)}"
-            f"&filters=contract_type:{CONTRACT_FILTER}"
+            f"&filters={quote(self._filters())}"
             f"&hitsPerPage={HITS_PER_PAGE}"
             f"&page={page}"
         )

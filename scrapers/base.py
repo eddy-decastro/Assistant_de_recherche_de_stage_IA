@@ -34,10 +34,12 @@ except ImportError:
     CurlRequestsError = None  # curl_cffi absent : le guard ne sera jamais atteint
 
 from .cache import DiskCache
+from .http import RetryingClient
 from .known import KnownIndex, NullKnownIndex
 from .models import (
     MIN_WEAK_SIGNALS_IN_DESCRIPTION,
     PASS_FRESHNESS,
+    SATURATION_RATIO,
     SEEN_DUPLICATE,
     SEEN_KNOWN,
     SEEN_OUT_OF_WINDOW,
@@ -52,6 +54,7 @@ from .models import (
     ScrapeResult,
     ScraperConfig,
     SeenEntry,
+    SessionExpiredError,
     Source,
     canonical_url,
     is_incomplete_stop,
@@ -294,7 +297,10 @@ class BaseScraper(ABC):
         self._detail_failures = 0
         self._detail_disabled_reason = ""
         self._filter_version = self.config.filter_fingerprint()
-        self.client = httpx.Client(
+        self.client = RetryingClient(
+            max_retries=self.config.http_max_retries,
+            backoff_seconds=self.config.http_backoff_seconds,
+            max_wait_seconds=self.config.http_max_wait_seconds,
             headers={
                 "User-Agent": self.config.user_agent,
                 "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
@@ -685,6 +691,8 @@ class BaseScraper(ABC):
         cursor: Any = None
         page_number = 0
         halt = False
+        #: Part d'offres déjà vues sur la dernière page traitée (voir SATURATION_RATIO).
+        last_page_seen_ratio = 0.0
 
         while page_number < plan.max_pages:
             if len(kept) >= limit:  # limite atteinte (quota de passe ou de source)
@@ -700,6 +708,10 @@ class BaseScraper(ABC):
                     stop_reason, stop_detail = "rate_limit", "HTTP 429 (quota plateforme)"
                 else:
                     stop_reason, stop_detail = "http_error", f"HTTP {status}"
+                error = stop_detail
+                break
+            except SessionExpiredError as exc:
+                stop_reason, stop_detail = "auth_expired", str(exc)[:300]
                 error = stop_detail
                 break
             except httpx.RequestError as exc:
@@ -724,6 +736,7 @@ class BaseScraper(ABC):
             stop_page = page_number
             new_keys_in_page = 0
             duplicates_in_page = 0
+            seen_in_page = 0
 
             for entry in page.entries:
                 counters["cards_seen"] += 1
@@ -784,6 +797,7 @@ class BaseScraper(ABC):
                             )
                         )
                     streak += 1
+                    seen_in_page += 1
                     if (
                         plan.early_stop_threshold
                         and counters["pages_fetched"] >= plan.early_stop_min_pages
@@ -855,6 +869,7 @@ class BaseScraper(ABC):
 
             if halt:
                 break
+            last_page_seen_ratio = seen_in_page / len(page.entries) if page.entries else 0.0
             if page.exhausted:
                 stop_reason = "stream_end"
                 stop_detail = f"flux épuisé (page {page_number})"
@@ -880,10 +895,17 @@ class BaseScraper(ABC):
                 break
             cursor = page.next_cursor
         else:
-            stop_reason = "max_pages"
-            stop_detail = (
-                f"plafond de {plan.max_pages} page(s) atteint — flux potentiellement tronqué"
-            )
+            if last_page_seen_ratio >= SATURATION_RATIO:
+                stop_reason = "max_pages_saturated"
+                stop_detail = (
+                    f"plafond de {plan.max_pages} page(s) atteint, dernière page déjà vue à "
+                    f"{last_page_seen_ratio:.0%} : vivier de fait épuisé"
+                )
+            else:
+                stop_reason = "max_pages"
+                stop_detail = (
+                    f"plafond de {plan.max_pages} page(s) atteint — flux potentiellement tronqué"
+                )
 
         finished = datetime.now(timezone.utc)
         report = PassReport(
