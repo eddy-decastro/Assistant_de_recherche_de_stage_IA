@@ -23,6 +23,7 @@ from src.storage.cloud_storage import (  # noqa: E402
     is_cloud_storage_configured,
     upload_database,
 )
+from src.storage.db_merge import USER_COLUMNS  # noqa: E402
 
 logger = logging.getLogger("pipeline")
 
@@ -84,7 +85,7 @@ def main(argv: list[str] | None = None) -> None:
         print("=" * 60)
         run_scrapers_main(["--recompute-scores"])
         if sync_enabled:
-            upload_database()
+            upload_database(prefer_remote_columns=USER_COLUMNS)
         return
 
     if args.regrade_v1:
@@ -93,7 +94,7 @@ def main(argv: list[str] | None = None) -> None:
         print("=" * 60)
         run_scrapers_main(["--regrade-v1", "--limit", str(args.limit)])
         if sync_enabled:
-            upload_database()
+            upload_database(prefer_remote_columns=USER_COLUMNS)
         return
 
     print("\n" + "=" * 60)
@@ -119,7 +120,7 @@ def main(argv: list[str] | None = None) -> None:
         print(" ☁️  SYNCHRONISATION CLOUD : Publication des nouvelles offres (Push)")
         print("=" * 60)
         try:
-            upload_database()
+            upload_database(prefer_remote_columns=USER_COLUMNS)
             print(" ✅ Nouvelles offres envoyées sur le Cloud avec succès !")
         except Exception as e:
             logger.warning(f"Impossible de téléverser vers le Cloud: {e}")

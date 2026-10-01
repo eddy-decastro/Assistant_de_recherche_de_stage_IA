@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,33 @@ _SYNC_LOCK = threading.Lock()
 _LAST_UPLOAD_TIMESTAMP: float = 0.0
 _DEBOUNCE_DELAY_SECONDS: float = 5.0
 _PENDING_TIMER: threading.Timer | None = None
+# Tentatives de téléversement conditionnel avant abandon (base distante modifiée entre-temps)
+_UPLOAD_ATTEMPTS = 3
+
+
+def sync_base_path(db_path: Path) -> Path:
+    """Copie de la base telle qu'elle était lors de la dernière synchronisation avec le bucket."""
+    return db_path.with_name(db_path.name + ".sync_base")
+
+
+def _sync_etag_path(db_path: Path) -> Path:
+    return db_path.with_name(db_path.name + ".sync_etag")
+
+
+def _read_sync_etag(db_path: Path) -> str | None:
+    try:
+        return _sync_etag_path(db_path).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _record_sync_point(db_path: Path, etag: str | None) -> None:
+    """Mémorise la base commune (copie + ETag distant) pour la prochaine fusion."""
+    try:
+        shutil.copyfile(db_path, sync_base_path(db_path))
+        _sync_etag_path(db_path).write_text((etag or "").strip('"'), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Point de synchronisation non enregistré (%s) : %s", db_path, exc)
 
 
 def _load_env() -> None:
@@ -217,6 +245,7 @@ def download_database(target_path: Path | str | None = None, force: bool = False
                     extra = dest.with_name(dest.name + suffix)
                     if extra.exists():
                         extra.unlink()
+                _record_sync_point(dest, meta.get("etag"))
                 logger.info("Base distante synchronisée avec succès vers %s (%.2f Mo).", dest, dest.stat().st_size / (1024 * 1024))
                 return True
         except Exception as exc:
@@ -230,8 +259,21 @@ def download_database(target_path: Path | str | None = None, force: bool = False
 
 _TIMER_LOCK = threading.Lock()
 
-def upload_database(db_path: Path | str | None = None) -> bool:
-    """Téléverse la base SQLite locale vers le bucket distant après checkpoint WAL.
+def upload_database(
+    db_path: Path | str | None = None,
+    prefer_remote_columns: Mapping[str, Iterable[str]] | None = None,
+) -> bool:
+    """Téléverse la base SQLite locale vers le bucket sans écraser les écritures distantes.
+
+    Si la base distante a changé depuis la dernière synchronisation (ETag différent),
+    elle est d'abord téléchargée et ses changements sont fusionnés dans la base locale
+    (``merge_remote_changes``). L'envoi est conditionnel (``If-Match``) : si un autre
+    client a téléversé entre-temps, on refusionne puis on réessaie.
+
+    Args:
+        db_path: base locale (défaut : data/stage_copilot.db).
+        prefer_remote_columns: colonnes pour lesquelles la version distante gagne en
+            cas de conflit (le pipeline passe ``USER_COLUMNS`` : l'utilisateur prime).
 
     Returns:
         True si le téléversement a réussi, False sinon.
@@ -249,28 +291,99 @@ def upload_database(db_path: Path | str | None = None) -> bool:
     if not _SYNC_LOCK.acquire(blocking=False):
         logger.info("Un transfert est déjà en cours, upload ignoré.")
         return False
-        
+
     try:
-        checkpoint_sqlite_wal(src)
         cfg = get_cloud_config()
         try:
             s3 = get_s3_client()
-            size_mb = src.stat().st_size / (1024 * 1024)
-            logger.info("Téléversement de %s vers %s/%s (%.2f Mo)...", src.name, cfg["bucket_name"], cfg["remote_key"], size_mb)
-            s3.upload_file(
-                Filename=str(src),
-                Bucket=cfg["bucket_name"],
-                Key=cfg["remote_key"],
-                ExtraArgs={"ContentType": "application/x-sqlite3"},
-            )
-            _LAST_UPLOAD_TIMESTAMP = time.time()
-            logger.info("Téléversement réussi !")
-            return True
         except Exception as exc:
-            logger.error("Échec du téléversement de la base vers le stockage distant : %s", exc)
+            logger.error("Client de stockage indisponible : %s", exc)
             return False
+        for attempt in range(1, _UPLOAD_ATTEMPTS + 1):
+            try:
+                checkpoint_sqlite_wal(src)
+                remote_etag = _remote_etag(s3, cfg)
+                if remote_etag and remote_etag != _read_sync_etag(src):
+                    remote_etag = _merge_from_remote(s3, cfg, src, prefer_remote_columns)
+                    checkpoint_sqlite_wal(src)
+                size_mb = src.stat().st_size / (1024 * 1024)
+                logger.info(
+                    "Téléversement de %s vers %s/%s (%.2f Mo)...",
+                    src.name, cfg["bucket_name"], cfg["remote_key"], size_mb,
+                )
+                put_args: dict[str, Any] = {
+                    "Bucket": cfg["bucket_name"],
+                    "Key": cfg["remote_key"],
+                    "ContentType": "application/x-sqlite3",
+                }
+                if remote_etag:
+                    put_args["IfMatch"] = f'"{remote_etag}"'
+                else:
+                    put_args["IfNoneMatch"] = "*"
+                with open(src, "rb") as body:
+                    resp = s3.put_object(Body=body, **put_args)
+                _record_sync_point(src, resp.get("ETag"))
+                _LAST_UPLOAD_TIMESTAMP = time.time()
+                logger.info("Téléversement réussi !")
+                return True
+            except Exception as exc:
+                if _is_precondition_failed(exc) and attempt < _UPLOAD_ATTEMPTS:
+                    logger.info(
+                        "Base distante modifiée pendant l'envoi, nouvelle fusion (essai %d/%d).",
+                        attempt + 1, _UPLOAD_ATTEMPTS,
+                    )
+                    continue
+                logger.error("Échec du téléversement de la base vers le stockage distant : %s", exc)
+                return False
+        return False
     finally:
         _SYNC_LOCK.release()
+
+
+def _remote_etag(s3: Any, cfg: dict[str, str]) -> str | None:
+    """ETag de la base distante, ou None si elle n'existe pas encore."""
+    try:
+        resp = s3.head_object(Bucket=cfg["bucket_name"], Key=cfg["remote_key"])
+    except Exception as exc:
+        code = str((getattr(exc, "response", None) or {}).get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+    return (resp.get("ETag") or "").strip('"') or None
+
+
+def _is_precondition_failed(exc: Exception) -> bool:
+    response = getattr(exc, "response", None) or {}
+    code = str(response.get("Error", {}).get("Code", ""))
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in ("PreconditionFailed", "412") or status == 412
+
+
+def _merge_from_remote(
+    s3: Any,
+    cfg: dict[str, str],
+    src: Path,
+    prefer_remote_columns: Mapping[str, Iterable[str]] | None,
+) -> str | None:
+    """Télécharge la base distante, la fusionne dans ``src`` et retourne son ETag."""
+    from src.storage.db_merge import merge_remote_changes
+
+    temp_remote = src.with_name(src.name + ".remote_merge")
+    try:
+        resp = s3.get_object(Bucket=cfg["bucket_name"], Key=cfg["remote_key"])
+        with open(temp_remote, "wb") as fh:
+            shutil.copyfileobj(resp["Body"], fh)
+        etag = (resp.get("ETag") or "").strip('"') or None
+        base = sync_base_path(src) if _read_sync_etag(src) else None
+        stats = merge_remote_changes(src, temp_remote, base, prefer_remote=prefer_remote_columns)
+        logger.info(
+            "Fusion avec la base distante : %d ajout(s), %d mise(s) à jour, %d suppression(s), %d conflit(s).",
+            stats.inserted, stats.updated, stats.deleted, stats.conflicts,
+        )
+        return etag
+    finally:
+        if temp_remote.exists():
+            temp_remote.unlink()
 
 
 def trigger_debounced_upload(db_path: Path | str | None = None) -> None:

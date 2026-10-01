@@ -13,6 +13,8 @@ data/*.pdf
 # --- Base de données locale ---
 data/*.db
 data/*.db-*
+# Point de synchronisation R2 (base commune + ETag) et copie distante temporaire
+data/*.db.*
 
 # --- Cache disque des pages détail (descriptions) ---
 data/cache/
