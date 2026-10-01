@@ -213,7 +213,7 @@ def create_batch_callback(
         if not raw_jobs:
             return
         # 1. Ingestion immédiate
-        stats = ingest_raw_jobs(raw_jobs, db)
+        ingest_raw_jobs(raw_jobs, db)
         # 2. Envoi au worker de notation live
         if worker is not None and worker.available:
             job_dicts = [raw_job_to_dict(rj) for rj in raw_jobs]

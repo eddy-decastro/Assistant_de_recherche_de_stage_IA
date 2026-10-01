@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 from typing import Any
 
 import requests
@@ -18,7 +17,7 @@ from google.genai.errors import APIError
 
 from src.candidate import get_candidate_info, get_cv_text  # noqa: F401  (ré-export)
 from src.config import load_config
-from src.matching.llm_judge import load_env_file
+from src.env import load_env_file
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
 

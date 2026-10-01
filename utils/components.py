@@ -1,13 +1,11 @@
 from __future__ import annotations
 import streamlit as st
-from typing import Any, Sequence, Mapping
-import html
+from typing import Any, Sequence
 import json
 from utils.data import *
-from utils.data import _esc, _set_status
+from utils.data import _esc
 
 from src.constants import *
-from src.storage.database import Database
 from src.matching.cover_letter import CoverLetterGenerator
 from src.matching.pdf_exporter import generate_cover_letter_pdf
 

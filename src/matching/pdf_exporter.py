@@ -12,11 +12,11 @@ from datetime import date
 from typing import Any
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_JUSTIFY, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfgen import canvas
-from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate
 
 from src.candidate import get_candidate_info
 

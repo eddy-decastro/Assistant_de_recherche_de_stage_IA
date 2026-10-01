@@ -15,7 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.database import Database
 
 DB_PATH = PROJECT_ROOT / "data" / "stage_copilot.db"
 OUTPUT_CSV = PROJECT_ROOT / "data" / "golden_set.csv"

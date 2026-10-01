@@ -66,7 +66,7 @@ from src.constants import (  # noqa: E402
     pass_label,
     stop_reason_label,
 )
-from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
+from src.ingestion.bridge import ingest_raw_jobs  # noqa: E402
 from src.ingestion.known_index import DatabaseKnownIndex, job_ids_for_jobs  # noqa: E402
 from src.matching.live_scorer import LiveRerankWorker, create_batch_callback  # noqa: E402
 from src.storage.cleanup import choose_keeper, find_duplicate_groups  # noqa: E402
@@ -793,8 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     # 2. Identifier les nouvelles offres AVANT insertion (pour le scoring ciblé).
-    new_jobs = find_new_raw_jobs(result.jobs, db) if args.trigger_scoring else []
-
+    
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
     inserted = max(0, db.count_jobs() - jobs_before)

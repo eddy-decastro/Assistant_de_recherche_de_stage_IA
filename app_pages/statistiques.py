@@ -22,7 +22,6 @@ from utils.data import (
     filter_jobs,
 )
 from src.constants import *
-from src.config import load_config
 from src.storage.database import Database
 
 db = get_database()
@@ -693,13 +692,16 @@ def _render_rd_and_tech(jobs: list[dict[str, Any]]) -> None:
         bins = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 101]
         labels = ["0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90-100"]
         binned = pd.cut(scores, bins=bins, labels=labels, right=False)
-        df_scores = pd.DataFrame({"Tranche": labels, "Offres": [int((binned == l).sum()) for l in labels]})
+        df_scores = pd.DataFrame({"Tranche": labels, "Offres": [int((binned == lab).sum()) for lab in labels]})
 
         def get_tier_label(tranche: str) -> str:
             val = int(tranche.split("-")[0])
-            if val >= 80: return "Cœur de cible (≥80)"
-            if val >= 60: return "Pertinent (60-79)"
-            if val >= 40: return "Mitigé (40-59)"
+            if val >= 80:
+                return "Cœur de cible (≥80)"
+            if val >= 60:
+                return "Pertinent (60-79)"
+            if val >= 40:
+                return "Mitigé (40-59)"
             return "Hors sujet (<40)"
 
         df_scores["Niveau"] = df_scores["Tranche"].apply(get_tier_label)

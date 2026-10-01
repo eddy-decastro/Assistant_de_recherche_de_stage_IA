@@ -40,7 +40,7 @@ CV_ENV_VAR = "CANDIDATE_CV"
 
 def _load_env() -> None:
     """Charge ``.env`` et ``st.secrets`` dans ``os.environ`` (sans écraser l'existant)."""
-    from src.matching.llm_judge import load_env_file
+    from src.env import load_env_file
 
     load_env_file()
 

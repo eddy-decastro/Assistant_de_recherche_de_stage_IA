@@ -1,6 +1,7 @@
 """Chargement de la configuration YAML (config.yaml)."""
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from functools import lru_cache
@@ -11,6 +12,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -45,3 +47,41 @@ def save_config(data: dict[str, Any], path: str | Path = DEFAULT_CONFIG_PATH) ->
             pass
         raise
     load_config.cache_clear()
+
+
+def save_scraper_defaults(
+    queries: list[str],
+    sources: list[str],
+    max_offers: int,
+    path: str | Path = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Écrit requêtes, sources et plafond dans la section ``scrapers`` de config.yaml.
+
+    ruamel.yaml préserve les commentaires et l'ordre du fichier ; sans lui (ou en cas
+    d'échec), repli sur ``save_config`` qui réécrit le fichier sans commentaires.
+    """
+    config_file = Path(path)
+    try:
+        from ruamel.yaml import YAML
+
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_file.open("r", encoding="utf-8") as fh:
+            data = yaml_rt.load(fh)
+        section = data.setdefault("scrapers", {})
+        section["enabled_sources"] = sources
+        section["target_queries"] = queries
+        section["max_offers_per_source"] = max_offers
+        tmp = config_file.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            yaml_rt.dump(data, fh)
+        tmp.replace(config_file)
+        load_config.cache_clear()
+    except Exception:
+        logger.exception("Sauvegarde ruamel.yaml impossible, repli sur PyYAML")
+        cfg = dict(load_config(config_file))
+        section = cfg.setdefault("scrapers", {})
+        section["enabled_sources"] = sources
+        section["target_queries"] = queries
+        section["max_offers_per_source"] = max_offers
+        save_config(cfg, config_file)

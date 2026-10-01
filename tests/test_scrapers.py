@@ -19,7 +19,6 @@ from scrapers.jobteaser import JobTeaserScraper
 from scrapers.linkedin import GUEST_ENDPOINT, LinkedInGuestScraper
 from scrapers.manager import ScraperManager
 from scrapers.models import (
-    CardEntry,
     PageResult,
     PassConfig,
     RawJob,

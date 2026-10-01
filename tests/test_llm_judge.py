@@ -3,27 +3,16 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
-from src.constants import (
-    DEFAULT_SUB_SCORE,
-    VERDICT_EXCELLENT,
-    VERDICT_GOOD,
-    VERDICT_MIXED,
-    VERDICT_OFF_TOPIC,
-)
 from src.matching.llm_judge import (
-    LLMJudge,
-    ScoreBreakdown,
     anonymize_cv,
     compute_final_score,
     is_title_excluded_contract,
-    verdict_from_score,
     verify_citation,
 )
 

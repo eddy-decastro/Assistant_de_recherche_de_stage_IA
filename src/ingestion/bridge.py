@@ -194,7 +194,7 @@ def _partition_new_jobs(
     ids = [job_id for _, job_id, _ in prepared]
     urls = [record["canonical_url"] for _, _, record in prepared]
     with db.SessionLocal() as session:
-        existing_ids = set(session.execute(select(Job.id).where(Job.id.in_(ids))).scalars())
+        existing_ids: set[str] = set(session.execute(select(Job.id).where(Job.id.in_(ids))).scalars())
         existing_urls = {
             str(value)
             for value in session.execute(

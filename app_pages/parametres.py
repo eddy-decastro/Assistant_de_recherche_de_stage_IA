@@ -7,12 +7,8 @@ Permet de :
 """
 from __future__ import annotations
 
-import io
-import os
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 import pypdf
 import streamlit as st
@@ -24,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.candidate import get_candidate_info, get_cv_path, get_cv_text, save_local_candidate
 from src.config import load_config, save_config
 from utils.layout import page_header
-from utils.data import bump_data_version, get_database, load_jobs, _esc
+from utils.data import bump_data_version, get_database, load_jobs
 from utils.task_manager import (
     get_active_task,
     render_task_monitor,
@@ -360,7 +356,7 @@ def save_scoring_v3_settings(
             yaml.dump(data, f)
         tmp.replace(config_file)
         load_config.cache_clear()
-    except Exception as e:
+    except Exception:
         cfg = load_config()
         cfg.setdefault('scoring_v3', {})
         cfg['scoring_v3']['min_duration_months'] = int(min_duration)
