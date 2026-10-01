@@ -114,9 +114,14 @@ def test_upload_database_mocked(tmp_path: Path) -> None:
     src_db.write_text("sqlite-content", encoding="utf-8")
 
     mock_s3 = MagicMock()
+    missing = Exception("absent")
+    missing.response = {"Error": {"Code": "404"}}
+    mock_s3.head_object.side_effect = missing
+    mock_s3.put_object.return_value = {"ETag": '"new-etag"'}
 
     with patch.dict(os.environ, env, clear=True):
         with patch("src.storage.cloud_storage.get_s3_client", return_value=mock_s3):
             res = upload_database(db_path=src_db)
             assert res is True
-            mock_s3.upload_file.assert_called_once()
+            mock_s3.put_object.assert_called_once()
+            assert mock_s3.put_object.call_args.kwargs["IfNoneMatch"] == "*"
