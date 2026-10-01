@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
@@ -49,6 +51,8 @@ from src.constants import (
     SUB_SCORE_KEYS,
     TIER_ESN,
     VALID_STATUSES,
+    REFUSAL_REASON,
+    SOURCE_MANUAL,
     coerce_sub_score,
     is_incomplete_stop,
 )
@@ -225,6 +229,16 @@ class Job(Base):
         data["grading_version"] = data.get("grading_version") or "v1"
         return data
 
+
+
+def application_key(company: str | None, title: str | None) -> str:
+    """Clé de rapprochement d'une candidature : entreprise + intitulé, sans casse, accents ni ponctuation."""
+
+    def _norm(value: str | None) -> str:
+        text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode()
+        return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+    return f"{_norm(company)}|{_norm(title)}"
 
 
 def make_job_id(title: str, company: str, url: str) -> str:
@@ -545,6 +559,86 @@ class Database:
                 record.applied_at = datetime.utcnow()
             session.commit()
             return True
+
+    # --- Candidatures hors scraping (formulaire, import Gmail) ------------- #
+    def find_application(self, company: str, title: str, external_id: str | None = None) -> dict[str, Any] | None:
+        """Retrouve l'offre correspondant à une candidature (identifiant externe, puis entreprise + intitulé)."""
+        key = application_key(company, title)
+        with self.SessionLocal() as session:
+            if external_id:
+                record = session.execute(
+                    select(Job).where(Job.id_externe == external_id).limit(1)
+                ).scalar_one_or_none()
+                if record is not None:
+                    return record.to_dict()
+            rows = session.execute(select(Job.id, Job.company, Job.title)).all()
+            for job_id, row_company, row_title in rows:
+                if application_key(row_company, row_title) == key:
+                    return session.get(Job, job_id).to_dict()
+        return None
+
+    def record_application(
+        self,
+        company: str,
+        title: str,
+        status: str = STATUS_APPLIED,
+        applied_at: datetime | None = None,
+        url: str | None = None,
+        location: str | None = None,
+        source: str = SOURCE_MANUAL,
+        external_id: str | None = None,
+        note: str | None = None,
+    ) -> tuple[str, bool]:
+        """Enregistre une candidature faite hors du flux scrapé (saisie manuelle, mail).
+
+        Si l'offre existe déjà (même identifiant externe, ou même entreprise et même
+        intitulé), seul son statut avance : NOUVEAU < POSTULÉ < ENTRETIEN < refus. Un
+        refus passe l'offre en REJETÉ avec le motif ``REFUSAL_REASON``. Sinon une
+        ligne est créée avec ``source`` (``manuel`` ou ``gmail``).
+        Retourne ``(job_id, created)``.
+        """
+        company, title = (company or "").strip(), (title or "").strip()
+        if not company or not title:
+            raise ValueError("Entreprise et intitulé du poste sont obligatoires.")
+        if status not in (STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED):
+            raise ValueError(f"Statut de candidature invalide : {status!r}")
+        stamp = applied_at or datetime.utcnow()
+
+        def rank(current: str | None, reason: str | None) -> int:
+            if current == STATUS_REJECTED:
+                return 3 if reason == REFUSAL_REASON else 0
+            return {STATUS_APPLIED: 1, STATUS_INTERVIEW: 2}.get(current or "", 0)
+
+        existing = self.find_application(company, title, external_id)
+        with self.SessionLocal() as session:
+            if existing is not None:
+                record = session.get(Job, existing["id"])
+                if rank(status, REFUSAL_REASON) > rank(record.status, record.rejection_reason):
+                    record.status = status
+                    if status == STATUS_REJECTED:
+                        record.rejection_reason = REFUSAL_REASON
+                if record.applied_at is None:
+                    record.applied_at = stamp
+                session.commit()
+                return record.id, False
+
+            job_id = make_job_id(title, company, url or f"{source}:{external_id or stamp.isoformat()}")
+            session.add(Job(
+                id=job_id,
+                title=title[:500],
+                company=company[:300],
+                location=location,
+                url=url or "",
+                description=note,
+                source=source,
+                status=status,
+                rejection_reason=REFUSAL_REASON if status == STATUS_REJECTED else None,
+                id_externe=external_id,
+                created_at=stamp,
+                applied_at=stamp,
+            ))
+            session.commit()
+            return job_id, True
 
     def get_jobs(
         self,

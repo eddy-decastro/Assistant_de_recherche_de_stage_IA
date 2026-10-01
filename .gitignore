@@ -35,3 +35,11 @@ data/tasks/
 .coverage
 htmlcov/
 
+
+# --- Sauvegardes automatiques de la base ---
+data/backups/
+
+# --- Imports personnels et sauvegardes locales ---
+data/imports/
+data/*.bak
+data/prompt_rerank_v1_backup.txt

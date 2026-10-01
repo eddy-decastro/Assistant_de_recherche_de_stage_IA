@@ -289,6 +289,8 @@ SOURCE_LABELS = {
     "wttj": "Welcome to the Jungle",
     "welcome_to_the_jungle": "Welcome to the Jungle",
     "jobteaser": "JobTeaser",
+    "manuel": "Saisie manuelle",
+    "gmail": "Gmail",
 }
 
 # Couleur de badge par plateforme (repli : gris ardoise).
@@ -303,6 +305,13 @@ SOURCE_FALLBACK_COLOR = "#475569"
 
 # Ordre d'affichage préféré des plateformes ; les sources inconnues suivent.
 SOURCE_ORDER = ["linkedin", "wttj", "welcome_to_the_jungle", "jobteaser"]
+
+# Candidatures enregistrées hors scraping (formulaire du Kanban, import des mails).
+SOURCE_MANUAL = "manuel"
+SOURCE_GMAIL = "gmail"
+# Motif posé sur une offre passée en REJETÉ parce que l'entreprise a refusé la
+# candidature (différent d'une exclusion par la re-validation métier).
+REFUSAL_REASON = "Refus de l'entreprise"
 
 
 def source_label(source: str | None) -> str:
