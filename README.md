@@ -99,7 +99,7 @@ Le pipeline tourne soit en local (IP résidentielle, moins de blocages), soit ch
 
 ## Scoring v3
 
-Le LLM n'attribue pas la note finale. Il extrait des éléments structurés ; le code calcule la note de façon déterministe et reproductible (`src/matching/llm_judge.py`, paramètres dans `config.yaml`, section `scoring_v3`).
+Le LLM n'attribue pas la note finale. Il extrait des éléments structurés ; le code calcule la note de façon déterministe et reproductible (`src/matching/scoring_v3.py`, paramètres dans `config.yaml`, section `scoring_v3`).
 
 ```
 offres collectées
@@ -168,6 +168,7 @@ Trois fichiers de dépendances :
 | `requirements.txt` | Application, pipeline et cron (sans PyTorch) ; utilisé par Streamlit Cloud et GitHub Actions |
 | `requirements-dev.txt` | `requirements.txt` + `pytest`, `torch` CPU, `sentence-transformers` (score bi-encodeur historique) et `playwright` (capture du cookie JobTeaser) |
 | `requirements-render.txt` | Alias de `requirements.txt`, point d'entrée de `render.yaml` |
+| `requirements-lint.txt` | `ruff`, `mypy` et leurs stubs (à installer avec `requirements.txt`) |
 
 ```bash
 pip install -r requirements-dev.txt
@@ -176,8 +177,8 @@ pip install -r requirements-dev.txt
 Ensuite :
 
 1. Copier `.env.example` en `.env` et renseigner au moins une clé LLM (voir ci-dessous).
-2. Copier `data/cv_template.txt` en `data/cv_<nom>.txt`, le remplir, puis faire pointer `scoring.cv_path` dessus dans `config.yaml`. Le CV peut aussi être déposé depuis la page Paramètres.
-3. Renseigner la section `candidate` de `config.yaml` (signature des lettres).
+2. Créer son profil, sans rien committer : le dépôt est public, le CV et les coordonnées privées n'y figurent pas. Le plus simple est d'ouvrir la page **Paramètres** : le CV est écrit dans `data/cv_eddy.txt` et les coordonnées dans `data/candidate.local.yaml`, deux fichiers ignorés par git. À la main : copier `data/cv_template.txt` en `data/cv_eddy.txt` et le remplir.
+3. Adapter la section `candidate` de `config.yaml` (nom, titre, liens publics : signature des lettres).
 
 ```bash
 streamlit run app.py
@@ -196,6 +197,8 @@ L'application s'ouvre sur `http://localhost:8501`. Sans `APP_PASSWORD`, l'accès
 | `APP_PASSWORD` | Mot de passe de l'interface ; vide = accès libre |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | Synchronisation de la base sur Cloudflare R2 (optionnel) |
 | `S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` | Alternative S3 générique |
+| `CANDIDATE_PHONE`, `CANDIDATE_EMAIL` | Coordonnées privées des lettres, là où le fichier local n'existe pas (Streamlit Cloud, Render) |
+| `CANDIDATE_CV` | Texte complet du CV, pour le cron GitHub et l'hébergement ; sans fichier `data/cv_eddy.txt`, il est lu ici |
 | `JOBTEASER_*` | Uniquement si la source JobTeaser est réactivée |
 
 La clé lue pour le juge dépend du fournisseur : `llm.provider: deepseek` lit `DEEPSEEK_API_KEY`, `google` lit `GEMINI_API_KEY`, tout autre fournisseur compatible OpenAI lit `<PROVIDER>_API_KEY` (avec `llm.base_url` adapté).
@@ -209,7 +212,7 @@ La clé lue pour le juge dépend du fournisseur : `llm.provider: deepseek` lit `
 | `companies` | Listes scale-ups, groupes R&D, défense, double usage, ESN |
 | `llm` | Fournisseur, modèle, limites de débit (RPM/RPD), parallélisme, modèle des lettres |
 | `ranking` | Nombre d'offres envoyées au juge par défaut |
-| `candidate` | Identité affichée dans les lettres |
+| `candidate` | Champs publics affichés dans les lettres (nom, titre, liens). Téléphone et email : voir `src/candidate.py` |
 
 ## Utilisation en ligne de commande
 
@@ -250,8 +253,8 @@ python tools/eval_golden.py                                 # évaluation sur le
 
 ## Déploiement et synchronisation
 
-- **Cron quotidien** (`.github/workflows/daily_scraper.yml`) : 06:00 UTC, lance `run_pipeline.py`. Secrets attendus : `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `R2_*`. Le cache des fiches détail est conservé entre deux runs.
-- **Interface** : Streamlit Community Cloud (`requirements.txt`) ou Render (`render.yaml`, `requirements-render.txt`). Définir `APP_PASSWORD` et les variables `R2_*` pour que l'application lise et écrive la même base que le cron.
+- **Cron quotidien** (`.github/workflows/daily_scraper.yml`) : 06:00 UTC, lance `run_pipeline.py`. Secrets attendus : `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `R2_*` et `CANDIDATE_CV`. Le cache des fiches détail est conservé entre deux runs.
+- **Interface** : Streamlit Community Cloud (`requirements.txt`) ou Render (`render.yaml`, `requirements-render.txt`). Définir `APP_PASSWORD`, les variables `R2_*` (pour que l'application lise et écrive la même base que le cron) et `CANDIDATE_CV`, `CANDIDATE_PHONE`, `CANDIDATE_EMAIL` (sans eux, aucune lettre ne peut être personnalisée). Sur Streamlit Cloud, ce sont des secrets de premier niveau, exposés en variables d'environnement.
 - **Synchronisation** : chaque copie garde un point de synchronisation (`*.db.sync_base` et ETag). Le téléversement est conditionnel à l'ETag ; si la base distante a changé, elle est fusionnée avant un nouvel essai.
 
 ## Tests et évaluation
@@ -260,9 +263,16 @@ python tools/eval_golden.py                                 # évaluation sur le
 python -m pytest
 ```
 
-246 tests (environ 4 minutes) couvrent les scrapers, l'ingestion, la base et la fusion R2, le calcul de la note v3, la vérification des citations, le juge LLM (client simulé), les lettres et le PDF, l'authentification, le composant de flux et les pages Streamlit (`AppTest`). La CI (`.github/workflows/ci.yml`) les exécute à chaque push et pull request sur `main`.
+260 tests (environ 4 minutes en local) couvrent les scrapers, l'ingestion, la base et la fusion R2, le calcul de la note v3, la vérification des citations, le juge LLM (client simulé), les lettres et le PDF, l'authentification, le profil candidat, le composant de flux et les pages Streamlit (`AppTest`).
 
-`tools/eval_golden.py` compare les notes du système à `data/golden_set.csv` (offres annotées à la main, avec score attendu et action attendue) et rapporte la corrélation de Spearman.
+La CI (`.github/workflows/ci.yml`) exécute, à chaque push et pull request sur `main`, deux jobs :
+
+```bash
+ruff check .   # erreurs réelles : imports inutiles, noms indéfinis, variables mortes
+mypy           # cliquet : les modules en erreur sont listés dans pyproject.toml, aucun nouveau n'est toléré
+```
+
+**Golden set.** `tests/test_golden_regression.py` rejoue les règles de scoring sur les 30 offres annotées de `data/golden_set.csv` et impose Spearman ≥ 0,90, précision de catégorie ≥ 75 %, aucune exclusion à tort et aucune offre de défense au-dessus de son plafond. Il n'appelle pas le LLM : il protège les règles de code et `config.yaml`, pas la qualité du juge. `python tools/eval_golden.py` affiche le détail offre par offre.
 
 ## Structure du dépôt
 
@@ -273,7 +283,9 @@ components/job_feed/    composant Streamlit v2 du flux (HTML/CSS/JS)
 utils/                  authentification, styles, chargement des données, tâches de fond
 scrapers/               sources (linkedin, wttj, jobteaser), HTTP, cache, santé des sources
 src/ingestion/          pont RawJob → base, index des offres connues
-src/matching/           juge LLM, score bi-encodeur, lettres, export PDF
+src/matching/           scoring_v3 (note), llm_judge (juge), llm_providers, judge_schema, lettres, export PDF, score bi-encodeur
+src/candidate.py        CV et coordonnées du candidat (hors dépôt)
+src/env.py              chargement de .env et des secrets Streamlit
 src/storage/            SQLAlchemy, nettoyage, stockage R2, fusion à trois points
 run_pipeline.py         point d'entrée du pipeline complet
 run_scrapers.py         collecte, rerank et maintenance étape par étape
@@ -289,6 +301,8 @@ config.yaml             paramètres métier
 - **JobTeaser désactivé** depuis le 30/09/2026 (accès au compte école perdu, conditions d'utilisation). Le code reste en place ; réactivation via `scrapers.enabled_sources`.
 - **LinkedIn** est lu via le flux public sans compte : volume limité, réponses 429 possibles, structure HTML susceptible de changer.
 - La note dépend en partie du LLM : deux appels sur la même offre peuvent différer légèrement malgré `temperature: 0`.
+- **La qualité du juge LLM n'est pas mesurée automatiquement.** Le golden set vérifie les règles de code (planchers, plafonds, exclusions), pas ce que le modèle répond ; une régression du prompt ne serait pas détectée par la CI.
+- **Typage partiel** : une dizaine de modules sont exclus de mypy (liste dans `pyproject.toml`), dont `src/storage/database.py` tant que les modèles SQLAlchemy utilisent `Column()`.
 - La grille et les listes d'entreprises reflètent un profil précis (ML, modélisation, R&D) et des choix personnels (exclusion défense et trading).
 
 ## Licence
