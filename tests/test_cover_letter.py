@@ -161,10 +161,13 @@ def test_algorithmic_cover_letter_french() -> None:
     letter = generate_algorithmic_cover_letter(SAMPLE_JOB)
     assert "Objet : Candidature au stage de fin d'études — Stage R&D Deep Learning / NLP" in letter
     assert "Madame, Monsieur," in letter
-    assert "Mines de Saint-Étienne" in letter
+    assert "Mines Saint-Étienne" in letter
     assert "M2 Mathématiques en Action" in letter
     assert "IMT Mines Alès" in letter
     assert "Licence 3 de Mathématiques Générales à l'Université de Montpellier" in letter
+    assert "PC*" in letter
+    assert "troisième année" in letter
+    assert "baccalauréat" not in letter.lower()
     assert "UPC" in letter or "Barcelone" in letter
     assert "MedStay-CI" in letter
     assert "CinéFilm IA" in letter
@@ -186,7 +189,7 @@ def test_algorithmic_cover_letter_english() -> None:
     letter = generate_algorithmic_cover_letter(english_job)
     assert "Subject: Application for End-of-Studies Internship" in letter
     assert "Dear Hiring Team," in letter
-    assert "Mines de Saint-Étienne" in letter
+    assert "Mines Saint-Étienne" in letter
     assert "University of Montpellier" in letter
     assert "Barcelona" in letter
     assert "April 2027" in letter
@@ -208,7 +211,7 @@ def test_generator_fallback_on_503_error() -> None:
 
     assert not result.startswith("⚠️ Erreur API Gemini")
     assert "Objet : Candidature au stage de fin d'études" in result
-    assert "Mines de Saint-Étienne" in result
+    assert "Mines Saint-Étienne" in result
     assert generator.last_source == "fallback"
 
 
@@ -271,7 +274,6 @@ def test_cover_letter_v3_adaptations() -> None:
 
 def test_cover_letter_dialog_editor_key_versioning() -> None:
     """Verifie que le re-clic de generation incremente version_key sans modifier le widget instancie."""
-    import streamlit as st
     from utils.components import show_cover_letter_dialog
 
     job = {"id": "job_unit_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
@@ -322,7 +324,6 @@ def test_cover_letter_dialog_editor_key_versioning() -> None:
 
 def test_cover_letter_dialog_gemini_retry_versioning() -> None:
     """Verifie que le bouton Reessayer Gemini incremente version_key sans erreur d'instanciation."""
-    import streamlit as st
     from utils.components import show_cover_letter_dialog
 
     job = {"id": "job_gemini_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
@@ -370,3 +371,12 @@ def test_cover_letter_dialog_gemini_retry_versioning() -> None:
     assert state.get("cover_letter_job_gemini_test") == "Nouvelle lettre Gemini"
     assert "editor_cover_letter_job_gemini_test_0" not in state
 
+
+
+def test_system_prompt_states_the_exact_academic_path():
+    from src.matching.cover_letter import build_system_prompt
+
+    prompt = build_system_prompt()
+    assert "PC* au lycée Descartes de Tours" in prompt
+    assert "3e année (actuelle)" in prompt
+    assert "NE JAMAIS mentionner le baccalauréat" in prompt
