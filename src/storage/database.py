@@ -65,6 +65,10 @@ _JSON_COLUMNS = ("match_reasons", "red_flags", "tech_stack")
 # busy_timeout : on patiente 5 s au lieu d'échouer immédiatement sur un verrou.
 SQLITE_BUSY_TIMEOUT_MS = 5000
 
+# Statuts que le pipeline peut faire évoluer seul. Tout autre statut (POSTULÉ, ENTRETIEN,
+# IGNORÉ, REJETÉ) vient de l'utilisateur et n'est jamais écrasé par l'exclusion automatique.
+_AUTO_STATUSES = frozenset({STATUS_NEW, STATUS_EXCLUDED})
+
 
 def configure_sqlite_engine(engine: Engine) -> None:
     """Applique les PRAGMA de robustesse à chaque connexion SQLite ouverte.
@@ -787,7 +791,7 @@ class Database:
             if grading_version is not None:
                 record.grading_version = grading_version
 
-            if exclusion_reason or verdict == "EXCLU":
+            if (exclusion_reason or verdict == "EXCLU") and record.status in _AUTO_STATUSES:
                 record.status = STATUS_EXCLUDED
 
             session.commit()
@@ -850,7 +854,8 @@ class Database:
 
                 if breakdown.excluded:
                     job.verdict = "EXCLU"
-                    job.status = STATUS_EXCLUDED
+                    if job.status in _AUTO_STATUSES:
+                        job.status = STATUS_EXCLUDED
                 else:
                     job.verdict = verdict_from_score(breakdown.final_score, cfg)
                     if job.status == STATUS_EXCLUDED:
