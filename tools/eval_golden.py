@@ -25,15 +25,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
-from src.constants import (
-    HARD_CAP_RULES,
-    STATUS_EXCLUDED,
-    STRUCTURE_TYPES,
-    VERDICT_EXCELLENT,
-    VERDICT_GOOD,
-    VERDICT_MIXED,
-    VERDICT_OFF_TOPIC,
-)
 from src.matching.llm_judge import compute_final_score, is_title_excluded_contract
 from src.matching.scorer import Scorer
 from src.storage.database import Database
@@ -82,8 +73,6 @@ def evaluate_job_v3(job: dict[str, Any], config: dict[str, Any]) -> dict[str, An
     """Simule ou extrait l'évaluation v3 complète d'une offre."""
     title = str(job.get("title") or "")
     company = str(job.get("company") or "")
-    desc = str(job.get("description") or "")
-    full_text = f"{title}\n{desc}"
 
     # Vérification d'exclusion amont titre
     scoring_v3 = config.get("scoring_v3", {})
@@ -379,7 +368,7 @@ def run_comparative_report(limit: int = 50) -> None:
     else:
         report_content += "- Aucun plafond strict déclenché sur cet échantillon.\n"
 
-    report_content += f"""
+    report_content += """
 ---
 
 ## 2. Plus grands écarts de classement (Gagnantes & Perdantes)
@@ -401,9 +390,9 @@ Les offres touchées par les exclusions contractuelles, les plafonds éthiques s
 | Entreprise | Intitulé | Note v1 | Note v3 (Qualité) | Perte | Motif principal |
 | :--- | :--- | :---: | :---: | :---: | :--- |
 """
-    for l in losers:
-        reason = l['cap'] or l['exclusion_reason'] or "Baisse qualité"
-        report_content += f"| {l['company']} | {l['title'][:40]} | {l['v1']:.0f} | **{l['v3']:.0f}** ({l['quality']:.0f}) | {l['diff']:.0f} | {reason} |\n"
+    for loser in losers:
+        reason = loser['cap'] or loser['exclusion_reason'] or "Baisse qualité"
+        report_content += f"| {loser['company']} | {loser['title'][:40]} | {loser['v1']:.0f} | **{loser['v3']:.0f}** ({loser['quality']:.0f}) | {loser['diff']:.0f} | {reason} |\n"
 
     report_content += """
 ---

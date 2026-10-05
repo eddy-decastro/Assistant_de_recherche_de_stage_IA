@@ -1,0 +1,45 @@
+# Outillage qualité (la configuration pytest reste dans pytest.ini).
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [".venv", "data", "docs"]
+
+[tool.ruff.lint]
+# Erreurs réelles uniquement (pyflakes, syntaxe, instructions suspectes) : le
+# dépôt n'est pas encore formaté ni trié, ces règles-là ne doivent pas bloquer.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    # sys.path.insert avant les imports du projet : motif volontaire des scripts.
+    "E402",
+    # `from src.constants import *` dans utils/ et app_pages/ : à supprimer un jour.
+    "F403",
+    "F405",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "scrapers", "utils"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = false
+
+# Cliquet : les modules ci-dessous ont des erreurs connues et sont ignorés ; tout
+# autre module (nouveau ou déjà propre) doit passer. Retirer un module de la liste
+# dès qu'il est corrigé, ne jamais en ajouter.
+[[tool.mypy.overrides]]
+module = [
+    # Modèles SQLAlchemy déclarés avec Column() : migration vers Mapped[] à faire.
+    "src.storage.database",
+    # Typage dynamique (BeautifulSoup, pydantic, imports optionnels).
+    "scrapers.base",
+    "scrapers.http",
+    "scrapers.jobteaser",
+    "scrapers.known",
+    "scrapers.linkedin",
+    "scrapers.models",
+    "src.matching.llm_judge",
+    "src.matching.scorer",
+    "utils.components",
+    "utils.data",
+]
+ignore_errors = true

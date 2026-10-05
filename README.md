@@ -8,339 +8,303 @@ app_file: app.py
 pinned: false
 ---
 
-# Stage Copilot — Pipeline d'Agrégation, de Reranking LLM & de Candidature IA
+# Stage Copilot
 
-<div align="center">
+**Veille, qualification par LLM et suivi des candidatures pour un stage de fin d'études en Data Science, Machine Learning et R&D.**
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://recherche-de-stage-ia.streamlit.app/)
-![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)
-![Framework](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
-![LLM](https://img.shields.io/badge/LLM-Gemini%203.8%20Flash-4285F4?logo=google&logoColor=white)
-![Database](https://img.shields.io/badge/Base-SQLite%20(WAL)%20%2B%20R2-003B57?logo=sqlite&logoColor=white)
-![Sources](https://img.shields.io/badge/Sources-LinkedIn%20%7C%20JobTeaser%20%7C%20WTTJ-0077B5?logo=linkedin&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-151%2F151%20Passing-brightgreen?logo=pytest&logoColor=white)
+[![CI](https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA/actions/workflows/ci.yml/badge.svg)](https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA/actions/workflows/ci.yml)
+[![Collecte quotidienne](https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA/actions/workflows/daily_scraper.yml/badge.svg)](https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA/actions/workflows/daily_scraper.yml)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue?logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit%20%E2%89%A5%201.63-FF4B4B?logo=streamlit&logoColor=white)
+![Licence](https://img.shields.io/badge/licence-MIT-green)
 
-**Plateforme complète d'ingénierie pour sourcer, qualifier par IA et générer des candidatures sur mesure pour les stages de fin d'études (PFE) en Data Science, Machine Learning et R&D.**
-
-🌐 **Application en ligne sécurisée :** [recherche-de-stage-ia.streamlit.app](https://recherche-de-stage-ia.streamlit.app/) *(accès privé authentifié)*
-
-[Vue d'ensemble](#-vue-densemble) • [Architecture](#-architecture--pipeline-de-données) • [Générateur de Lettres IA](#-générateur-de-lettres-de-motivation-gemini-25-pro) • [Scoring à Deux Étages](#-système-de-scoring-à-deux-étages) • [Console Streamlit](#-console-de-pilotage-streamlit) • [Déploiement Cloud & R2](#-déploiement-cloud--architecture-hybride) • [Tests](#-tests--qualité-de-code) • [Installation](#-installation--démarrage-rapide)
-
-</div>
+Application en ligne (accès protégé par mot de passe) : [recherche-de-stage-ia.streamlit.app](https://recherche-de-stage-ia.streamlit.app/)
 
 ---
 
-## 📌 Vue d'ensemble
+## Sommaire
 
-La recherche d'un stage de fin d'études (PFE) d'excellence en Machine Learning et R&D souffre d'un bruit massif sur les plateformes généralistes :
-1. **Titres trompeurs** : Missions de support ou de Business Intelligence (Power BI, SQL basique) présentées sous l'intitulé « Data Scientist ».
-2. **Alternances masquées** : Contrats d'apprentissage ou de professionnalisation non signalés dans l'intitulé.
-3. **Temps perdu en candidature** : Rédiger des lettres de motivation personnalisées et argumentées prend des heures par entreprise.
-
-**Stage Copilot** résout l'ensemble de la chaîne :
-- **Collecte multi-sources hybride** : Scraping asynchrone sur LinkedIn, JobTeaser et Welcome to the Jungle.
-- **Scoring à deux étages avec Juge LLM** : Pré-filtrage déterministe local suivi d'un reranking approfondi par un persona *Head of Data* (Gemini).
-- **Rédaction de lettres d'excellence (Gemini 2.5 Pro)** : Génération de lettres complètes de 1 à 1,5 pages, 100 % rédigées sans aucun placeholder, prêtes à être copiées en 1 clic ou exportées en PDF multi-pages.
-- **Tableau de bord interactif & Kanban** : Suivi des candidatures (*À postuler*, *Postulé*, *Entretien*, *Archivé*) synchronisé dans le Cloud via SQLite et Cloudflare R2.
+- [Le problème](#le-problème)
+- [Fonctionnalités](#fonctionnalités)
+- [Architecture](#architecture)
+- [Scoring v3](#scoring-v3)
+- [Interface](#interface)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Utilisation en ligne de commande](#utilisation-en-ligne-de-commande)
+- [Déploiement et synchronisation](#déploiement-et-synchronisation)
+- [Tests et évaluation](#tests-et-évaluation)
+- [Structure du dépôt](#structure-du-dépôt)
+- [Limites connues](#limites-connues)
 
 ---
 
-## 🏗️ Architecture & Pipeline de Données
+## Le problème
+
+Sur les plateformes généralistes, une recherche « Data Scientist stage » remonte surtout du bruit :
+
+- des missions de reporting BI (Power BI, Excel) vendues comme de la data science ;
+- des alternances, CDD ou VIE mal étiquetés ;
+- des postes d'intégration d'API présentés comme de la R&D en IA ;
+- un temps de tri et de rédaction de lettres qui ne passe pas à l'échelle.
+
+Stage Copilot collecte les offres chaque jour, élimine le bruit sans appel API, fait noter les offres restantes par un juge LLM selon une grille explicite, puis aide à candidater (lettre de motivation, suivi Kanban).
+
+## Fonctionnalités
+
+| Domaine | Ce qui est fait |
+|---|---|
+| **Collecte** | LinkedIn (flux invité) et Welcome to the Jungle (API Algolia). Deux passes : *fraîcheur* (tri par date, fenêtre de 14 jours) et *pertinence*. Arrêt anticipé quand les pages ne contiennent plus que des offres connues. Retry HTTP, cache disque des fiches détail, alerte en cas de source dégradée. |
+| **Filtrage** | Exclusion par mots-clés (BI, RH, commercial, support…) puis exigence d'un signal DS/ML dans le titre ou la description. Exclusion des contrats hors stage (CDI, CDD, alternance, VIE…). Déduplication par URL canonique et par entreprise + titre. |
+| **Qualification** | Juge LLM (DeepSeek `deepseek-chat` par défaut, Gemini en option) en sortie structurée : 4 sous-scores, typologie d'entreprise, signaux cités. La note finale est calculée en code (planchers, plafonds, vérification des citations). Notation au fil de l'eau pendant la collecte. |
+| **Candidature** | Lettre de motivation générée à partir du CV et de l'offre (DeepSeek, puis Gemini en secours, puis gabarit déterministe sans API), consigne libre, copie en un clic, export PDF A4 (ReportLab). |
+| **Suivi** | Kanban des candidatures, date d'envoi mémorisée, import des candidatures envoyées hors de l'outil (export Gmail en JSON ou CSV). |
+| **Exploitation** | Cron GitHub Actions quotidien, base SQLite partagée via Cloudflare R2 avec fusion à trois points, télémétrie des passes de collecte, statistiques de marché. |
+
+## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph Sources ["1. Collecte Multi-Sources"]
-        LI["LinkedIn (Flux public)"]
-        JT["JobTeaser (curl_cffi / TLS)"]
-        WTTJ["Welcome to the Jungle (API Algolia)"]
+flowchart LR
+    subgraph Collecte
+        LI[LinkedIn]
+        WTTJ[Welcome to the Jungle]
     end
 
-    subgraph Ingestion ["2. Déduplication & Backfill"]
-        direction TB
-        F["Passe Fraîcheur (Date, 7j)"]
-        R["Passe Historique (Pertinence)"]
-        CACHE[("Cache Disque HTML\ndata/cache/")]
-        BF["Backfill unitaire des descriptions"]
+    subgraph Pipeline["run_pipeline.py"]
+        F["Filtre mots-clés<br/>+ contrat"]
+        BF["Backfill des descriptions<br/>(cache disque)"]
+        J["Juge LLM<br/>(sortie JSON)"]
+        S["Note v3 en code<br/>planchers / plafonds"]
     end
 
-    subgraph Stockage ["3. Persistance & Synchronisation"]
-        DB[("SQLite WAL\nstage_copilot.db")]
-        R2[("Cloudflare R2 / S3\n(Sauvegarde & Sync)")]
+    DB[("SQLite<br/>data/stage_copilot.db")]
+    R2[("Cloudflare R2")]
+
+    subgraph App["Streamlit (app.py)"]
+        FL[Flux]
+        KB[Candidatures]
+        ST[Statistiques]
+        PL[Pipeline]
+        PA[Paramètres]
     end
 
-    subgraph Intelligence ["4. Intelligence Artificielle"]
-        FILTRE["Étage 1 : Filtre heuristique & Mots-clés"]
-        JUDGE["Étage 2 : Juge LLM (Gemini Flash-Lite)\nSous-scores & Hard Caps"]
-        GEN["Générateur de Lettre (Gemini 2.5 Pro)\nFormat développé 1 à 1.5 pages"]
-    end
-
-    subgraph UI ["5. Console Web Streamlit"]
-        UI1["Flux d'offres qualifiées & Jauge R&D"]
-        UI2["Kanban de suivi des candidatures"]
-        UI3["Copier 1-clic & Export PDF A4 ReportLab"]
-        UI4["Paramètres & Gestion de profil no-code"]
-    end
-
-    LI & JT & WTTJ --> F & R
-    F & R --> DB
-    DB -->|Offres sans corps de texte| BF
-    BF <--> CACHE
-    BF --> DB
-    DB --> FILTRE
-    FILTRE -->|Top N offres| JUDGE
-    JUDGE --> DB
-    DB <--> R2
-    DB --> UI1 & UI2
-    UI1 & UI2 --> GEN
-    GEN --> UI3
-    UI4 --> DB
+    LI & WTTJ --> F --> DB
+    DB --> BF --> DB
+    DB --> J --> S --> DB
+    DB <-->|fusion à trois points| R2
+    R2 <--> App
 ```
 
----
+Le pipeline tourne soit en local (IP résidentielle, moins de blocages), soit chaque jour à 06:00 UTC dans GitHub Actions. L'application Streamlit et le pipeline travaillent chacun sur une copie de la base ; avant chaque téléversement sur R2, les changements distants sont rejoués ligne par ligne (`src/storage/db_merge.py`). En cas de conflit sur les colonnes saisies par l'utilisateur (`status`, `rejection_reason`, `applied_at`), la version de l'application gagne.
 
-## ✍️ Générateur de Lettres de Motivation (Gemini 3.8 Flash)
+## Scoring v3
 
-Pour transformer les offres qualifiées en entretiens réels, l'application intègre un moteur de rédaction sur-mesure alimenté par le modèle de pointe **Gemini 3.8 Flash**.
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│  LETTRE DE MOTIVATION PERSONNALISÉE                                    │
-│  Poste : Stage R&D Deep Learning — Mistral AI                          │
-├────────────────────────────────────────────────────────────────────────┤
-│  Objet : Candidature au stage de fin d'études — Stage R&D Deep Learning│
-│                                                                        │
-│  Madame, Monsieur,                                                     │
-│                                                                        │
-│  [Paragraphe 1 : Accroche ciblée & Défis techniques de l'entreprise]  │
-│  [Paragraphe 2 : Triple formation d'excellence Maths / IA]             │
-│  [Paragraphe 3 & 4 : 2 réalisations R&D en miroir avec le poste]       │
-│  [Paragraphe 5 : Disponibilité PFE 6 mois avril 2027 & Collaboration]  │
-│                                                                        │
-│  Eddy DE CASTRO                                                        │
-│  Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 MAEA       │
-│  06 98 82 44 85 | eddyprepa123@gmail.com | LinkedIn | GitHub           │
-├────────────────────────────────────────────────────────────────────────┤
-│  Consigne optionnelle : [ ex: Insiste sur les Transformers... ]        │
-│  [📋 Copier la lettre]   [📄 Télécharger (.pdf)]   [🔄 Régénérer]      │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### Caractéristiques clés :
-1. **Format développé académique & percutant (1 à 1,5 pages)** :
-   - Calibré entre **500 et 650 mots** avec une argumentation technique rigoureuse.
-   - **Règle absolue Zéro Crochet** : Aucun `[...]` ou placeholder non résolu. Tout est rédigé et prêt à l'emploi.
-2. **Valorisation du triple cursus** :
-   - Double diplôme **Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne / ENS Lyon)** et diplôme d'ingénieur **IMT Mines Alès** (IA & Data Science).
-   - **Licence 3 de Mathématiques Générales à l'Université de Montpellier** menée en parallèle de l'école d'ingénieurs (démontrant une capacité de travail exceptionnelle et une maîtrise poussée en algèbre linéaire, optimisation convexe, probabilités et modélisation stochastique).
-3. **Mise en miroir des projets concrets** :
-   - Stage R&D à l'**UPC Barcelone** (Graph ML, attaques différentiables PyTorch BPDA/FGSM, validation statistique par bootstrap).
-   - Projets d'ingénierie : **MedStay-CI** (quantification d'incertitude conforme certifiée à 89,9 %, régression quantile LightGBM, conteneurisation Docker, 124 tests) ou **CinéFilm IA** (recherche sémantique vectorielle bi-encodeurs E5-Large sous 100 ms).
-4. **Export PDF multi-pages A4 (ReportLab)** :
-   - Pagination dynamique à deux passes via `NumberedCanvas` (*Page X / Y* en bas de page).
-   - Rendu typographique épuré (palette bleu marine `#1E3A8A` et gris ardoise `#1E293B`).
-   - Nom de fichier normalisé : **`Lettre de motivation Eddy De Castro - {Entreprise}.pdf`**.
-5. **Ergonomie en 1 clic** :
-   - Bouton **📋 Copier la lettre** avec feedback visuel vert instantané pour coller directement dans Welcome to the Jungle, JobTeaser ou LinkedIn.
-   - Champ de **consigne libre** pour orienter la régénération (ex. *"Insiste sur la vision par ordinateur"*).
-   - Compteur de mots et de caractères en temps réel.
-
----
-
-## 🎯 Système de Scoring Déterministe & Grille v3
-
-Le moteur de qualification combine un filtrage amont sans appel API, un juge sémantique structuré (**Gemini 3.8 Flash**), et un calcul mathématique déterministe en code garantissant l'équité, l'absence de dérive du LLM et le respect de critères éthiques stricts :
+Le LLM n'attribue pas la note finale. Il extrait des éléments structurés ; le code calcule la note de façon déterministe et reproductible (`src/matching/scoring_v3.py`, paramètres dans `config.yaml`, section `scoring_v3`).
 
 ```
-             [ Ensemble des offres collectées ]
-                                │
-                                ▼
-         ┌──────────────────────────────────────────────┐
-         │  1. EXCLUSION PRÉ-LLM & CONTRACTUELLE        │  Coût API : 0 €
-         │  - Mots-clés titre (CDI, CDD, alternance...) │  Vitesse : immédiate
-         │  - Rejet sans le mot « stage »               │
-         └──────────────────────────────────────────────┘
-                                │
-                      (Offres candidates)
-                                │
-                                ▼
-         ┌──────────────────────────────────────────────┐
-         │  2. EXTRACTION STRUCTURÉE LLM (Gemini)       │  Structured Output
-         │  - 4 sous-scores (1 à 5)                     │  15 RPM adaptatif
-         │  - Typologie (structure_type, rd_nature)     │
-         │  - Signaux d'encadrement & données + extraits│
-         │  - Détection éthique (défense, trading)      │
-         └──────────────────────────────────────────────┘
-                                │
-                                ▼
-         ┌──────────────────────────────────────────────┐
-         │  3. NOTE DE QUALITÉ & VÉRIFICATION CITATIONS │  Calcul pur en code
-         │  - Formule normalisée (somme des poids = 1.0)│  Tolérance token 80%
-         │  - Bonus (+6 encadrant, +3 données, +3 suite)│  Plafond bonus : +10
-         │  - Pénalité (-5 benchmark pur)               │
-         └──────────────────────────────────────────────┘
-                                │
-                                ▼
-         ┌──────────────────────────────────────────────┐
-         │  4. PLANCHERS DE CATÉGORIE & PLAFONDS ÉTHIQUE│  Règles métier
-         │  - Plancher 70 : Scale-ups Next40 / FT120    │  Plafonds stricts :
-         │  - Plancher 60 : Grands groupes R&D / labos  │  Défense (≤ 10)
-         │  - Plancher 50 : Laboratoires publics        │  Trading (≤ 25)
-         │  (Sous condition : technical_depth ≥ 3)      │  BI (≤ 30), ESN (≤ 35)
-         └──────────────────────────────────────────────┘
-                                │
-                                ▼
-                   [ Flux Qualifié & Tableau Kanban ]
+offres collectées
+  └─ 1. Exclusion sans API      titre contenant CDI, CDD, alternance, VIE… → EXCLU
+  └─ 2. Extraction LLM          4 sous-scores (1 à 5), typologie, signaux + citations
+  └─ 3. Note de qualité         moyenne pondérée + bonus vérifiés
+  └─ 4. Planchers puis plafonds règles métier, les plafonds l'emportent toujours
 ```
 
-### Formule de la Note de Qualité (0 à 100) :
-$$\text{quality} = \text{clamp}\left( \frac{\sum w_i s_i - 1}{4} \times 100 + \text{bonus} - \text{pénalité}, 0, 100 \right)$$
+**Note de qualité (0 à 100)**
 
-- **4 Sous-scores normalisés** :
-  - `technical_depth` (35 %) : Densité algorithmique, formulation mathématique, R&D vs wrappers.
-  - `learning_environment` (30 %) : Encadrement (PhD, Staff), MLOps, GPU clusters, peer reviews.
-  - `target_alignment` (20 %) : Adéquation au profil Mines Saint-Étienne / MAEA (modélisation, UQ, GNN).
-  - `logistics` (15 %) : Durée (6 mois idéal, 4-5 mois toléré), localisation et calendrier.
-- **Vérification cryptographique & lexicale des signaux** :
-  - Tout signal (`encadrant_explicite` +6, `donnees_reelles_explicites` +3, `suite_explicite` +3, `donnees_benchmark_seulement` -5) n'est accordé que si son extrait textuel est **strictement vérifié** dans la description de l'offre (fenêtre glissante, recoupement de tokens $\ge 80\%$). En cas de citation absente ou hallucinatoire, le bonus est annulé et un flag d'audit est consigné.
-- **Planchers par Catégorie d'Entreprise** *(actifs si `technical_depth >= 3`)* :
-  - **70** : Scale-ups (Next40 2026, FT120 2026, cibles perso IA) hors ESN.
-  - **60** : Pôles R&D grands groupes et laboratoires privés.
-  - **50** : Laboratoires de recherche publique (Inria, CNRS, CEA).
-- **Plafonds Éthiques & Structurels** *(s'appliquent après le plancher et prévalent toujours)* :
-  - `DEFENSE` : Plafonné à **10/100** (ex. Helsing, Mistral AI malgré son appartenance au Next40).
-  - `TRADING` : Plafonné à **25/100** (finance de marché spéculative).
-  - `BI_REPORTING` : Plafonné à **30/100** (dashboards, Excel/PowerBI).
-  - `ESN_REGIE` : Plafonné à **35/100** (délégation de personnel sans labo propre).
-  - `ENCADREMENT_ABSENT` : Plafonné à **35/100** (stagiaire isolé sans tuteur technique).
-  - `SHALLOW_AI` : Plafonné à **40/100** (simple consommation d'API sans modélisation).
-- **Verdicts d'action** :
-  - **EXCELLENT** ($\ge 85$) • **BON** ($\ge 70$) • **MITIGÉ** ($\ge 50$) • **HORS_SUJET** ($< 50$ ou `EXCLU`).
+$$\text{quality} = \text{clamp}\left(\frac{\sum_i w_i s_i - 1}{4} \times 100 + \text{bonus} - \text{pénalité},\ 0,\ 100\right)$$
 
----
+| Sous-score | Poids | Mesure |
+|---|---|---|
+| `technical_depth` | 0,35 | Modélisation réelle vs consommation d'API |
+| `learning_environment` | 0,30 | Encadrement, environnement technique |
+| `target_alignment` | 0,20 | Adéquation au profil (modélisation, UQ, GNN…) |
+| `logistics` | 0,15 | Durée, lieu, calendrier |
 
-## 💻 Console de Pilotage Streamlit
+**Bonus et pénalité**, accordés seulement si la citation fournie par le LLM se retrouve dans le texte de l'offre (fenêtre glissante, au moins 80 % des tokens) : encadrant explicite +6, données réelles +3, perspective de suite +3 (plafond +10), données de benchmark uniquement −5. Une citation introuvable annule le bonus et ajoute le drapeau `[CITATION_NON_VERIFIEE]`.
 
-L'interface multi-pages (`app.py` = routeur `st.navigation`, pages dans `app_pages/`) couvre l'intégralité du workflow, organisée en trois sections : **Veille** (Flux, Candidatures), **Analyse** (Statistiques) et **Système** (Pipeline, Paramètres) :
+**Planchers** (si `technical_depth ≥ 3`) : 70 pour les scale-ups (Next40, FT120, cibles personnelles), 60 pour les pôles R&D de grands groupes, 50 pour les laboratoires publics.
 
-| Page | Fonctionnalités |
+**Plafonds** : défense 10, trading 25, BI/reporting 30, ESN en régie 35, encadrement absent 35, IA superficielle 40.
+
+**Verdicts** : `EXCELLENT` ≥ 85, `BON` ≥ 70, `MITIGÉ` ≥ 50, `HORS_SUJET` en dessous.
+
+Les listes d'entreprises (scale-ups, groupes R&D, défense, ESN) et tous les seuils se modifient dans `config.yaml`. Après modification, `--recompute-scores` recalcule toutes les notes sans appel API.
+
+## Interface
+
+`app.py` sert de routeur (`st.navigation`) vers les pages de `app_pages/`.
+
+| Page | Contenu |
 |---|---|
-| **Flux (`app_pages/flux.py`)** | Liste dense des offres triées par score R&D et panneau de détail (grille d'évaluation, verdict du juge, fiche), filtres latéraux avancés, actions de candidature et modale de lettre de motivation. Le flux est un composant Streamlit v2 (`components/job_feed/`) avec raccourcis clavier (`j`/`k` naviguer, `o` ouvrir, `l` lettre, `p` postulé, `x` archiver, `?` aide) et annulation des changements de statut. `streamlit run tools/feed_demo.py` lance une démonstration isolée avec des offres factices. |
-| **Candidatures (`app_pages/kanban.py`)** | Suivi visuel des candidatures en 5 colonnes (*À postuler*, *Postulé*, *Entretien*, *Refusé*, *Archivé*) avec date d'envoi mémorisée. |
-| **Statistiques (`app_pages/statistiques.py`)** | Analytics du marché (distribution des technologies demandées, salaires observés, répartition géographique) et télémétrie des passes de scraping. |
-| **Pipeline (`app_pages/pipeline.py`)** | Déclenchement manuel ou asynchrone des passes de collecte et de reranking avec streaming des logs en temps réel. |
-| **Paramètres (`app_pages/parametres.py`)** | Dépôt de CV (PDF/TXT), mise à jour no-code des coordonnées candidat (téléphone, email, profils) et édition des critères de recherche. |
+| **Flux** | Offres triées par score, panneau de détail (grille, verdict, fiche), filtres, actions de statut avec annulation, lettre de motivation. Composant Streamlit v2 (`components/job_feed/`) avec raccourcis clavier : `j`/`k` naviguer, `o` ouvrir, `l` lettre, `p` postulé, `x` archiver, `?` aide. |
+| **Candidatures** | Kanban : à postuler, postulé, entretien, refusé, archivé. |
+| **Statistiques** | Technologies demandées, salaires observés, géographie, télémétrie des passes de collecte. |
+| **Pipeline** | Lancement de la collecte et du reranking depuis l'interface, logs en direct. |
+| **Paramètres** | Dépôt du CV (PDF ou TXT), coordonnées du candidat, critères de recherche. |
 
----
+`streamlit run tools/feed_demo.py` lance le composant de flux seul, avec des offres factices.
 
-## ☁️ Déploiement Cloud & Architecture Hybride
+## Installation
 
-Stage Copilot fonctionne en architecture hybride pour concilier contournement anti-bot et persistance 24h/24 :
+Prérequis : Python 3.11 ou 3.12.
 
-1. **Collecte locale** : Le scraping lourd s'exécute sur votre machine locale (IP résidentielle) pour contourner les verrous anti-datacenters de LinkedIn et JobTeaser.
-2. **Persistance Cloudflare R2** : La base SQLite (`stage_copilot.db`) est automatiquement sauvegardée sur un bucket object storage S3-compatible (Cloudflare R2, gratuit jusqu'à 10 Go).
-3. **Tableau de bord Streamlit Cloud / Render** : L'interface web est déployée en continu sur le Cloud, sécurisée par une authentification par mot de passe (`APP_PASSWORD`).
-
-```bash
-# Workflow de synchronisation :
-python scripts/sync_db.py --pull    # Récupérer les statuts modifiés depuis le smartphone
-python run_pipeline.py              # Collecter et qualifier les nouvelles offres en local
-python scripts/sync_db.py --push    # Pousser la base à jour vers le Cloud
-```
-
----
-
-## 🧪 Tests & Qualité de Code
-
-Le projet est validé par une suite complète de **151 tests automatisés** couvrant les scrapers, les bases de données, le calcul déterministe de la grille v3, la vérification des citations par fenêtre glissante, le générateur de lettres et le compilateur PDF :
-
-```bash
-python -m pytest tests/
-```
-
-```text
-============================= test session starts =============================
-platform win32 -- Python 3.12, pytest-9.1.1
-collected 151 items
-
-tests/test_app.py .............                                          [  8%]
-tests/test_auth.py ..                                                    [  9%]
-tests/test_bridge.py .                                                   [ 10%]
-tests/test_cleanup.py .............                                      [ 19%]
-tests/test_cli.py .........                                              [ 25%]
-tests/test_cloud_storage.py .......                                      [ 29%]
-tests/test_cover_letter.py ...............                               [ 39%]
-tests/test_database.py ..........                                        [ 46%]
-tests/test_enrichment.py ...........                                     [ 53%]
-tests/test_hybrid_collection.py ................                         [ 64%]
-tests/test_live_scorer.py ..                                             [ 65%]
-tests/test_llm_judge.py .............                                    [ 74%]
-tests/test_scorer.py ....                                                [ 76%]
-tests/test_scoring_v3_constants.py ........                              [ 82%]
-tests/test_scrapers.py ..................                                [ 94%]
-tests/test_task_manager.py .........                                     [100%]
-
-======================= 151 passed in ~90s =======================
-```
-
----
-
-## 🚀 Installation & Démarrage Rapide
-
-### 1. Cloner le dépôt et configurer l'environnement
 ```bash
 git clone https://github.com/eddy-decastro/Assistant_de_recherche_de_stage_IA.git
 cd Assistant_de_recherche_de_stage_IA
-
 python -m venv .venv
+```
 
-# Windows (PowerShell) :
-.\.venv\Scripts\activate
-# Linux / macOS :
+```bash
+# Windows
+.venv\Scripts\activate
+# Linux / macOS
 source .venv/bin/activate
-
-pip install -r requirements.txt
 ```
 
-### 2. Variables d'environnement (`.env`)
-Créez un fichier `.env` à la racine à partir de `.env.example` :
-```env
-# Clé API Google AI Studio (gratuite) pour Gemini
-GEMINI_API_KEY=AIzaSy...
+Trois fichiers de dépendances :
 
-# Mot de passe d'accès pour l'interface Streamlit (local & cloud)
-APP_PASSWORD=votre_mot_de_passe_secret
+| Fichier | Usage |
+|---|---|
+| `requirements.txt` | Application, pipeline et cron (sans PyTorch) ; utilisé par Streamlit Cloud et GitHub Actions |
+| `requirements-dev.txt` | `requirements.txt` + `pytest`, `torch` CPU, `sentence-transformers` (score bi-encodeur historique) et `playwright` (capture du cookie JobTeaser) |
+| `requirements-render.txt` | Alias de `requirements.txt`, point d'entrée de `render.yaml` |
+| `requirements-lint.txt` | `ruff`, `mypy` et leurs stubs (à installer avec `requirements.txt`) |
 
-# (Optionnel) Identifiants Cloudflare R2 pour la persistance cloud
-R2_ACCOUNT_ID=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=...
+```bash
+pip install -r requirements-dev.txt
 ```
 
-### 3. Lancer l'application Streamlit
+Ensuite :
+
+1. Copier `.env.example` en `.env` et renseigner au moins une clé LLM (voir ci-dessous).
+2. Créer son profil, sans rien committer : le dépôt est public, le CV et les coordonnées privées n'y figurent pas. Le plus simple est d'ouvrir la page **Paramètres** : le CV est écrit dans `data/cv_eddy.txt` et les coordonnées dans `data/candidate.local.yaml`, deux fichiers ignorés par git. À la main : copier `data/cv_template.txt` en `data/cv_eddy.txt` et le remplir.
+3. Adapter la section `candidate` de `config.yaml` (nom, titre, liens publics : signature des lettres).
+
 ```bash
 streamlit run app.py
 ```
-L'interface s'ouvre automatiquement sur `http://localhost:8501`.
 
-### 4. Commandes CLI & Maintenance
+L'application s'ouvre sur `http://localhost:8501`. Sans `APP_PASSWORD`, l'accès local est libre.
+
+## Configuration
+
+### Variables d'environnement (`.env`)
+
+| Variable | Rôle |
+|---|---|
+| `DEEPSEEK_API_KEY` | Juge LLM (fournisseur par défaut) et lettres de motivation |
+| `GEMINI_API_KEY` | Juge si `llm.provider: google`, secours pour les lettres |
+| `APP_PASSWORD` | Mot de passe de l'interface ; vide = accès libre |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | Synchronisation de la base sur Cloudflare R2 (optionnel) |
+| `S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` | Alternative S3 générique |
+| `CANDIDATE_PHONE`, `CANDIDATE_EMAIL` | Coordonnées privées des lettres, là où le fichier local n'existe pas (Streamlit Cloud, Render) |
+| `CANDIDATE_CV` | Texte complet du CV, pour le cron GitHub et l'hébergement ; sans fichier `data/cv_eddy.txt`, il est lu ici |
+| `JOBTEASER_*` | Uniquement si la source JobTeaser est réactivée |
+
+La clé lue pour le juge dépend du fournisseur : `llm.provider: deepseek` lit `DEEPSEEK_API_KEY`, `google` lit `GEMINI_API_KEY`, tout autre fournisseur compatible OpenAI lit `<PROVIDER>_API_KEY` (avec `llm.base_url` adapté).
+
+### `config.yaml`
+
+| Section | Contenu |
+|---|---|
+| `scrapers` | Sources actives, requêtes, passes fraîcheur/pertinence, mots-clés d'exclusion et de détection DS/ML |
+| `scoring_v3` | Contrats exclus, planchers, bonus, plafonds, seuils des verdicts |
+| `companies` | Listes scale-ups, groupes R&D, défense, double usage, ESN |
+| `llm` | Fournisseur, modèle, limites de débit (RPM/RPD), parallélisme, modèle des lettres |
+| `ranking` | Nombre d'offres envoyées au juge par défaut |
+| `candidate` | Champs publics affichés dans les lettres (nom, titre, liens). Téléphone et email : voir `src/candidate.py` |
+
+## Utilisation en ligne de commande
+
 ```bash
-# Lancer le pipeline complet (collecte + backfill + rerank)
+# Pipeline complet : synchro R2 → collecte → backfill → reranking → synchro R2
 python run_pipeline.py
+python run_pipeline.py --no-sync
 
-# Recalculer instantanément les notes, planchers et plafonds v3 en code pur (0 appel API)
-python run_scrapers.py --recompute-scores
+# Recalcul des notes v3 en code, sans appel API
+python run_pipeline.py --recompute-scores
 
-# Réévaluer les anciennes offres v1 avec le juge v3 (contrôle strict du quota)
-python run_scrapers.py --regrade-v1 --limit 20
-
-# Évaluer le benchmark Golden Set (30 offres annotées, corrélation de Spearman)
-python tools/eval_golden.py
+# Réévaluation des anciennes offres v1 avec le juge v3
+python run_pipeline.py --regrade-v1 --limit 20
 ```
 
----
+`run_scrapers.py` expose les étapes une à une :
 
-## 📜 Licence & Auteur
+```bash
+python run_scrapers.py --only-source wttj --passes freshness   # collecte ciblée
+python run_scrapers.py --no-collect --trigger-rerank --top-rerank 50
+python run_scrapers.py --dedupe --revalidate --dry-run          # hygiène de la base
+python run_scrapers.py --no-collect --top-telemetry 10          # dernières passes tracées
+python run_scrapers.py --help
+```
 
-Projet distribué sous licence **MIT**.  
-Développé par **[Eddy DE CASTRO](https://www.linkedin.com/in/eddy-de-castro/)** — Élève-ingénieur aux Mines de Saint-Étienne (M2 Mathématiques en Action / IMT Mines Alès).
+Autres outils :
+
+```bash
+python backfill_descriptions.py --limit 50                  # descriptions manquantes
+python scripts/sync_db.py --status                          # état local vs R2
+python scripts/sync_db.py --pull                            # récupère la base distante
+python scripts/sync_db.py --push                            # téléverse (avec fusion)
+python tools/import_applications.py candidatures.json       # aperçu de l'import
+python tools/import_applications.py candidatures.json --apply
+python tools/auto_import.py                                 # imports déposés dans data/imports/
+python tools/eval_golden.py                                 # évaluation sur le golden set
+```
+
+## Déploiement et synchronisation
+
+- **Cron quotidien** (`.github/workflows/daily_scraper.yml`) : 06:00 UTC, lance `run_pipeline.py`. Secrets attendus : `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `R2_*` et `CANDIDATE_CV`. Le cache des fiches détail est conservé entre deux runs.
+- **Interface** : Streamlit Community Cloud (`requirements.txt`) ou Render (`render.yaml`, `requirements-render.txt`). Définir `APP_PASSWORD`, les variables `R2_*` (pour que l'application lise et écrive la même base que le cron) et `CANDIDATE_CV`, `CANDIDATE_PHONE`, `CANDIDATE_EMAIL` (sans eux, aucune lettre ne peut être personnalisée). Sur Streamlit Cloud, ce sont des secrets de premier niveau, exposés en variables d'environnement.
+- **Synchronisation** : chaque copie garde un point de synchronisation (`*.db.sync_base` et ETag). Le téléversement est conditionnel à l'ETag ; si la base distante a changé, elle est fusionnée avant un nouvel essai.
+
+## Tests et évaluation
+
+```bash
+python -m pytest
+```
+
+260 tests (environ 4 minutes en local) couvrent les scrapers, l'ingestion, la base et la fusion R2, le calcul de la note v3, la vérification des citations, le juge LLM (client simulé), les lettres et le PDF, l'authentification, le profil candidat, le composant de flux et les pages Streamlit (`AppTest`).
+
+La CI (`.github/workflows/ci.yml`) exécute, à chaque push et pull request sur `main`, deux jobs :
+
+```bash
+ruff check .   # erreurs réelles : imports inutiles, noms indéfinis, variables mortes
+mypy           # cliquet : les modules en erreur sont listés dans pyproject.toml, aucun nouveau n'est toléré
+```
+
+**Golden set.** `tests/test_golden_regression.py` rejoue les règles de scoring sur les 30 offres annotées de `data/golden_set.csv` et impose Spearman ≥ 0,90, précision de catégorie ≥ 75 %, aucune exclusion à tort et aucune offre de défense au-dessus de son plafond. Il n'appelle pas le LLM : il protège les règles de code et `config.yaml`, pas la qualité du juge. `python tools/eval_golden.py` affiche le détail offre par offre.
+
+## Structure du dépôt
+
+```
+app.py                  routeur Streamlit
+app_pages/              pages de l'interface
+components/job_feed/    composant Streamlit v2 du flux (HTML/CSS/JS)
+utils/                  authentification, styles, chargement des données, tâches de fond
+scrapers/               sources (linkedin, wttj, jobteaser), HTTP, cache, santé des sources
+src/ingestion/          pont RawJob → base, index des offres connues
+src/matching/           scoring_v3 (note), llm_judge (juge), llm_providers, judge_schema, lettres, export PDF, score bi-encodeur
+src/candidate.py        CV et coordonnées du candidat (hors dépôt)
+src/env.py              chargement de .env et des secrets Streamlit
+src/storage/            SQLAlchemy, nettoyage, stockage R2, fusion à trois points
+run_pipeline.py         point d'entrée du pipeline complet
+run_scrapers.py         collecte, rerank et maintenance étape par étape
+backfill_descriptions.py
+scripts/, tools/        synchronisation, import, évaluation, sondes de diagnostic
+tests/                  suite pytest
+docs/superpowers/       spécifications, plans et diagnostics
+config.yaml             paramètres métier
+```
+
+## Limites connues
+
+- **JobTeaser désactivé** depuis le 30/09/2026 (accès au compte école perdu, conditions d'utilisation). Le code reste en place ; réactivation via `scrapers.enabled_sources`.
+- **LinkedIn** est lu via le flux public sans compte : volume limité, réponses 429 possibles, structure HTML susceptible de changer.
+- La note dépend en partie du LLM : deux appels sur la même offre peuvent différer légèrement malgré `temperature: 0`.
+- **La qualité du juge LLM n'est pas mesurée automatiquement.** Le golden set vérifie les règles de code (planchers, plafonds, exclusions), pas ce que le modèle répond ; une régression du prompt ne serait pas détectée par la CI.
+- **Typage partiel** : une dizaine de modules sont exclus de mypy (liste dans `pyproject.toml`), dont `src/storage/database.py` tant que les modèles SQLAlchemy utilisent `Column()`.
+- La grille et les listes d'entreprises reflètent un profil précis (ML, modélisation, R&D) et des choix personnels (exclusion défense et trading).
+
+## Licence
+
+MIT. Développé par [Eddy De Castro](https://www.linkedin.com/in/eddy-de-castro/), élève-ingénieur IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne).

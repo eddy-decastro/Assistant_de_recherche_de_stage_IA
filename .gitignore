@@ -8,6 +8,7 @@ __pycache__/
 .env
 data/cv_*.txt
 !data/cv_template.txt
+data/candidate.local.yaml
 data/*.pdf
 
 # --- Base de données locale ---

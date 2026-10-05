@@ -11,10 +11,9 @@ torch
 sentence-transformers
 scikit-learn==1.6.1
 
-# --- Scraping (HTML parsing & TLS impersonation) ---
-beautifulsoup4
-lxml
-curl_cffi
+# --- Capture du cookie JobTeaser (scripts/fetch_jobteaser_cookie.py) ---
+# Nécessite ensuite : playwright install chromium
+playwright
 
 # --- Tests automatisés ---
 pytest

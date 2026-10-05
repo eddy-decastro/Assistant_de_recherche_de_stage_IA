@@ -1,9 +1,9 @@
-"""Lancement du pipeline complet : collecte → backfill → scoring LLM (Gemini).
+"""Lancement du pipeline complet : collecte → backfill → scoring LLM.
 
 Enchaînement automatique :
   1. Collecte des offres (hybride) via run_scrapers.py (sans reranking).
   2. Enrichissement des descriptions (backfill) pour les nouvelles offres.
-  3. Reranking LLM (Gemini) sur toutes les offres non notées.
+  3. Reranking LLM (fournisseur de config.yaml, llm.provider) sur toutes les offres non notées.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.regrade_v1:
         print("\n" + "=" * 60)
-        print(f" 🧠 RÉ-ÉVALUATION DES OFFRES V1 (Gemini v3, limite={args.limit})")
+        print(f" 🧠 RÉ-ÉVALUATION DES OFFRES V1 (juge v3, limite={args.limit})")
         print("=" * 60)
         run_scrapers_main(["--regrade-v1", "--limit", str(args.limit)])
         if sync_enabled:
@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
     run_backfill_main([])
 
     print("\n" + "=" * 60)
-    print(" 🧠 ÉTAPE 3 : RERANKING LLM (Gemini 2.0 Flash)")
+    print(" 🧠 ÉTAPE 3 : RERANKING LLM")
     print("=" * 60)
     # Évaluation de l'intégralité des nouvelles offres (limite haute à 1000)
     run_scrapers_main(["--no-collect", "--trigger-rerank", "--top-rerank", "1000"])

@@ -33,10 +33,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.constants import (
-    DEFAULT_SUB_SCORE,
     RUN_INTERRUPTED,
     RUN_NOTE_ADHOC,
     RUN_NOTE_DEGRADED,
@@ -48,7 +47,6 @@ from src.constants import (
     STATUS_NEW,
     STATUS_REJECTED,
     STATUS_EXCLUDED,
-    SUB_SCORE_KEYS,
     TIER_ESN,
     VALID_STATUSES,
     REFUSAL_REASON,

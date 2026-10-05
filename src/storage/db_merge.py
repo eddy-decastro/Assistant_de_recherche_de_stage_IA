@@ -139,15 +139,15 @@ def _merge_table(
 ) -> None:
     where = " AND ".join(f"{_quote(c)} = ?" for c in pk)
     for key in r_rows.keys() | b_rows.keys():
-        r, b, l = r_rows.get(key), b_rows.get(key), l_rows.get(key)
+        r, b, loc = r_rows.get(key), b_rows.get(key), l_rows.get(key)
         if r == b:
             continue  # aucun changement distant
         if r is None:  # supprimée à distance
-            if l is not None and l == b:
+            if loc is not None and loc == b:
                 conn.execute(f"DELETE FROM {_quote(table)} WHERE {where}", key)
                 stats.deleted += 1
             continue
-        if l is None:
+        if loc is None:
             if b is None:  # ajoutée à distance
                 cols = ", ".join(_quote(c) for c in columns)
                 marks = ", ".join("?" for _ in columns)
@@ -163,10 +163,10 @@ def _merge_table(
             continue  # sinon supprimée localement : elle le reste
         updates: dict[str, Any] = {}
         for col in columns:
-            if col in pk or r[col] == l[col]:
+            if col in pk or r[col] == loc[col]:
                 continue
             remote_changed = b is None or r[col] != b[col]
-            local_changed = b is not None and l[col] != b[col]
+            local_changed = b is not None and loc[col] != b[col]
             if not remote_changed:
                 continue
             if local_changed or b is None:

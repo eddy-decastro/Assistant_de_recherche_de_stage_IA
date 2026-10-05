@@ -54,6 +54,7 @@ from scrapers.models import (  # noqa: E402
     ScrapeResult,
     ScraperConfig,
 )
+from src.candidate import get_cv_text  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.constants import (  # noqa: E402
     RUN_NOTE_ADHOC,
@@ -65,7 +66,7 @@ from src.constants import (  # noqa: E402
     pass_label,
     stop_reason_label,
 )
-from src.ingestion.bridge import find_new_raw_jobs, ingest_raw_jobs, raw_job_to_dict  # noqa: E402
+from src.ingestion.bridge import ingest_raw_jobs  # noqa: E402
 from src.ingestion.known_index import DatabaseKnownIndex, job_ids_for_jobs  # noqa: E402
 from src.matching.live_scorer import LiveRerankWorker, create_batch_callback  # noqa: E402
 from src.storage.cleanup import choose_keeper, find_duplicate_groups  # noqa: E402
@@ -371,8 +372,7 @@ def _rerank_top(
             except Exception as exc:
                 logger.warning("Erreur lors de l'enrichissement préalable : %s", exc)
 
-    cv_path = Path(config.get("scoring", {}).get("cv_path", "data/cv_eddy.txt"))
-    cv_text = cv_path.read_text(encoding="utf-8") if cv_path.exists() else ""
+    cv_text = get_cv_text(config)
 
     llm_cfg = config.get("llm", {}) if isinstance(config, dict) else getattr(config, "llm", {})
     tier = str(llm_cfg.get("tier", "free")).casefold()
@@ -793,8 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     # 2. Identifier les nouvelles offres AVANT insertion (pour le scoring ciblé).
-    new_jobs = find_new_raw_jobs(result.jobs, db) if args.trigger_scoring else []
-
+    
     # 3. Ingestion idempotente en SQLite (déduplication id + URL).
     stats = ingest_raw_jobs(result.jobs, db)
     inserted = max(0, db.count_jobs() - jobs_before)

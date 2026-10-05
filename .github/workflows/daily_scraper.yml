@@ -44,19 +44,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           
+          # CV du candidat (absent du dépôt public), lu par le juge LLM
+          CANDIDATE_CV: ${{ secrets.CANDIDATE_CV }}
+
           # Accès Cloudflare R2
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           
-          # Cookies Scrapers
-          JOBTEASER_COOKIES: ${{ secrets.JOBTEASER_COOKIES }}
-          JOBTEASER_SESSION: ${{ secrets.JOBTEASER_SESSION }}
-          JOBTEASER_CF_CLEARANCE: ${{ secrets.JOBTEASER_CF_CLEARANCE }}
-          LINKEDIN_LI_AT: ${{ secrets.LINKEDIN_LI_AT }}
-          LINKEDIN_JSESSIONID: ${{ secrets.LINKEDIN_JSESSIONID }}
-          
+          # JobTeaser est désactivé (config.yaml) : si réactivé, ajouter
+          # JOBTEASER_COOKIES. LinkedIn est lu sans compte.
+
         run: python run_pipeline.py
 
       - name: Sauvegarde du cache des fiches

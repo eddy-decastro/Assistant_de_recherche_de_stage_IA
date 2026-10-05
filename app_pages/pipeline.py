@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
-import subprocess
 import streamlit as st
 from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
 from utils.layout import kpi_row, page_header
-from utils.data import get_database, load_jobs, bump_data_version, source_distribution, _esc, is_reranked
+from utils.data import get_database, load_jobs, bump_data_version, source_distribution, is_reranked
 from utils.task_manager import (
     get_active_task,
     render_task_monitor,
     start_background_task,
 )
-from src.config import load_config, DEFAULT_CONFIG_PATH
+from src.config import load_config, save_scraper_defaults
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -92,38 +90,8 @@ def run_pipeline(action: PipelineAction) -> None:
 
 
 def save_default_settings(queries: list[str], sources: list[str], max_offers: int) -> None:
-    """Met à jour config.yaml de manière atomique en préservant les commentaires."""
-    from ruamel.yaml import YAML
-    yaml = YAML()
-    yaml.preserve_quotes = True
-
-    config_file = Path(DEFAULT_CONFIG_PATH)
-    try:
-        with open(config_file, 'r', encoding='utf-8') as f:
-            data = yaml.load(f)
-
-        if 'scraping' not in data:
-            data['scraping'] = {}
-        
-        data['scraping']['enabled_sources'] = sources
-        data['scraping']['target_queries'] = queries
-        data['scraping']['max_offers_per_source'] = max_offers
-
-        tmp = config_file.with_suffix(".tmp")
-        with open(tmp, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f)
-            
-        tmp.replace(config_file)
-        load_config.cache_clear()
-    except Exception as e:
-        logger.error(f"Échec de la sauvegarde des paramètres via ruamel.yaml: {e}")
-        from src.config import save_config
-        cfg = load_config()
-        cfg.setdefault("scraping", {})
-        cfg["scraping"]["enabled_sources"] = sources
-        cfg["scraping"]["target_queries"] = queries
-        cfg["scraping"]["max_offers_per_source"] = max_offers
-        save_config(cfg)
+    """Enregistre les réglages de collecte par défaut dans config.yaml (section scrapers)."""
+    save_scraper_defaults(queries, sources, max_offers)
 
 
 def render_custom_collection_form(is_task_running: bool = False) -> None:

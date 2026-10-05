@@ -1,0 +1,9 @@
+# ============================================================
+# stage_copilot — Outils de qualité (CI et local)
+# ============================================================
+# Usage : pip install -r requirements.txt -r requirements-lint.txt
+ruff
+mypy
+types-PyYAML
+types-requests
+pandas-stubs
