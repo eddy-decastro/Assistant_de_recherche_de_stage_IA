@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -268,5 +269,104 @@ def test_cover_letter_v3_adaptations() -> None:
     assert "roadmap technique" in letter_scaleup or "produits" in letter_scaleup
 
 
+def test_cover_letter_dialog_editor_key_versioning() -> None:
+    """Verifie que le re-clic de generation incremente version_key sans modifier le widget instancie."""
+    import streamlit as st
+    from utils.components import show_cover_letter_dialog
 
+    job = {"id": "job_unit_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
+    state: dict[str, Any] = {"cover_letter_job_unit_test": "Ancienne lettre"}
+    instantiated_keys: set[str] = set()
+
+    def fake_text_area(*args: Any, **kwargs: Any) -> str:
+        key = kwargs.get("key")
+        if key:
+            instantiated_keys.add(key)
+        return str(kwargs.get("value", ""))
+
+    def fake_setitem(key: str, val: Any) -> None:
+        if key in instantiated_keys:
+            raise RuntimeError(f"StreamlitWidgetAlreadyInstantiatedError: {key}")
+        state[key] = val
+
+    mock_state = MagicMock()
+    mock_state.__getitem__.side_effect = lambda k: state[k]
+    mock_state.__setitem__.side_effect = fake_setitem
+    mock_state.__contains__.side_effect = lambda k: k in state
+    mock_state.get.side_effect = lambda k, d=None: state.get(k, d)
+
+    def fake_columns(spec: Any, **kwargs: Any) -> list[MagicMock]:
+        count = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+        return [MagicMock() for _ in range(count)]
+
+    def fake_button(*args: Any, **kwargs: Any) -> bool:
+        key = kwargs.get("key", "")
+        return "force_deepseek" in key
+
+    with patch("streamlit.session_state", mock_state), \
+         patch("streamlit.columns", side_effect=fake_columns), \
+         patch("streamlit.text_area", side_effect=fake_text_area), \
+         patch("streamlit.text_input", return_value=""), \
+         patch("streamlit.button", side_effect=fake_button), \
+         patch("streamlit.toast"), \
+         patch("streamlit.rerun"), \
+         patch("streamlit.spinner"), \
+         patch("src.matching.cover_letter.CoverLetterGenerator.generate_with_deepseek", return_value="Nouvelle lettre DeepSeek"):
+
+        show_cover_letter_dialog.__wrapped__(job)
+
+    assert state.get("cover_letter_version_job_unit_test") == 1
+    assert state.get("cover_letter_job_unit_test") == "Nouvelle lettre DeepSeek"
+    assert "editor_cover_letter_job_unit_test_0" not in state
+
+
+def test_cover_letter_dialog_gemini_retry_versioning() -> None:
+    """Verifie que le bouton Reessayer Gemini incremente version_key sans erreur d'instanciation."""
+    import streamlit as st
+    from utils.components import show_cover_letter_dialog
+
+    job = {"id": "job_gemini_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
+    state: dict[str, Any] = {"cover_letter_job_gemini_test": "Ancienne lettre"}
+    instantiated_keys: set[str] = set()
+
+    def fake_text_area(*args: Any, **kwargs: Any) -> str:
+        key = kwargs.get("key")
+        if key:
+            instantiated_keys.add(key)
+        return str(kwargs.get("value", ""))
+
+    def fake_setitem(key: str, val: Any) -> None:
+        if key in instantiated_keys:
+            raise RuntimeError(f"StreamlitWidgetAlreadyInstantiatedError: {key}")
+        state[key] = val
+
+    mock_state = MagicMock()
+    mock_state.__getitem__.side_effect = lambda k: state[k]
+    mock_state.__setitem__.side_effect = fake_setitem
+    mock_state.__contains__.side_effect = lambda k: k in state
+    mock_state.get.side_effect = lambda k, d=None: state.get(k, d)
+
+    def fake_columns(spec: Any, **kwargs: Any) -> list[MagicMock]:
+        count = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+        return [MagicMock() for _ in range(count)]
+
+    def fake_button(*args: Any, **kwargs: Any) -> bool:
+        key = kwargs.get("key", "")
+        return "regen_gemini" in key
+
+    with patch("streamlit.session_state", mock_state), \
+         patch("streamlit.columns", side_effect=fake_columns), \
+         patch("streamlit.text_area", side_effect=fake_text_area), \
+         patch("streamlit.text_input", return_value=""), \
+         patch("streamlit.button", side_effect=fake_button), \
+         patch("streamlit.toast"), \
+         patch("streamlit.rerun"), \
+         patch("streamlit.spinner"), \
+         patch("src.matching.cover_letter.CoverLetterGenerator.generate", return_value="Nouvelle lettre Gemini"):
+
+        show_cover_letter_dialog.__wrapped__(job)
+
+    assert state.get("cover_letter_version_job_gemini_test") == 1
+    assert state.get("cover_letter_job_gemini_test") == "Nouvelle lettre Gemini"
+    assert "editor_cover_letter_job_gemini_test_0" not in state
 
