@@ -76,9 +76,12 @@ STRUCTURE ET CONTENU DÉTAILLÉ DE LA LETTRE (1 à 1,5 pages, ~500-650 mots) :
 
    b. FORMATION D'EXCELLENCE & TRIPLE PARCOURS MATHS / IA (Moi) :
       Valoriser le profil académique particulièrement robuste du candidat :
-      - Cursus ingénieur généraliste à l'IMT Mines Alès (spécialisation IA & Data Science).
-      - Double diplôme Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon).
-      - MENTIONNER EXPLICITEMENT la Licence 3 de Mathématiques Générales à l'Université de Montpellier menée en parallèle de l'école d'ingénieurs.
+      Parcours exact, à respecter sans l'inventer ni le déformer :
+      - Classes préparatoires PC* au lycée Descartes de Tours, puis admission à l'IMT Mines Alès.
+      - 1re année à l'IMT Mines Alès : tronc commun du cursus ingénieur généraliste, comme tous les élèves.
+      - 2e année : choix de la spécialité informatique et IA (Intelligence Artificielle & Data Science), suivie EN MÊME TEMPS que la Licence 3 de Mathématiques Générales à l'Université de Montpellier. MENTIONNER EXPLICITEMENT cette Licence 3 menée en parallèle.
+      - 3e année (actuelle) : toujours élève de l'IMT Mines Alès, en double diplôme avec le Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne, co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon). Les cours se déroulent actuellement à Mines Saint-Étienne, dans le cursus des Mines.
+      - NE JAMAIS mentionner le baccalauréat ni le lycée avant la prépa : tout candidat l'a, cela n'apporte rien. La prépa PC* peut être citée brièvement.
       - Souligner l'atout de cette double compétence rare : un socle théorique de haut niveau (algèbre linéaire, calcul différentiel, optimisation convexe/non convexe, modélisation stochastique, statistiques inférentielles, quantification d'incertitudes) combiné à une solide rigueur en génie logiciel et Machine Learning appliqué.
 
    c. RÉALISATIONS CONCRÈTES & PROJETS TECHNIQUES EN MIROIR (Moi) :
@@ -176,11 +179,11 @@ def generate_algorithmic_cover_letter(
         )
 
         p_education = (
-            "Currently an engineering graduate student at École des Mines de Saint-Étienne, holding a strong foundation from "
-            "IMT Mines Alès (specializing in Artificial Intelligence & Data Science), I am pursuing a concurrent dual Master of Science "
-            "in Mathematics in Action (M2 MAEA, co-accredited by École Centrale de Lyon and ENS de Lyon). In parallel with this intensive "
-            "engineering curriculum, I also completed a Bachelor's Degree (Licence 3) in Pure and Applied Mathematics at the University "
-            "of Montpellier. This dual background provides me with advanced mathematical mastery — linear algebra, convex and non-convex "
+            "After the French preparatory classes (PC*, Lycée Descartes, Tours), I joined IMT Mines Alès, where I chose the "
+            "computer science and Artificial Intelligence & Data Science specialization in my second year, while completing a Bachelor's "
+            "Degree (Licence 3) in Mathematics at the University of Montpellier at the same time. I am now in my third year at IMT Mines Alès, "
+            "in a dual degree with the M2 Mathematics in Action (MAEA, co-accredited by École Centrale de Lyon and ENS de Lyon), "
+            "taking the Mines curriculum at Mines Saint-Étienne. This dual background provides me with advanced mathematical mastery — linear algebra, convex and non-convex "
             "optimization, differential calculus, stochastic processes, and statistical inference — seamlessly combined with rigorous software engineering "
             "practices and applied Machine Learning."
         )
@@ -245,10 +248,11 @@ def generate_algorithmic_cover_letter(
         )
 
         p_education = (
-            "Actuellement élève-ingénieur aux Mines de Saint-Étienne et issu du cursus ingénieur de l'IMT Mines Alès "
-            "(spécialisation Intelligence Artificielle & Data Science), je prépare en double diplôme le Master 2 Mathématiques en Action "
-            "(MAEA, co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon). En parallèle de ce cursus en grande école, j'ai également "
-            "validé une Licence 3 de Mathématiques Générales à l'Université de Montpellier. Cette triple formation me confère une maîtrise "
+            "Après une classe préparatoire PC* au lycée Descartes de Tours, j'ai intégré l'IMT Mines Alès, où j'ai choisi en deuxième "
+            "année la spécialité informatique et Intelligence Artificielle & Data Science, tout en validant en parallèle une Licence 3 de "
+            "Mathématiques Générales à l'Université de Montpellier. Je suis aujourd'hui en troisième année à l'IMT Mines Alès, en double "
+            "diplôme avec le Master 2 Mathématiques en Action (MAEA, co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon), "
+            "dont je suis actuellement les cours à Mines Saint-Étienne. Cette triple formation me confère une maîtrise "
             "approfondie des fondements théoriques — algèbre linéaire avancée, optimisation convexe et non convexe, calcul différentiel, "
             "modélisation stochastique et statistiques inférentielles — associée à une grande rigueur méthodologique et à de solides compétences "
             "en ingénierie logicielle et Machine Learning appliqué."

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -160,10 +161,13 @@ def test_algorithmic_cover_letter_french() -> None:
     letter = generate_algorithmic_cover_letter(SAMPLE_JOB)
     assert "Objet : Candidature au stage de fin d'études — Stage R&D Deep Learning / NLP" in letter
     assert "Madame, Monsieur," in letter
-    assert "Mines de Saint-Étienne" in letter
+    assert "Mines Saint-Étienne" in letter
     assert "M2 Mathématiques en Action" in letter
     assert "IMT Mines Alès" in letter
     assert "Licence 3 de Mathématiques Générales à l'Université de Montpellier" in letter
+    assert "PC*" in letter
+    assert "troisième année" in letter
+    assert "baccalauréat" not in letter.lower()
     assert "UPC" in letter or "Barcelone" in letter
     assert "MedStay-CI" in letter
     assert "CinéFilm IA" in letter
@@ -185,7 +189,7 @@ def test_algorithmic_cover_letter_english() -> None:
     letter = generate_algorithmic_cover_letter(english_job)
     assert "Subject: Application for End-of-Studies Internship" in letter
     assert "Dear Hiring Team," in letter
-    assert "Mines de Saint-Étienne" in letter
+    assert "Mines Saint-Étienne" in letter
     assert "University of Montpellier" in letter
     assert "Barcelona" in letter
     assert "April 2027" in letter
@@ -207,7 +211,7 @@ def test_generator_fallback_on_503_error() -> None:
 
     assert not result.startswith("⚠️ Erreur API Gemini")
     assert "Objet : Candidature au stage de fin d'études" in result
-    assert "Mines de Saint-Étienne" in result
+    assert "Mines Saint-Étienne" in result
     assert generator.last_source == "fallback"
 
 
@@ -268,5 +272,111 @@ def test_cover_letter_v3_adaptations() -> None:
     assert "roadmap technique" in letter_scaleup or "produits" in letter_scaleup
 
 
+def test_cover_letter_dialog_editor_key_versioning() -> None:
+    """Verifie que le re-clic de generation incremente version_key sans modifier le widget instancie."""
+    from utils.components import show_cover_letter_dialog
+
+    job = {"id": "job_unit_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
+    state: dict[str, Any] = {"cover_letter_job_unit_test": "Ancienne lettre"}
+    instantiated_keys: set[str] = set()
+
+    def fake_text_area(*args: Any, **kwargs: Any) -> str:
+        key = kwargs.get("key")
+        if key:
+            instantiated_keys.add(key)
+        return str(kwargs.get("value", ""))
+
+    def fake_setitem(key: str, val: Any) -> None:
+        if key in instantiated_keys:
+            raise RuntimeError(f"StreamlitWidgetAlreadyInstantiatedError: {key}")
+        state[key] = val
+
+    mock_state = MagicMock()
+    mock_state.__getitem__.side_effect = lambda k: state[k]
+    mock_state.__setitem__.side_effect = fake_setitem
+    mock_state.__contains__.side_effect = lambda k: k in state
+    mock_state.get.side_effect = lambda k, d=None: state.get(k, d)
+
+    def fake_columns(spec: Any, **kwargs: Any) -> list[MagicMock]:
+        count = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+        return [MagicMock() for _ in range(count)]
+
+    def fake_button(*args: Any, **kwargs: Any) -> bool:
+        key = kwargs.get("key", "")
+        return "force_deepseek" in key
+
+    with patch("streamlit.session_state", mock_state), \
+         patch("streamlit.columns", side_effect=fake_columns), \
+         patch("streamlit.text_area", side_effect=fake_text_area), \
+         patch("streamlit.text_input", return_value=""), \
+         patch("streamlit.button", side_effect=fake_button), \
+         patch("streamlit.toast"), \
+         patch("streamlit.rerun"), \
+         patch("streamlit.spinner"), \
+         patch("src.matching.cover_letter.CoverLetterGenerator.generate_with_deepseek", return_value="Nouvelle lettre DeepSeek"):
+
+        show_cover_letter_dialog.__wrapped__(job)
+
+    assert state.get("cover_letter_version_job_unit_test") == 1
+    assert state.get("cover_letter_job_unit_test") == "Nouvelle lettre DeepSeek"
+    assert "editor_cover_letter_job_unit_test_0" not in state
 
 
+def test_cover_letter_dialog_gemini_retry_versioning() -> None:
+    """Verifie que le bouton Reessayer Gemini incremente version_key sans erreur d'instanciation."""
+    from utils.components import show_cover_letter_dialog
+
+    job = {"id": "job_gemini_test", "title": "Stage R&D", "company": "Test AI", "url": "https://example.com"}
+    state: dict[str, Any] = {"cover_letter_job_gemini_test": "Ancienne lettre"}
+    instantiated_keys: set[str] = set()
+
+    def fake_text_area(*args: Any, **kwargs: Any) -> str:
+        key = kwargs.get("key")
+        if key:
+            instantiated_keys.add(key)
+        return str(kwargs.get("value", ""))
+
+    def fake_setitem(key: str, val: Any) -> None:
+        if key in instantiated_keys:
+            raise RuntimeError(f"StreamlitWidgetAlreadyInstantiatedError: {key}")
+        state[key] = val
+
+    mock_state = MagicMock()
+    mock_state.__getitem__.side_effect = lambda k: state[k]
+    mock_state.__setitem__.side_effect = fake_setitem
+    mock_state.__contains__.side_effect = lambda k: k in state
+    mock_state.get.side_effect = lambda k, d=None: state.get(k, d)
+
+    def fake_columns(spec: Any, **kwargs: Any) -> list[MagicMock]:
+        count = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+        return [MagicMock() for _ in range(count)]
+
+    def fake_button(*args: Any, **kwargs: Any) -> bool:
+        key = kwargs.get("key", "")
+        return "regen_gemini" in key
+
+    with patch("streamlit.session_state", mock_state), \
+         patch("streamlit.columns", side_effect=fake_columns), \
+         patch("streamlit.text_area", side_effect=fake_text_area), \
+         patch("streamlit.text_input", return_value=""), \
+         patch("streamlit.button", side_effect=fake_button), \
+         patch("streamlit.toast"), \
+         patch("streamlit.rerun"), \
+         patch("streamlit.spinner"), \
+         patch("src.matching.cover_letter.CoverLetterGenerator.generate", return_value="Nouvelle lettre Gemini"):
+
+        show_cover_letter_dialog.__wrapped__(job)
+
+    assert state.get("cover_letter_version_job_gemini_test") == 1
+    assert state.get("cover_letter_job_gemini_test") == "Nouvelle lettre Gemini"
+    assert "editor_cover_letter_job_gemini_test_0" not in state
+
+
+
+def test_system_prompt_states_the_exact_academic_path():
+    from src.matching.cover_letter import build_system_prompt
+
+    prompt = build_system_prompt()
+    assert "PC* au lycée Descartes de Tours" in prompt
+    assert "3e année (actuelle)" in prompt
+    assert "NE JAMAIS mentionner le baccalauréat" in prompt
