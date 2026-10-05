@@ -33,6 +33,8 @@ try:
 except ImportError:
     CurlRequestsError = None  # curl_cffi absent : le guard ne sera jamais atteint
 
+from src.eligibility import experience_reason, not_internship_reason
+
 from .cache import DiskCache
 from .http import RetryingClient
 from .known import KnownIndex, NullKnownIndex
@@ -166,6 +168,10 @@ def describe_rejection(title: str, description: str, config: ScraperConfig) -> s
             if _contains_keyword(combined, marker):
                 return f"contrat incompatible (« {marker} »), non annoncé comme un stage"
 
+    reason = not_internship_reason(title, description)
+    if reason:
+        return reason
+
     return _business_rejection(title_low, description_low, config, where="la fiche")
 
 
@@ -194,6 +200,10 @@ def _business_rejection(
        titre, OU au moins ``MIN_WEAK_SIGNALS_IN_DESCRIPTION`` signaux faibles
        distincts dans la description.
     """
+    reason = experience_reason(title_low, description_low)
+    if reason:
+        return reason
+
     for keyword in config.exclusion_keywords:
         if _contains_keyword(title_low, keyword):
             return f"orientation BI / reporting (« {keyword} »)"

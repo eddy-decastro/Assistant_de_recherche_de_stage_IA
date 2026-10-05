@@ -27,6 +27,7 @@ from src.constants import (
     VERDICT_OFF_TOPIC,
     coerce_sub_score,
 )
+from src.eligibility import experience_reason, not_internship_reason
 from src.matching.scorer import Scorer
 
 logger = logging.getLogger("src.matching.scoring_v3")
@@ -190,6 +191,23 @@ def compute_final_score(
             cap_value=None,
             excluded=True,
             exclusion_reason=f"Type de contrat incompatible ({contract_type})",
+            scaleup_suggested=False,
+        )
+
+    eligibility_reason = (
+        not_internship_reason(job.get("title"), job.get("description"))
+        or experience_reason(job.get("title"), job.get("description"))
+    )
+    if eligibility_reason:
+        return ScoreBreakdown(
+            quality_score=0,
+            final_score=0,
+            floor_value=None,
+            floor_reason=None,
+            cap_applied=None,
+            cap_value=None,
+            excluded=True,
+            exclusion_reason=eligibility_reason,
             scaleup_suggested=False,
         )
 
