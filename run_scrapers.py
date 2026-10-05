@@ -61,7 +61,7 @@ from src.constants import (  # noqa: E402
     RUN_NOTE_DEGRADED,
     RUN_OK,
     RUN_PARTIAL,
-    STATUS_REJECTED,
+    STATUS_NEW,
     is_incomplete_stop,
     pass_label,
     stop_reason_label,
@@ -283,7 +283,9 @@ def _revalidate_jobs(db: Database, config: dict[str, Any], *, dry_run: bool) -> 
     rejected = 0
     skipped = 0
     for job in db.get_jobs():
-        if job.get("status") == STATUS_REJECTED:
+        # Seules les offres encore « NOUVEAU » sont jugées : un statut saisi par
+        # l'utilisateur (POSTULÉ, ENTRETIEN, IGNORÉ…) ne doit jamais être écrasé.
+        if job.get("status") != STATUS_NEW:
             continue
         if not (job.get("description") or "").strip():
             skipped += 1

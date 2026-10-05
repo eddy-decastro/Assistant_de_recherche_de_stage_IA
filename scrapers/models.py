@@ -163,7 +163,7 @@ MIN_WEAK_SIGNALS_IN_DESCRIPTION = 2
 #: incrémenter à chaque changement de règle dans le code : combinée aux listes de
 #: mots-clés, elle forme l'empreinte ``ScraperConfig.filter_fingerprint`` qui rend
 #: les anciens rejets de ``seen_jobs`` à nouveau évaluables.
-FILTER_LOGIC_VERSION = "2"
+FILTER_LOGIC_VERSION = "3"
 
 # User-Agent moderne partagé par tous les scrapers.
 DEFAULT_USER_AGENT = (
