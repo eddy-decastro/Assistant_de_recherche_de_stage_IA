@@ -61,8 +61,10 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
 
     session_key = f"cover_letter_{job_id}"
     source_key = f"cover_letter_source_{job_id}"
+    version_key = f"cover_letter_version_{job_id}"
+    version = int(st.session_state.get(version_key, 0))
     cached_letter = str(st.session_state.get(session_key, ""))
-    editor_key = f"editor_{session_key}"
+    editor_key = f"editor_{session_key}_{version}"
 
     # Si la lettre n'a pas été générée ou si le cache contient une ancienne erreur
     if (
@@ -75,14 +77,20 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             new_letter = generator.generate(job)
             st.session_state[session_key] = new_letter
             st.session_state[source_key] = generator.last_source
-            if editor_key in st.session_state:
-                st.session_state[editor_key] = new_letter
+            version += 1
+            st.session_state[version_key] = version
+            editor_key = f"editor_{session_key}_{version}"
 
     letter_text = st.session_state.get(session_key, "")
 
     # Nettoyage préventif de l'état du widget éditeur s'il contenait l'erreur
-    if editor_key in st.session_state and (_WARN_PREFIX in str(st.session_state[editor_key]) or "no longer available" in str(st.session_state[editor_key])):
-        st.session_state[editor_key] = letter_text
+    if editor_key in st.session_state and (
+        _WARN_PREFIX in str(st.session_state[editor_key])
+        or "no longer available" in str(st.session_state[editor_key])
+    ):
+        version += 1
+        st.session_state[version_key] = version
+        editor_key = f"editor_{session_key}_{version}"
 
     # Si la lettre a été produite via DeepSeek ou le moteur de secours algorithmique
     source = st.session_state.get(source_key)
@@ -221,8 +229,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 new_l = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
                 st.session_state[session_key] = new_l
                 st.session_state[source_key] = generator.last_source
-                if editor_key in st.session_state:
-                    st.session_state[editor_key] = new_l
+                st.session_state[version_key] = version + 1
                 if generator.last_source == "gemini":
                     st.toast("✓ Lettre rédigée avec succès par Gemini !")
                 elif generator.last_source == "deepseek":
@@ -238,16 +245,14 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 if new_l and not new_l.startswith(_WARN_PREFIX):
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "deepseek"
-                    if editor_key in st.session_state:
-                        st.session_state[editor_key] = new_l
+                    st.session_state[version_key] = version + 1
                     st.toast("✓ Lettre rédigée avec succès par DeepSeek V3 !")
                 else:
                     st.toast("DeepSeek non disponible, génération de secours activée.")
                     new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "fallback"
-                    if editor_key in st.session_state:
-                        st.session_state[editor_key] = new_l
+                    st.session_state[version_key] = version + 1
                 st.rerun()
 
     # Section de candidature directe depuis la lettre de motivation
