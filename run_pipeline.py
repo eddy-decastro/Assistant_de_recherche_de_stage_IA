@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> None:
     # Évaluation de l'intégralité des nouvelles offres (limite haute à 1000)
     run_scrapers_main(["--no-collect", "--trigger-rerank", "--top-rerank", "1000"])
 
+    print("\n" + "=" * 60)
+    print(" 🔄 ÉTAPE 4 : RECALCUL DÉTERMINISTE DES SCORES V3 (Pénalités & Planchers)")
+    print("=" * 60)
+    run_scrapers_main(["--recompute-scores"])
+
     if sync_enabled:
         print("\n" + "=" * 60)
         print(" ☁️  SYNCHRONISATION CLOUD : Publication des nouvelles offres (Push)")
