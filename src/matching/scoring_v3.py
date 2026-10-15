@@ -332,6 +332,24 @@ def compute_final_score(
 
     score_after_floor = max(quality, applied_floor) if applied_floor is not None else quality
 
+    # Pénalité d'entreprise (ex: Dassault -20)
+    company_penalties = (
+        scoring_v3.get("company_penalties")
+        or cfg.get("companies", {}).get("penalties")
+        or {}
+    )
+    company_penalty = 0
+    if isinstance(company_penalties, dict):
+        for target_company, pen_val in company_penalties.items():
+            if Scorer._name_matches(company_name, str(target_company)):
+                try:
+                    company_penalty = max(company_penalty, int(pen_val))
+                except (ValueError, TypeError):
+                    pass
+
+    score_after_penalty = max(0, score_after_floor - company_penalty)
+    quality_after_penalty = max(0, quality - company_penalty)
+
     # 5. Plafonds (Caps)
     cap_applied: str | None = None
     cap_val: int | None = None
@@ -361,10 +379,10 @@ def compute_final_score(
             if tag not in red_flags:
                 red_flags.append(tag)
 
-    final_score = min(score_after_floor, cap_val) if cap_val is not None else score_after_floor
+    final_score = min(score_after_penalty, cap_val) if cap_val is not None else score_after_penalty
 
     return ScoreBreakdown(
-        quality_score=quality,
+        quality_score=quality_after_penalty,
         final_score=final_score,
         floor_value=floor_val,
         floor_reason=floor_reason,

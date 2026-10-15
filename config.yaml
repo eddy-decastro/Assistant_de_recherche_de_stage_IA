@@ -199,6 +199,8 @@ scoring_v3:
     suite_explicite: 3
     bonus_cap: 10
     benchmark_penalty: 5
+  company_penalties:
+    Dassault: 20
   hard_caps:
     DEFENSE: 10
     TRADING: 25
@@ -510,6 +512,8 @@ companies:
   - Orange Innovation
   - Orange Labs
   - Naver Labs Europe
+  penalties:
+    Dassault: 20
 database:
   path: data/stage_copilot.db
 ranking:

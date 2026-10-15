@@ -212,6 +212,24 @@ class Scorer:
             + self.weights["keywords"] * keywords
         )
 
+        company_name = job.get("company", "")
+        scoring_v3 = self.config.get("scoring_v3", {})
+        company_penalties = (
+            scoring_v3.get("company_penalties")
+            or self.config.get("companies", {}).get("penalties")
+            or {}
+        )
+        company_penalty = 0.0
+        if isinstance(company_penalties, dict):
+            for target_company, pen_val in company_penalties.items():
+                if self._name_matches(company_name, str(target_company)):
+                    try:
+                        company_penalty = max(company_penalty, float(pen_val))
+                    except (ValueError, TypeError):
+                        pass
+
+        final = max(0.0, final - company_penalty)
+
         scored = dict(job)
         scored["company_tier"] = tier
         scored["semantic_score"] = round(semantic, 2)

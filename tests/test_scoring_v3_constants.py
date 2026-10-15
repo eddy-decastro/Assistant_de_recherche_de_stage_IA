@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.constants import (
     BENCHMARK_PENALTY,
     CONTRACT_TYPES,
@@ -125,3 +132,54 @@ def test_signal_bonuses() -> None:
     }
     assert BENCHMARK_PENALTY == 5
     assert MAX_BONUS_TOTAL == 10
+
+
+def test_company_penalties_dassault() -> None:
+    """Vérifie que la pénalité d'entreprise de 20 points pour Dassault est bien appliquée."""
+    from src.config import load_config
+    from src.matching.scoring_v3 import compute_final_score
+    from src.matching.scorer import Scorer
+
+    cfg = load_config()
+
+    parsed_normal = {
+        "contract_type": "STAGE",
+        "structure_type": "GRAND_GROUPE_RD",
+        "sub_scores": {
+            "technical_depth": 5,
+            "target_alignment": 5,
+            "learning_environment": 4,
+            "logistics": 5,
+        },
+        "signals": {},
+        "red_flags": [],
+    }
+
+    job_generic = {
+        "id": "job_generic",
+        "title": "Stage R&D Deep Learning",
+        "company": "Autre Entreprise RD",
+        "description": "Stage R&D deep learning pour la vision par ordinateur.",
+    }
+    job_dassault = {
+        "id": "job_dassault",
+        "title": "Stage R&D Deep Learning",
+        "company": "Dassault Systèmes",
+        "description": "Stage R&D deep learning pour la vision par ordinateur chez Dassault Systèmes.",
+    }
+
+    res_generic = compute_final_score(parsed_normal, job_generic, cfg)
+    res_dassault = compute_final_score(parsed_normal, job_dassault, cfg)
+
+    # La note Dassault doit être inférieure de 20 points à celle d'une entreprise similaire
+    assert res_generic.final_score - res_dassault.final_score == 20
+    assert res_dassault.final_score == res_generic.final_score - 20
+
+    # Vérification également sur Scorer étage 1
+    scorer = Scorer(cfg)
+    scorer.semantic_score = lambda text: 50.0
+    scored_generic = scorer.score(job_generic)
+    scored_dassault = scorer.score(job_dassault)
+    # Dassault Systèmes a TIER_1 (100) mais subit le malus de 20
+    assert scored_dassault["final_score"] <= scored_generic["final_score"] + (0.25 * 100 - 0.25 * 60) - 20 + 0.01
+
