@@ -20,6 +20,16 @@ scrapers:
   - NLP
   - LLM
   - Intelligence Artificielle
+  - stage recherche IA
+  - stage deep learning
+  - stage LLM
+  - stage NLP
+  - stage machine learning recherche
+  - research intern machine learning
+  - internship deep learning
+  - stage R&D IA
+  - stage M2 apprentissage statistique
+  - stage modèles génératifs
   max_offers_per_source: 200
   request_timeout_seconds: 30
   # LinkedIn n'expose pas la description dans ses cartes : la fiche détail est lue
@@ -128,6 +138,15 @@ scrapers:
   - diffusion
   - nerf
   - biomédical
+  - thèse
+  - cifre
+  - laboratoire
+  - inria
+  - cnrs
+  - robustesse
+  - robustness
+  - incertitude
+  - uncertainty
   positive_ds_ml_keywords:
   - data scientist
   - data science
@@ -194,6 +213,24 @@ scrapers:
   - finetuning
   - foundation models
   - nerf
+  - post-training
+  - rlhf
+  - évaluation de modèles
+  - uncertainty
+  - incertitude
+  - conformal
+  - robustness
+  - robustesse
+  - gnn
+  - flow matching
+  - surrogate
+  - neural operator
+  - problèmes inverses
+  - thèse
+  - cifre
+  - laboratoire
+  - inria
+  - cnrs
   - gaussian splatting
 scoring_v3:
   min_duration_months: 4
@@ -209,7 +246,7 @@ scoring_v3:
   floors:
     scaleup: 70
     rd: 60
-    labo_public: 50
+    labo_public: 60
     min_technical_depth: 3
     trust_llm_scaleup: false
   bonuses:
@@ -219,7 +256,7 @@ scoring_v3:
     bonus_cap: 10
     benchmark_penalty: 5
   company_penalties:
-    Dassault: 20
+    Dassault: 10
   hard_caps:
     DEFENSE: 10
     TRADING: 25
@@ -446,8 +483,6 @@ companies:
   - IRT SystemX
   excluded_defense:
   - Helsing
-  - Mistral AI
-  - Mistral
   - Dassault Aviation
   - MBDA
   - Naval Group
@@ -532,7 +567,7 @@ companies:
   - Orange Labs
   - Naver Labs Europe
   penalties:
-    Dassault: 20
+    Dassault: 10
 database:
   path: data/stage_copilot.db
 ranking:
@@ -554,7 +589,7 @@ llm:
 # Voir src/candidate.py.
 candidate:
   name: "Eddy DE CASTRO"
-  title: "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)"
+  title: "Élève-ingénieur IMT Mines Alès — double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)"
   linkedin: "https://www.linkedin.com/in/eddy-de-castro/"
   github: "https://github.com/eddy-decastro"
   location: "Paris, France"

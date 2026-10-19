@@ -135,7 +135,7 @@ def test_signal_bonuses() -> None:
 
 
 def test_company_penalties_dassault() -> None:
-    """Vérifie que la pénalité d'entreprise de 20 points pour Dassault est bien appliquée."""
+    """Vérifie que la pénalité d'entreprise de 10 points pour Dassault est bien appliquée."""
     from src.config import load_config
     from src.matching.scoring_v3 import compute_final_score
     from src.matching.scorer import Scorer
@@ -171,15 +171,22 @@ def test_company_penalties_dassault() -> None:
     res_generic = compute_final_score(parsed_normal, job_generic, cfg)
     res_dassault = compute_final_score(parsed_normal, job_dassault, cfg)
 
-    # La note Dassault doit être inférieure de 20 points à celle d'une entreprise similaire
-    assert res_generic.final_score - res_dassault.final_score == 20
-    assert res_dassault.final_score == res_generic.final_score - 20
+    # La note Dassault Systèmes doit être inférieure de 10 points à celle d'une entreprise similaire
+    assert res_generic.final_score - res_dassault.final_score == 10
+    assert res_dassault.final_score == res_generic.final_score - 10
+    assert res_dassault.cap_applied is None
+
+    # Dassault Aviation reste sous le plafond défense (10), la pénalité ne le relève pas
+    job_aviation = {**job_dassault, "company": "Dassault Aviation"}
+    res_aviation = compute_final_score(parsed_normal, job_aviation, cfg)
+    assert res_aviation.cap_applied == "DEFENSE"
+    assert res_aviation.final_score <= 10
 
     # Vérification également sur Scorer étage 1
     scorer = Scorer(cfg)
     scorer.semantic_score = lambda text: 50.0
     scored_generic = scorer.score(job_generic)
     scored_dassault = scorer.score(job_dassault)
-    # Dassault Systèmes a TIER_1 (100) mais subit le malus de 20
-    assert scored_dassault["final_score"] <= scored_generic["final_score"] + (0.25 * 100 - 0.25 * 60) - 20 + 0.01
+    # Dassault Systèmes a TIER_1 (100) mais subit le malus de 10
+    assert scored_dassault["final_score"] <= scored_generic["final_score"] + (0.25 * 100 - 0.25 * 60) - 10 + 0.01
 

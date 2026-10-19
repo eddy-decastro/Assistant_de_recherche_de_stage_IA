@@ -201,7 +201,7 @@ def compute_final_score(
     floors_cfg = scoring_v3.get("floors", {})
     scaleup_floor = int(floors_cfg.get("scaleup", 70))
     rd_floor = int(floors_cfg.get("rd", 60))
-    labo_public_floor = int(floors_cfg.get("labo_public", 50))
+    labo_public_floor = int(floors_cfg.get("labo_public", 60))
     min_tech_depth = int(floors_cfg.get("min_technical_depth", 3))
     trust_llm_scaleup = bool(floors_cfg.get("trust_llm_scaleup", False))
 

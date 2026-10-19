@@ -19,8 +19,8 @@ def test_determine_tier() -> None:
 
     assert scorer.determine_tier("Doctolib") == TIER_1
     assert scorer.determine_tier("Owkin") == TIER_1
-    # Mistral AI est retiré de tier_1 car dans excluded_defense
-    assert scorer.determine_tier("Mistral AI") == TIER_ESN
+    # Mistral AI n'est plus dans excluded_defense : Tier 1 via la liste scale-up
+    assert scorer.determine_tier("Mistral AI") == TIER_1
     assert scorer.determine_tier("Helsing") == TIER_ESN
     assert scorer.determine_tier("Capgemini") == TIER_ESN
     assert scorer.determine_tier("Alten") == TIER_ESN

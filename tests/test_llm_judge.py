@@ -140,7 +140,7 @@ def test_exclusions_amont_et_aval() -> None:
 
 
 def test_floors_application_and_condition() -> None:
-    """Planchers 70 (scale-up), 60 (R&D groupe), 50 (labo public) conditionnés à technical_depth >= 3."""
+    """Planchers 70 (scale-up), 60 (R&D groupe), 60 (labo public) conditionnés à technical_depth >= 3."""
     # Scale-up (Owkin est dans la liste scaleup) avec technical_depth = 4
     job_owkin = {"title": "Stage ML", "company": "Owkin", "description": "Recherche Deep Learning"}
     parsed_owkin = {
@@ -175,7 +175,7 @@ def test_floors_application_and_condition() -> None:
     assert b_edf.floor_value == 60
     assert b_edf.final_score == 60
 
-    # Labo public : plancher 50
+    # Labo public : plancher 60
     job_inria = {"title": "Stage Inria", "company": "Inria", "description": "Modélisation théorique"}
     parsed_inria = {
         "contract_type": "STAGE",
@@ -183,8 +183,8 @@ def test_floors_application_and_condition() -> None:
         "sub_scores": {"technical_depth": 3, "target_alignment": 3, "learning_environment": 3, "logistics": 3},
     }
     b_inria = compute_final_score(parsed_inria, job_inria)
-    assert b_inria.floor_value == 50
-    assert b_inria.final_score == 50
+    assert b_inria.floor_value == 60
+    assert b_inria.final_score == 60
 
     # Offre à note de qualité supérieure au plancher : max(quality, floor) conserve la note de qualité
     parsed_excellent = {
@@ -197,8 +197,8 @@ def test_floors_application_and_condition() -> None:
     assert b_exc.final_score == b_exc.quality_score  # Ne baisse pas à 70
 
 
-def test_mistral_ai_defense_cap_overrides_floor() -> None:
-    """Mistral AI est dans le Next40 mais exclu pour l'éthique : DEFENSE 10 l'emporte sur son plancher 70."""
+def test_mistral_ai_not_capped() -> None:
+    """Mistral AI n'est plus exclu : aucun plafond DEFENSE, plancher scale-up 70 applicable."""
     job_mistral = {"title": "Stage LLM", "company": "Mistral AI", "description": "Modèles de fondation"}
     parsed = {
         "contract_type": "STAGE",
@@ -207,9 +207,13 @@ def test_mistral_ai_defense_cap_overrides_floor() -> None:
     }
     b = compute_final_score(parsed, job_mistral)
     assert b.quality_score == 100
-    assert b.cap_applied == "DEFENSE"
-    assert b.cap_value == 10
-    assert b.final_score == 10  # Plafond DEFENSE l'emporte
+    assert b.cap_applied is None
+    assert b.final_score == 100
+
+    # Un autre nom de la liste défense reste plafonné
+    b_helsing = compute_final_score(parsed, {**job_mistral, "company": "Helsing"})
+    assert b_helsing.cap_applied == "DEFENSE"
+    assert b_helsing.final_score == 10
 
 
 def test_cap_citation_verification() -> None:
