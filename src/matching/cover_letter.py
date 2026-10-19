@@ -627,3 +627,123 @@ class CoverLetterGenerator:
             return self.generate_fallback(job, cv_text=cv, custom_instruction=custom_instruction)
 
         return self.last_error or "⚠️ Impossible de générer la lettre après plusieurs tentatives."
+
+    def generate_followup_message(
+        self,
+        job: dict[str, Any],
+        days_since_applied: int = 14,
+        channel: str = "email",
+        use_llm: bool = False,
+    ) -> str:
+        """Génère un message de relance (email à J+N) ou d'approche directe (LinkedIn < 300 chars).
+
+        Par défaut (use_llm=False), la génération est déterministe instantanée (< 10 ms),
+        très soignée en français, sans consommer de quota d'API.
+        """
+        cand = self.candidate or DEFAULT_CANDIDATE
+        cand_name = cand.get("name") or "Eddy DE CASTRO"
+        cand_title = cand.get("title") or "Élève-ingénieur IMT Mines Alès — M2 Mathématiques en Action"
+
+        raw_title = str(job.get("title") or "stage").strip()
+        raw_company = str(job.get("company") or "votre entreprise").strip()
+
+        # Extraction de 1 ou 2 points forts techniques
+        skills: list[str] = []
+        raw_skills = (
+            job.get("matching_skills")
+            or job.get("tech_stack")
+            or job.get("match_reasons")
+            or job.get("rationale")
+            or []
+        )
+        if isinstance(raw_skills, str):
+            skills = [s.strip() for s in re.split(r"[,;•\n]", raw_skills) if s.strip()]
+        elif isinstance(raw_skills, (list, tuple, set)):
+            skills = [str(s).strip() for s in raw_skills if str(s).strip()]
+
+        if not skills:
+            desc_lower = f"{raw_title} {job.get('description', '')}".lower()
+            if any(k in desc_lower for k in ("vision", "image", "cv", "segmentation")):
+                skills = ["Vision par ordinateur", "Deep Learning"]
+            elif any(k in desc_lower for k in ("nlp", "llm", "langage", "texte")):
+                skills = ["NLP", "Modèles de fondation"]
+            elif any(k in desc_lower for k in ("graph", "graphe", "gnn")):
+                skills = ["Graph Machine Learning", "PyTorch"]
+            elif any(k in desc_lower for k in ("quant", "incertitude", "conformal", "robuste")):
+                skills = ["Quantification d'incertitudes", "Machine Learning robuste"]
+            else:
+                skills = ["Modélisation statistique", "Machine Learning appliqué"]
+
+        tech_focus = " et ".join(skills[:2]) if len(skills) >= 2 else (skills[0] if skills else "Machine Learning")
+
+        ch = (channel or "email").strip().lower()
+
+        # Si LLM demandé et disponible
+        if use_llm and self.available:
+            try:
+                if ch == "linkedin":
+                    prompt = (
+                        f"Rédige une note d'invitation LinkedIn ultra-courte (< 280 caractères, strictement sous 300 caractères) "
+                        f"pour contacter un recruteur ou Data Lead de {raw_company} concernant le stage {raw_title}. "
+                        f"Candidat : {cand_name}, élève-ingénieur Mines Alès & M2 Maths en Action. "
+                        f"Point technique : {tech_focus}. Zéro crochet, zéro placeholder."
+                    )
+                else:
+                    prompt = (
+                        f"Rédige un email de relance professionnel et poli à J+{days_since_applied} suite à une candidature au stage de {raw_title} chez {raw_company}. "
+                        f"Longueur : 90 à 130 mots. Intègre l'objet, rappelle le double cursus mathématiques & IA d'Eddy DE CASTRO, "
+                        f"cite {tech_focus}, et réitère la disponibilité pour un stage de 6 mois dès avril 2027. Zéro crochet."
+                    )
+                resp = self._client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        temperature=0.3,
+                    ),
+                ) if self._client else None
+                if resp and resp.text:
+                    llm_text = resp.text.strip()
+                    if ch == "linkedin" and len(llm_text) <= 300:
+                        return llm_text
+                    elif ch != "linkedin" and 60 <= len(llm_text.split()) <= 160:
+                        return llm_text
+            except Exception:
+                pass
+
+        # Template instantané déterministe
+        if ch == "linkedin":
+            msg = (
+                f"Bonjour,\n"
+                f"Élève-ingénieur Mines Alès & M2 Maths, je candidate au stage de {raw_title} chez {raw_company}. "
+                f"Passionné par vos défis en {tech_focus}, j'aimerais échanger sur vos projets R&D !\n"
+                f"{cand_name}"
+            )
+            if len(msg) >= 300:
+                short_title = raw_title[:24].rstrip() + "..." if len(raw_title) > 27 else raw_title
+                msg = (
+                    f"Bonjour,\n"
+                    f"Élève Mines Alès & M2 Maths, je candidate au stage {short_title} chez {raw_company}. "
+                    f"Passionné par vos défis en {tech_focus}, j'aimerais échanger sur vos projets R&D !\n"
+                    f"{cand_name}"
+                )
+            if len(msg) >= 300:
+                msg = msg[:296] + "..."
+            return msg
+
+        # Email de relance à J+N (90-130 mots au total)
+        subject = f"Objet : Relance — Candidature au stage de {raw_title} — {cand_name}"
+        short_title = cand_title.split("—")[0].strip() if "—" in cand_title else cand_title
+
+        return (
+            f"{subject}\n\n"
+            f"Madame, Monsieur,\n\n"
+            f"Je me permets de vous relancer concernant ma candidature transmise il y a {days_since_applied} jours pour le stage de {raw_title} chez {raw_company}.\n\n"
+            f"Toujours très motivé à l'idée d'intégrer vos équipes, je vous réitère mon vif intérêt pour vos projets. "
+            f"Mon double cursus en mathématiques appliquées (M2 Mathématiques en Action) et IA (Mines Alès) "
+            f"me permettra d'être rapidement opérationnel pour contribuer à vos défis, en particulier sur {tech_focus}.\n\n"
+            f"Disponible dès début avril 2027 pour un stage conventionné de 6 mois, je serais ravi d'échanger avec vous lors d'un entretien.\n\n"
+            f"En vous remerciant pour votre attention, je vous prie d'agréer, Madame, Monsieur, mes salutations distinguées.\n\n"
+            f"{cand_name}\n"
+            f"{short_title}"
+        )

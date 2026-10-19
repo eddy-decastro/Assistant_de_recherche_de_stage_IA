@@ -26,6 +26,25 @@ scrapers:
   # pendant la collecte pour filtrer (et scorer) sur le texte complet.
   enrich_descriptions: true
   max_detail_fetches_per_source: 200
+  ats_boards:
+    lever:
+      - mistral
+      - owkin
+      - qonto
+      - shift-technology
+      - backmarket
+    greenhouse:
+      - datadog
+      - huggingface
+      - dataiku
+      - alan
+      - criteo
+    ashby:
+      - dust
+      - bioptimus
+    smartrecruiters:
+      - sanofi
+      - ubisoft
   passes:
     freshness:
       enabled: true
@@ -539,5 +558,33 @@ candidate:
   linkedin: "https://www.linkedin.com/in/eddy-de-castro/"
   github: "https://github.com/eddy-decastro"
   location: "Paris, France"
+
+# ---------------------------------------------------------------------------
+# Automatisations (toutes activables / désactivables individuellement)
+# ---------------------------------------------------------------------------
+automations:
+  # Parallélisation de la collecte entre les différentes sources (LinkedIn, WTTJ, ATS, Académique)
+  parallel_scraping: true
+  # Pré-générer et sauvegarder en base la lettre de motivation des N meilleures nouvelles offres
+  pregenerate_letters_enabled: false
+  pregenerate_letters_top_n: 3
+  pregenerate_letters_min_score: 85
+  # Vérifier automatiquement si les offres "Nouveau" anciennes (> N jours) sont expirées (404 / fermées)
+  check_expired_offers_enabled: false
+  expired_offers_age_days: 14
+  # Archiver (statut IGNORÉ) les offres "Nouveau" plus vieilles que N jours, sans appel réseau
+  auto_archive_enabled: true
+  auto_archive_age_days: 21
+  # Envoyer un résumé de fin de pipeline par Webhook (Discord / Slack / Telegram)
+  notifications_enabled: false
+  notification_min_score: 75
+  # Activer les rappels de relance (badge J+14) dans le Kanban
+  followup_reminders_enabled: true
+  followup_days_threshold: 14
+  # Calibration légère du juge LLM à partir des offres Postulées / Archivées
+  enable_preference_learning: false
+  # Sauvegarde quotidienne horodatée de la base SQLite sur Cloudflare R2 (backups/)
+  cloud_backup_enabled: true
+  cloud_backup_retention_days: 7
 
 

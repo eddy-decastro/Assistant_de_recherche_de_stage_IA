@@ -15,6 +15,7 @@ from utils.task_manager import (
     start_background_task,
 )
 from src.config import load_config, save_scraper_defaults
+from src.constants import SOURCE_ORDER, source_label
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,7 +104,7 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
         "Stage Machine Learning",
         "Stage Recherche IA",
     ])
-    default_sources = scrapers_cfg.get("enabled_sources", ["linkedin", "jobteaser"])
+    default_sources = scrapers_cfg.get("enabled_sources", ["linkedin", "wttj"])
     default_max = int(scrapers_cfg.get("max_offers_per_source", 200))
 
     st.subheader("Personnaliser et lancer la collecte", anchor=False)
@@ -120,9 +121,9 @@ def render_custom_collection_form(is_task_running: bool = False) -> None:
     with col1:
         sources_selected = st.multiselect(
             "Plateformes cibles",
-            options=["linkedin", "jobteaser"],
-            default=[s for s in default_sources if s in ("linkedin", "jobteaser")] or ["linkedin", "jobteaser"],
-            format_func=lambda s: "LinkedIn" if s == "linkedin" else "JobTeaser",
+            options=list(SOURCE_ORDER),
+            default=[s for s in default_sources if s in SOURCE_ORDER] or ["linkedin", "wttj"],
+            format_func=source_label,
             help="Sélectionnez les sources à interroger lors de ce scrape.",
         )
     with col2:

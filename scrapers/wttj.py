@@ -12,12 +12,13 @@ import html
 import os
 import re
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote
 
-
 from .base import BaseScraper
-from .models import CardEntry, PageResult, PassPlan, RawJob, ScraperConfig
+from .known import KnownIndex
+from .models import CardEntry, PageResult, PassPlan, PassReport, RawJob, ScrapeResult, ScraperConfig
 
 ALGOLIA_APP_ID = "CSEKHVMS53"
 ALGOLIA_API_KEY = "4bd8f6215d0cc52b26430765769e65a0"
@@ -110,6 +111,7 @@ class WelcomeToTheJungleScraper(BaseScraper):
             }
         )
         self._sort_notice_logged = False
+        self._page0_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _refresh_keys(self) -> bool:
         """Tente de rafraîchir les clés Algolia depuis l'endpoint public /api/env."""
@@ -142,7 +144,40 @@ class WelcomeToTheJungleScraper(BaseScraper):
         filters = f"contract_type:{CONTRACT_FILTER}"
         return f"{filters} AND offices.country_code:{country}" if country else filters
 
+    def preload_queries(self, queries: Sequence[str]) -> None:
+        """Précharge la page 0 de plusieurs requêtes Algolia en un seul appel multi-query."""
+        to_fetch = [q for q in queries if q not in self._page0_cache]
+        if not to_fetch:
+            return
+        payload = {
+            "requests": [
+                {
+                    "indexName": ALGOLIA_INDEX,
+                    "params": (
+                        f"query={quote(q)}"
+                        f"&filters={quote(self._filters())}"
+                        f"&hitsPerPage={HITS_PER_PAGE}"
+                        f"&page=0"
+                    ),
+                }
+                for q in to_fetch
+            ]
+        }
+        try:
+            response = self.client.post(ALGOLIA_QUERIES_ENDPOINT, json=payload)
+            if response.status_code in (401, 403) and self._refresh_keys():
+                response = self.client.post(ALGOLIA_QUERIES_ENDPOINT, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("results") or []
+            for q, res in zip(to_fetch, results):
+                self._page0_cache[q] = res.get("hits") or []
+        except Exception as exc:
+            self._logger.debug("WTTJ : échec du préchargement multi-requêtes : %s", exc)
+
     def _search(self, query: str, page: int) -> list[dict[str, Any]]:
+        if page == 0 and query in self._page0_cache:
+            return self._page0_cache[query]
         params = (
             f"query={quote(query)}"
             f"&filters={quote(self._filters())}"
@@ -157,8 +192,12 @@ class WelcomeToTheJungleScraper(BaseScraper):
         data = response.json()
         results = data.get("results") or []
         if not results:
-            return []
-        return results[0].get("hits") or []
+            hits = []
+        else:
+            hits = results[0].get("hits") or []
+        if page == 0:
+            self._page0_cache[query] = hits
+        return hits
 
     # ------------------------------------------------------------------ #
     # Normalisation
@@ -265,4 +304,67 @@ class WelcomeToTheJungleScraper(BaseScraper):
             exhausted=not hits,
             http_calls=1,
         )
+
+    def collect(
+        self,
+        known_index: KnownIndex | None = None,
+        *,
+        validate_jobs: bool = False,
+        modes: Sequence[str] | None = None,
+        queries: Sequence[str] | None = None,
+        on_batch_collected: Any = None,
+    ) -> ScrapeResult:
+        selected_modes = list(modes) if modes else self.config.enabled_modes()
+        selected_queries = list(queries) if queries else list(self.config.target_queries)
+
+        # Si "freshness" et "relevance" sont demandés ensemble, comme l'index Algolia
+        # wttj_jobs_production_fr n'accepte pas de tri par date distinct de la pertinence,
+        # on exécute uniquement "freshness" et on consigne "relevance" comme unsupported.
+        skip_relevance = "freshness" in selected_modes and "relevance" in selected_modes
+
+        if skip_relevance:
+            effective_modes = [m for m in selected_modes if m != "relevance"]
+        else:
+            effective_modes = selected_modes
+
+        self.preload_queries(selected_queries)
+
+        result = super().collect(
+            known_index=known_index,
+            validate_jobs=validate_jobs,
+            modes=effective_modes,
+            queries=selected_queries,
+            on_batch_collected=on_batch_collected,
+        )
+
+        if skip_relevance:
+            relevance_plan = self.config.build_plan(
+                "relevance",
+                date_order_reliable=self.DATE_ORDER_RELIABLE,
+                server_window_filter=self.SERVER_WINDOW_FILTER,
+            )
+            now_utc = datetime.now(timezone.utc)
+            for q in selected_queries:
+                report = PassReport(
+                    source=self.source,
+                    query=q,
+                    mode="relevance",
+                    started_at=now_utc,
+                    finished_at=now_utc,
+                    duration_seconds=0.0,
+                    pages_fetched=0,
+                    http_requests=0,
+                    cards_seen=0,
+                    jobs_kept=0,
+                    jobs_known=0,
+                    jobs_duplicate=0,
+                    jobs_rejected=0,
+                    jobs_out_of_window=0,
+                    target_new=relevance_plan.target_new,
+                    stop_reason="unsupported",
+                    stop_detail="Index Algolia unique : fusionné avec la passe freshness pour éviter les requêtes en double",
+                )
+                result.query_reports.append(report)
+
+        return result
 

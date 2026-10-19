@@ -23,6 +23,22 @@ from src.config import PROJECT_ROOT
 
 logger = logging.getLogger("src.storage.cloud_storage")
 
+__all__ = [
+    "DEFAULT_LOCAL_DB",
+    "DEFAULT_REMOTE_KEY",
+    "backup_remote_database",
+    "checkpoint_sqlite_wal",
+    "download_database",
+    "get_cloud_config",
+    "get_remote_metadata",
+    "get_s3_client",
+    "is_cloud_storage_configured",
+    "is_configured",
+    "sync_base_path",
+    "trigger_debounced_upload",
+    "upload_database",
+]
+
 DEFAULT_LOCAL_DB = PROJECT_ROOT / "data" / "stage_copilot.db"
 DEFAULT_REMOTE_KEY = "stage_copilot.db"
 
@@ -124,6 +140,8 @@ def get_cloud_config() -> dict[str, str]:
         "bucket_name": bucket_name,
         "region_name": region_name,
         "remote_key": remote_key,
+        "bucket": bucket_name,
+        "key": remote_key,
     }
 
 
@@ -131,6 +149,14 @@ def is_cloud_storage_configured() -> bool:
     """Indique si les variables nécessaires au stockage distant sont renseignées."""
     cfg = get_cloud_config()
     return bool(cfg["endpoint_url"] and cfg["access_key"] and cfg["secret_key"] and cfg["bucket_name"])
+
+
+is_configured = is_cloud_storage_configured
+
+
+def _client(cfg: dict[str, str] | None = None) -> Any:
+    """Retourne un client S3 configuré."""
+    return get_s3_client()
 
 
 def get_s3_client() -> Any:
@@ -192,12 +218,18 @@ def get_remote_metadata() -> dict[str, Any] | None:
         return None
 
 
-def download_database(target_path: Path | str | None = None, force: bool = False) -> bool:
+def download_database(
+    target_path: Path | str | None = None,
+    force: bool = False,
+    *,
+    db_path: Path | str | None = None,
+) -> bool:
     """Télécharge la base depuis le bucket vers target_path de façon atomique.
 
     Args:
         target_path: Chemin du fichier local (défaut: data/stage_copilot.db).
         force: Si True, écrase la base locale même si elle semble plus récente.
+        db_path: Alias de target_path.
 
     Returns:
         True si la base a été téléchargée/mise à jour, False sinon.
@@ -206,7 +238,8 @@ def download_database(target_path: Path | str | None = None, force: bool = False
         logger.info("Stockage distant non configuré : téléchargement ignoré.")
         return False
 
-    dest = Path(target_path) if target_path else DEFAULT_LOCAL_DB
+    chosen_path = db_path if db_path is not None else target_path
+    dest = Path(chosen_path) if chosen_path else DEFAULT_LOCAL_DB
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp_dest = dest.with_suffix(".tmp_download")
 
@@ -220,20 +253,39 @@ def download_database(target_path: Path | str | None = None, force: bool = False
 
             remote_time = meta.get("last_modified")
             remote_size = meta.get("size_bytes", 0)
-            if not force and dest.exists() and remote_time:
-                local_mtime = datetime.fromtimestamp(dest.stat().st_mtime, tz=timezone.utc)
-                local_size = dest.stat().st_size
-                if (local_size == remote_size) and (local_mtime >= remote_time):
-                    logger.info(
-                        "Base locale (%s, %d o) à jour avec distante (%s, %d o) : téléchargement évité.",
-                        local_mtime,
-                        local_size,
-                        remote_time,
-                        remote_size,
-                    )
-                    return False
-
+            remote_etag = meta.get("etag")
             s3 = get_s3_client()
+
+            if not force and dest.exists():
+                local_etag = _read_sync_etag(dest)
+                if local_etag and remote_etag:
+                    if local_etag == remote_etag:
+                        logger.info(
+                            "Base locale déjà synchronisée sur l'ETag %s : téléchargement évité.",
+                            local_etag,
+                        )
+                        return False
+                    logger.info(
+                        "Base distante modifiée (ETag distant %s != local %s) : fusion dans la copie locale...",
+                        remote_etag,
+                        local_etag,
+                    )
+                    _merge_from_remote(s3, cfg, dest, prefer_remote_columns=None)
+                    _record_sync_point(dest, remote_etag)
+                    return True
+                elif remote_time:
+                    local_mtime = datetime.fromtimestamp(dest.stat().st_mtime, tz=timezone.utc)
+                    local_size = dest.stat().st_size
+                    if (local_size == remote_size) and (local_mtime >= remote_time):
+                        logger.info(
+                            "Base locale (%s, %d o) à jour avec distante (%s, %d o) : téléchargement évité.",
+                            local_mtime,
+                            local_size,
+                            remote_time,
+                            remote_size,
+                        )
+                        return False
+
             logger.info("Téléchargement de %s depuis le bucket %s...", cfg["remote_key"], cfg["bucket_name"])
             s3.download_file(cfg["bucket_name"], cfg["remote_key"], str(temp_dest))
 
@@ -340,16 +392,77 @@ def upload_database(
         _SYNC_LOCK.release()
 
 
-def _remote_etag(s3: Any, cfg: dict[str, str]) -> str | None:
-    """ETag de la base distante, ou None si elle n'existe pas encore."""
+def _head_remote(s3: Any, cfg: dict[str, str]) -> dict[str, Any] | None:
+    """Métadonnées de l'objet distant ou None s'il n'existe pas."""
+    bucket = cfg.get("bucket_name") or cfg.get("bucket", "")
+    key = cfg.get("remote_key") or cfg.get("key", "")
     try:
-        resp = s3.head_object(Bucket=cfg["bucket_name"], Key=cfg["remote_key"])
+        return s3.head_object(Bucket=bucket, Key=key)
     except Exception as exc:
         code = str((getattr(exc, "response", None) or {}).get("Error", {}).get("Code", ""))
         if code in ("404", "NoSuchKey", "NotFound"):
             return None
         raise
+
+
+def _remote_etag(s3: Any, cfg: dict[str, str]) -> str | None:
+    """ETag de la base distante, ou None si elle n'existe pas encore."""
+    resp = _head_remote(s3, cfg)
+    if resp is None:
+        return None
     return (resp.get("ETag") or "").strip('"') or None
+
+
+def backup_remote_database(max_backups: int = 7) -> bool:
+    """Crée une copie quotidienne de la base distante et applique une rétention rotative.
+
+    Args:
+        max_backups: Nombre maximum de sauvegardes à conserver (0 = aucune suppression).
+
+    Returns:
+        True si la sauvegarde a été créée avec succès, False sinon.
+    """
+    if not is_configured():
+        return False
+
+    try:
+        cfg = get_cloud_config()
+        s3 = _client(cfg)
+        bucket = cfg.get("bucket") or cfg.get("bucket_name", "")
+        key = cfg.get("key") or cfg.get("remote_key", "")
+
+        if not _head_remote(s3, cfg):
+            logger.info("Base distante %s/%s inexistante, sauvegarde ignorée.", bucket, key)
+            return False
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        backup_key = f"backups/stage_copilot_{today_str}.db"
+
+        s3.copy_object(
+            Bucket=bucket,
+            CopySource={"Bucket": bucket, "Key": key},
+            Key=backup_key,
+        )
+        logger.info("Sauvegarde distante créée : %s/%s", bucket, backup_key)
+
+        if max_backups > 0:
+            prefix = "backups/stage_copilot_"
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+            contents = resp.get("Contents", [])
+            backups = sorted([item["Key"] for item in contents if "Key" in item])
+            if len(backups) > max_backups:
+                to_delete = backups[: len(backups) - max_backups]
+                for old_key in to_delete:
+                    try:
+                        s3.delete_object(Bucket=bucket, Key=old_key)
+                        logger.info("Ancienne sauvegarde supprimée : %s/%s", bucket, old_key)
+                    except Exception as del_exc:
+                        logger.warning("Impossible de supprimer l'ancienne sauvegarde %s : %s", old_key, del_exc)
+
+        return True
+    except Exception as exc:
+        logger.warning("Échec de la sauvegarde distante de la base : %s", exc)
+        return False
 
 
 def _is_precondition_failed(exc: Exception) -> bool:

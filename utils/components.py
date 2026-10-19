@@ -1,13 +1,48 @@
 from __future__ import annotations
-import streamlit as st
-from typing import Any, Sequence
-import json
-from utils.data import *
-from utils.data import _esc
 
-from src.constants import *
+import json
+import logging
+import re
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.constants import (
+    FLAGS,
+    FLAG_LABELS,
+    STATUS_APPLIED,
+    STATUS_IGNORED,
+    STATUS_OPTIONS,
+    STATUS_ORDER,
+    STATUS_REJECTED,
+    STRUCTURE_TYPE_LABELS,
+    STRUCTURE_TYPES,
+    TIER_LABELS,
+    source_label,
+)
 from src.matching.cover_letter import CoverLetterGenerator
 from src.matching.pdf_exporter import generate_cover_letter_pdf
+from utils.data import (
+    DISPLAY_FLAT,
+    DISPLAY_GROUPED,
+    EXCERPT_LENGTH,
+    PAGE_SIZE_ALL,
+    PAGE_SIZES,
+    QUALIFIED_SCORE,
+    STATUS_LABELS,
+    Filters,
+    _esc,
+    bump_data_version,
+    effective_score,
+    get_database,
+    is_reranked,
+    parse_timestamp,
+    relative_date,
+    source_distribution,
+    tone_class,
+)
+
+logger = logging.getLogger("utils.components")
 
 # Préfixe des lettres de secours générées en erreur (séquence échappée : aucun emoji dans le source).
 _WARN_PREFIX = "\u26a0\ufe0f"
@@ -63,7 +98,12 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     source_key = f"cover_letter_source_{job_id}"
     version_key = f"cover_letter_version_{job_id}"
     version = int(st.session_state.get(version_key, 0))
-    cached_letter = str(st.session_state.get(session_key, ""))
+    cached_letter = str(st.session_state.get(session_key) or "")
+    if not cached_letter:
+        db_letter = str(job.get("cover_letter") or "")
+        if db_letter:
+            cached_letter = db_letter
+            st.session_state[session_key] = cached_letter
     editor_key = f"editor_{session_key}_{version}"
 
     # Si la lettre n'a pas été générée ou si le cache contient une ancienne erreur
@@ -80,6 +120,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             version += 1
             st.session_state[version_key] = version
             editor_key = f"editor_{session_key}_{version}"
+            try:
+                get_database().update_cover_letter(str(job_id), new_letter)
+                bump_data_version()
+            except Exception as exc:
+                logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
 
     letter_text = st.session_state.get(session_key, "")
 
@@ -112,6 +157,14 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         height=380,
         key=editor_key,
     )
+
+    if edited != cached_letter:
+        st.session_state[session_key] = edited
+        try:
+            get_database().update_cover_letter(str(job_id), edited)
+            bump_data_version()
+        except Exception as exc:
+            logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
 
     words_count = len(edited.split())
     chars_count = len(edited)
@@ -230,6 +283,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 st.session_state[session_key] = new_l
                 st.session_state[source_key] = generator.last_source
                 st.session_state[version_key] = version + 1
+                try:
+                    get_database().update_cover_letter(str(job_id), new_l)
+                    bump_data_version()
+                except Exception as exc:
+                    logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
                 if generator.last_source == "gemini":
                     st.toast("✓ Lettre rédigée avec succès par Gemini !")
                 elif generator.last_source == "deepseek":
@@ -246,6 +304,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "deepseek"
                     st.session_state[version_key] = version + 1
+                    try:
+                        get_database().update_cover_letter(str(job_id), new_l)
+                        bump_data_version()
+                    except Exception as exc:
+                        logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
                     st.toast("✓ Lettre rédigée avec succès par DeepSeek V3 !")
                 else:
                     st.toast("DeepSeek non disponible, génération de secours activée.")
@@ -253,6 +316,11 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "fallback"
                     st.session_state[version_key] = version + 1
+                    try:
+                        get_database().update_cover_letter(str(job_id), new_l)
+                        bump_data_version()
+                    except Exception as exc:
+                        logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
                 st.rerun()
 
     # Section de candidature directe depuis la lettre de motivation

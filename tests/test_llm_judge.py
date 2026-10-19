@@ -348,3 +348,112 @@ def test_short_company_name_matching_boundaries() -> None:
     assert _name_matches("Swans Lake", "Swan") is False
 
 
+def test_llm_judge_multi_provider_fallback() -> None:
+    """Vérifie la cascade de fallback deepseek -> google lorsque le fournisseur principal échoue."""
+    import json
+    from unittest.mock import MagicMock
+    import requests
+    from src.config import load_config
+    from src.matching.llm_judge import LLMJudge
+
+    custom_cfg = dict(load_config())
+    custom_cfg["llm"] = {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "fallback_provider": "google",
+        "fallback_model": "gemini-2.5-flash",
+    }
+    judge = LLMJudge(config=custom_cfg, api_key="test_deepseek_key")
+    judge.fallback_api_key = "test_google_key"
+
+    # Simuler l'échec du provider principal
+    judge._post_chat = MagicMock(side_effect=requests.HTTPError("500 DeepSeek Server Error"))
+
+    # Simuler le succès du provider de secours
+    fallback_response = json.dumps({
+        "contract_type": "STAGE",
+        "structure_type": "SCALEUP_IA",
+        "sub_scores": {
+            "technical_depth": 4,
+            "target_alignment": 4,
+            "learning_environment": 3,
+            "logistics": 3,
+        },
+        "reasoning": "Évalué avec succès par Google Gemini en fallback.",
+    })
+    judge._post_chat_fallback = MagicMock(return_value=fallback_response)
+
+    job = {
+        "title": "Stage ML Scientist",
+        "company": "Owkin",
+        "description": "Modélisation de biomarqueurs par réseaux de neurones sous PyTorch.",
+    }
+    result = judge.judge(job)
+
+    # Vérifications
+    judge._post_chat.assert_called_once()
+    judge._post_chat_fallback.assert_called_once()
+    assert result.get("api_error") is not True
+    assert result.get("rerank_score", 0) >= 70
+    assert result.get("structure_type") == "SCALEUP_IA"
+    assert "Évalué avec succès par Google Gemini en fallback" in result.get("reasoning", "")
+
+
+def test_build_preference_calibration_block() -> None:
+    """Vérifie la génération du bloc XML de calibration d'après l'historique."""
+    from src.matching.llm_judge import build_preference_calibration_block
+
+    # 1. Liste vide
+    assert build_preference_calibration_block([]) == ""
+
+    # 2. Liste d'offres variées
+    sample_jobs = [
+        {"status": "Postulé", "title": "Stage Graph ML", "company": "Owkin", "rerank_score": 85},
+        {"status": "Entretien", "title": "Stage LLM Robustness", "company": "Mistral", "rerank_score": 90},
+        {"status": "Ignoré", "title": "Consultant BI ESN", "company": "Alten", "rerank_score": 68},
+        {"status": "Ignoré", "title": "Stagiaire Power BI", "company": "Capgemini", "rerank_score": 45},  # Exclu (< 60)
+        {"status": "Nouveau", "title": "Stage Data", "company": "PME", "rerank_score": 70},
+    ]
+
+    block = build_preference_calibration_block(sample_jobs, max_examples=3)
+    assert block.startswith("<calibration_candidat>")
+    assert block.endswith("</calibration_candidat>")
+    assert "Stage Graph ML chez Owkin" in block
+    assert "Stage LLM Robustness chez Mistral" in block
+    assert "Consultant BI ESN chez Alten" in block
+    # L'offre avec score 45 ne doit pas être incluse
+    assert "Stagiaire Power BI chez Capgemini" not in block
+
+
+def test_cover_letter_followup_message_generation() -> None:
+    """Vérifie la génération des messages de relance par email (90-130 mots) et LinkedIn (< 300 caractères)."""
+    from src.matching.cover_letter import CoverLetterGenerator
+
+    gen = CoverLetterGenerator()
+    job = {
+        "title": "Stage Data Scientist R&D",
+        "company": "Owkin",
+        "matching_skills": ["PyTorch", "Quantification d'incertitudes"],
+    }
+
+    # 1. Message de relance email à J+14
+    email_msg = gen.generate_followup_message(job, days_since_applied=14, channel="email")
+    assert "Objet : Relance" in email_msg
+    assert "14 jours" in email_msg
+    assert "Owkin" in email_msg
+    assert "Stage Data Scientist R&D" in email_msg
+    assert "Eddy DE CASTRO" in email_msg
+
+    # Vérification de la longueur du corps en mots
+    words = email_msg.split()
+    assert 85 <= len(words) <= 140
+
+    # 2. Message d'approche LinkedIn
+    linkedin_msg = gen.generate_followup_message(job, channel="linkedin")
+    assert len(linkedin_msg) < 300
+    assert "Owkin" in linkedin_msg
+    assert "Eddy DE CASTRO" in linkedin_msg
+    assert "[" not in linkedin_msg and "]" not in linkedin_msg
+
+
+

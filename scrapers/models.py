@@ -19,8 +19,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-# Identifiant de source normalisé (wttj | linkedin | jobteaser).
-Source = Literal["wttj", "linkedin", "jobteaser"]
+# Identifiant de source normalisé (wttj | linkedin | jobteaser | ats | academic).
+Source = Literal["wttj", "linkedin", "jobteaser", "ats", "academic"]
 
 _logger = logging.getLogger("scrapers.models")
 
@@ -249,6 +249,7 @@ def is_incomplete_stop(reason: str | None) -> bool:
 SEEN_VALIDATED = "VALIDATED"                  # retenue : insérée dans ``jobs``
 SEEN_REJECTED_BI = "REJECTED_BI"              # écartée par le filtre anti-BI / DS-ML
 SEEN_REJECTED_CONTRACT = "REJECTED_CONTRACT"  # hors stage / contrat incompatible
+SEEN_REJECTED_TITLE = "REJECTED_TITLE"        # titre écarté avant récupération de fiche
 SEEN_OUT_OF_WINDOW = "OUT_OF_WINDOW"          # antérieure à la fenêtre temporelle
 SEEN_DUPLICATE = "DUPLICATE"                  # déjà croisée dans le même run
 SEEN_KNOWN = "KNOWN"                          # déjà connue avant ce run
@@ -257,6 +258,7 @@ SEEN_DECISIONS: tuple[str, ...] = (
     SEEN_VALIDATED,
     SEEN_REJECTED_BI,
     SEEN_REJECTED_CONTRACT,
+    SEEN_REJECTED_TITLE,
     SEEN_OUT_OF_WINDOW,
     SEEN_DUPLICATE,
     SEEN_KNOWN,
@@ -576,6 +578,9 @@ class ScraperConfig(BaseModel):
     enabled_sources: list[Source] = Field(
         default_factory=lambda: ["wttj", "linkedin", "jobteaser"]
     )
+    parallel_sources: bool = True
+    ats_boards: dict[str, list[str]] = Field(default_factory=dict)
+    excluded_companies: list[str] = Field(default_factory=list)
     max_offers_per_source: int = 120
     # DÉPRÉCIÉ — quota « à plat » d'une collecte mono-passe. S'il est renseigné
     # sans section ``passes``, il alimente le quota des deux passes (compatibilité

@@ -142,6 +142,38 @@ def _encode_sub_scores(value: Any) -> str | None:
     return None
 
 
+def _decode_json_dict(raw: str | None) -> dict[str, str]:
+    """Décode une colonne JSON en dict de chaînes (tolérant aux erreurs)."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {str(k): str(v) for k, v in parsed.items()}
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return {}
+
+
+def _encode_json_dict(values: dict[str, Any] | Mapping[str, Any] | str | None) -> str:
+    """Sérialise proprement un dict en JSON (ou valide une chaîne JSON dict, sinon '{}')."""
+    if values is None or values == "":
+        return "{}"
+    if isinstance(values, (dict, Mapping)):
+        return json.dumps(dict(values), ensure_ascii=False)
+    if isinstance(values, str):
+        try:
+            parsed = json.loads(values)
+            if isinstance(parsed, dict):
+                return values
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return "{}"
+    return "{}"
+
+
 
 class Job(Base):
     """Une offre de stage collectée et scorée."""
@@ -204,12 +236,18 @@ class Job(Base):
     signals_json = Column(Text, nullable=True)
     company_note_json = Column(Text, nullable=True)
     grading_version = Column(String(10), default="v3", nullable=True)
+    cover_letter = Column(Text, nullable=True)
+    user_notes = Column(Text, nullable=True)
+    evidence_json = Column(Text, nullable=True)
+    questions_json = Column(Text, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         data = {column.name: getattr(self, column.name) for column in self.__table__.columns}
         for name in _JSON_COLUMNS:
             data[name] = _decode_json_list(data.get(name))
         data["sub_scores"] = _decode_sub_scores(data.get("sub_scores"))
+        data["evidence"] = _decode_json_dict(data.pop("evidence_json", None))
+        data["questions_entretien"] = _decode_json_list(data.pop("questions_json", None))
         if data.get("signals_json"):
             try:
                 data["signals"] = json.loads(data["signals_json"])
@@ -401,6 +439,10 @@ class Database:
                 "signals_json": "TEXT",
                 "company_note_json": "TEXT",
                 "grading_version": "VARCHAR(10) DEFAULT 'v1'",
+                "cover_letter": "TEXT",
+                "user_notes": "TEXT",
+                "evidence_json": "TEXT",
+                "questions_json": "TEXT",
             },
             "seen_jobs": {
                 # Empreinte du filtre métier d'un rejet (réévaluation automatique).
@@ -559,6 +601,26 @@ class Database:
             record.status = status
             if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
                 record.applied_at = datetime.utcnow()
+            session.commit()
+            return True
+
+    def update_cover_letter(self, job_id: str, cover_letter: str | None) -> bool:
+        """Sauvegarde ou met à jour la lettre de motivation d'une offre."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.cover_letter = (cover_letter or "").strip() or None
+            session.commit()
+            return True
+
+    def update_user_notes(self, job_id: str, user_notes: str | None) -> bool:
+        """Sauvegarde les notes personnelles de l'utilisateur sur une offre."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.user_notes = (user_notes or "").strip() or None
             session.commit()
             return True
 
@@ -733,6 +795,8 @@ class Database:
         signals_json: str | dict | None = None,
         company_note_json: str | dict | None = None,
         grading_version: str = "v3",
+        evidence_json: str | Mapping[str, Any] | None = None,
+        questions_entretien: Iterable[str] | None = None,
     ) -> bool:
         """Enregistre l'analyse fine (étape 2) d'une offre. False si introuvable.
 
@@ -790,6 +854,10 @@ class Database:
                     record.company_note_json = str(company_note_json)
             if grading_version is not None:
                 record.grading_version = grading_version
+            if evidence_json is not None:
+                record.evidence_json = _encode_json_dict(evidence_json)
+            if questions_entretien is not None:
+                record.questions_json = _encode_json_list(questions_entretien)
 
             if (exclusion_reason or verdict == "EXCLU") and record.status in _AUTO_STATUSES:
                 record.status = STATUS_EXCLUDED
@@ -991,9 +1059,30 @@ class Database:
                 record.sub_scores = None
                 record.hard_cap_triggered = None
                 record.reasoning = None
+                record.evidence_json = None
+                record.questions_json = None
                 ids.append(record.id)
             session.commit()
             return ids
+
+    def clear_rerank_scores(self) -> int:
+        """Remet à zéro l'analyse LLM pour toutes les offres scorées."""
+        with self.SessionLocal() as session:
+            stmt = select(Job).where(Job.rerank_score.is_not(None))
+            records = session.execute(stmt).scalars().all()
+            for record in records:
+                record.rerank_score = None
+                record.verdict = None
+                record.match_reasons = None
+                record.red_flags = None
+                record.tech_stack = None
+                record.sub_scores = None
+                record.hard_cap_triggered = None
+                record.reasoning = None
+                record.evidence_json = None
+                record.questions_json = None
+            session.commit()
+            return len(records)
 
     def count_jobs(self, status: Optional[str] = None) -> int:
         """Compte le nombre d'offres (optionnellement filtrées par statut)."""

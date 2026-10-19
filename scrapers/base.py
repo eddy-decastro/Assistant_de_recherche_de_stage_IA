@@ -46,6 +46,7 @@ from .models import (
     SEEN_OUT_OF_WINDOW,
     SEEN_REJECTED_BI,
     SEEN_REJECTED_CONTRACT,
+    SEEN_REJECTED_TITLE,
     SEEN_VALIDATED,
     PageResult,
     PassPlan,
@@ -252,8 +253,48 @@ def screen_rejection(title: str, description: str, config: ScraperConfig) -> str
     return _business_rejection(title_low, description_low, config, where="l'annonce")
 
 
-def title_exclusion(title: str, config: ScraperConfig) -> str:
-    """Pré-filtre sur le TITRE seul (``""`` = à approfondir).
+def alternance_semantic_reason(title: str) -> str | None:
+    """Détecte si le titre indique une alternance ou un contrat non-stage exclusif."""
+    t_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
+    if any(cue in t_low for cue in INTERNSHIP_TITLE_CUES) or "pfe" in t_low:
+        return None
+    for marker in ("alternance", "apprentissage", "contrat pro", "rythme", "cdi", "cdd", "freelance"):
+        if _contains_keyword(t_low, marker):
+            return f"contrat incompatible (« {marker} »)"
+    return None
+
+
+def non_ds_title_reason(title: str) -> str | None:
+    """Détecte les métiers sans aucun rapport avec la Data / IA / R&D dans le titre."""
+    t_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
+    non_ds_roles = (
+        "ressources humaines", "recrutement", "talent acquisition", "chargé de rh",
+        "juriste", "avocat", "droit social", "droit des affaires",
+        "comptable", "comptabilité", "contrôleur de gestion",
+        "chargé de communication", "community manager", "graphiste",
+        "commercial", "business developer", "sales", "account executive", "assistant commercial",
+        "support it", "technicien support", "helpdesk",
+    )
+    for role in non_ds_roles:
+        if _contains_keyword(t_low, role):
+            return f"métier hors cible (« {role} »)"
+    return None
+
+
+def _company_exclusion(company: str, config: ScraperConfig | None = None) -> str | None:
+    """Pré-filtre sur le nom de l'entreprise si configurée comme exclue."""
+    comp_norm = (company or "").strip().casefold()
+    if not comp_norm:
+        return None
+    excluded_list = getattr(config, "excluded_companies", []) or []
+    for excluded in excluded_list:
+        if excluded.casefold().strip() and excluded.casefold().strip() in comp_norm:
+            return f"entreprise exclue (« {excluded} »)"
+    return None
+
+
+def title_exclusion(title: str, config: ScraperConfig | None = None) -> str | None:
+    """Pré-filtre sur le TITRE seul (None = à approfondir).
 
     Utilisé pour les sources dont la page de liste n'expose pas la description
     (LinkedIn) : seules les exclusions explicites du titre écartent la carte avant
@@ -262,10 +303,20 @@ def title_exclusion(title: str, config: ScraperConfig) -> str:
     fait du ML serait perdu).
     """
     title_low = re.sub(r"\s+", " ", (title or "").casefold()).strip()
-    for keyword in config.exclusion_keywords:
-        if _contains_keyword(title_low, keyword):
-            return f"orientation BI / reporting (« {keyword} »)"
-    return ""
+    if config:
+        for keyword in config.exclusion_keywords:
+            if _contains_keyword(title_low, keyword):
+                return f"orientation BI / reporting (« {keyword} »)"
+
+    alt_reason = alternance_semantic_reason(title)
+    if alt_reason:
+        return alt_reason
+
+    non_ds = non_ds_title_reason(title)
+    if non_ds:
+        return non_ds
+
+    return None
 
 
 class BaseScraper(ABC):
@@ -416,6 +467,19 @@ class BaseScraper(ABC):
         pre_rejection = title_exclusion(job.title, self.config)
         if pre_rejection:
             return pre_rejection, job, 0, True
+
+        company_reason = _company_exclusion(job.company, self.config)
+        if company_reason:
+            return company_reason, job, 0, True
+
+        exp_reason = experience_reason(job.title, "")
+        if exp_reason:
+            return exp_reason, job, 0, True
+
+        intern_reason = not_internship_reason(job.title, "")
+        if intern_reason:
+            return intern_reason, job, 0, True
+
         description, calls = self._try_fetch_detail(job)
         if description:
             job = job.model_copy(update={"description": description})
@@ -838,11 +902,16 @@ class BaseScraper(ABC):
                     counters["http_requests"] += detail_calls
                 if rejection:
                     counters["jobs_rejected"] += 1
-                    decision = (
-                        SEEN_REJECTED_CONTRACT
-                        if rejection.startswith("contrat incompatible")
-                        else SEEN_REJECTED_BI
-                    )
+                    if (
+                        rejection.startswith("contrat incompatible")
+                        or "pas un stage" in rejection
+                        or "hors stage" in rejection
+                    ):
+                        decision = SEEN_REJECTED_CONTRACT
+                    elif rejection.startswith(("métier hors cible", "entreprise exclue", "niveau d'expérience", "poste expérimenté", "poste senior", "expérience exigée")):
+                        decision = SEEN_REJECTED_TITLE
+                    else:
+                        decision = SEEN_REJECTED_BI
                     seen.append(
                         SeenEntry(
                             source=self.source,

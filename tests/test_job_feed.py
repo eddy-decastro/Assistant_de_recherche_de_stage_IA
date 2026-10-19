@@ -55,6 +55,10 @@ RERANKED = {
     "status": STATUS_APPLIED,
     "reasoning": "Calendrier aligné, mission de modélisation réelle.",
     "sub_scores": {"modeling_depth": 5, "mentorship_team": 4, "career_leverage": 4, "pfe_compatibility": 5},
+    "evidence": {"modeling_depth": "modélisation de fond sous PyTorch"},
+    "company_note": {"known": True, "note": "Scale-up IA de premier plan"},
+    "questions_entretien": ["Comment gérer le scale-up ?", "Quelles architectures GNN ?"],
+    "user_notes": "Pris contact avec le Lead ML.",
     "signals": {
         "encadrant_explicite": {"present": True, "evidence": "encadré par un chercheur senior"},
         "donnees_benchmark_seulement": {"present": False},
@@ -72,6 +76,7 @@ def test_serialize_offre_non_evaluee() -> None:
     assert data["status"] == STATUS_NEW and data["is_new"] is True and data["status_label"] == "Nouveau"
     assert data["source_label"] == "JobTeaser" and data["source_color"].startswith("#")
     assert data["description"] == "" and data["hard_cap"] == "" and data["group"] == ""
+    assert data["company_note"] == "" and data["questions_entretien"] == [] and data["user_notes"] == ""
 
 
 def test_serialize_offre_evaluee_complete() -> None:
@@ -84,17 +89,40 @@ def test_serialize_offre_evaluee_complete() -> None:
     assert data["red_flags"] == ["Périmètre susceptible d'évoluer"]
     assert data["reasoning"].startswith("Calendrier aligné")
     assert data["is_new"] is False and data["status_label"] == "Postulé"
-    # Sous-scores : ordre stable, libellés, tonalité selon la valeur
+    # Sous-scores : ordre stable, libellés, tonalité selon la valeur, evidence
     subs = {item["key"]: item for item in data["sub_scores"]}
     assert set(subs) == {"modeling_depth", "mentorship_team", "career_leverage", "pfe_compatibility"}
     assert subs["modeling_depth"]["value"] == 5 and subs["modeling_depth"]["tone"] == "positive"
     assert subs["mentorship_team"]["value"] == 4 and subs["mentorship_team"]["tone"] == "accent"
     assert subs["modeling_depth"]["label"] == "Modélisation" and subs["modeling_depth"]["short"]
+    assert subs["modeling_depth"]["evidence"] == "modélisation de fond sous PyTorch"
+    assert subs["mentorship_team"]["evidence"] == ""
+    # Nouveaux champs v3
+    assert data["company_note"] == "Scale-up IA de premier plan"
+    assert data["questions_entretien"] == ["Comment gérer le scale-up ?", "Quelles architectures GNN ?"]
+    assert data["user_notes"] == "Pris contact avec le Lead ML."
     # Seuls les signaux présents sont exposés, avec leur citation
     assert [s["evidence"] for s in data["signals"]] == ["encadré par un chercheur senior"]
     assert data["signals"][0]["tone"] == "positive"
     # Les sauts de ligne multiples de la fiche sont compactés
     assert data["description"] == "Mission de recherche.\nPyTorch et GNN."
+
+
+def test_serialize_nouveaux_champs_v3() -> None:
+    job = {
+        **RERANKED,
+        "evidence": json.dumps({"modeling_depth": "preuve en chaîne json"}),
+        "company_note": {"known": False, "note": "Entreprise inconnue"},
+        "questions_entretien": [f"Question {i}" for i in range(10)],
+        "user_notes": "  Notes avec espaces  ",
+    }
+    data = serialize_job(job, ())
+    subs = {item["key"]: item for item in data["sub_scores"]}
+    assert subs["modeling_depth"]["evidence"] == "preuve en chaîne json"
+    assert data["company_note"] == ""
+    assert len(data["questions_entretien"]) == 5
+    assert data["questions_entretien"][0] == "Question 0"
+    assert data["user_notes"] == "Notes avec espaces"
 
 
 def test_serialize_verrou_bloquant_et_plafond() -> None:

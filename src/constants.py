@@ -14,6 +14,7 @@ from scrapers.models import (  # noqa: F401  (ré-export volontaire)
     SEEN_OUT_OF_WINDOW,
     SEEN_REJECTED_BI,
     SEEN_REJECTED_CONTRACT,
+    SEEN_REJECTED_TITLE,
     SEEN_VALIDATED,
     is_incomplete_stop,
 )
@@ -284,27 +285,35 @@ def coerce_sub_score(value: Any) -> int:
 # Les scrapers unifiés écrivent "wttj" ; l'ingestion historique WTTJ
 # (src/ingestion/wttj.py) écrivait "welcome_to_the_jungle" : les deux valeurs
 # désignent la même plateforme et partagent donc le même libellé.
-SOURCE_LABELS = {
+SOURCE_LABELS: dict[str, str] = {
     "linkedin": "LinkedIn",
     "wttj": "Welcome to the Jungle",
     "welcome_to_the_jungle": "Welcome to the Jungle",
+    "ats": "Scale-ups (ATS Direct)",
+    "academic": "R&D Publique & CIFRE",
     "jobteaser": "JobTeaser",
+    "manual": "Ajout manuel",
     "manuel": "Saisie manuelle",
     "gmail": "Gmail",
 }
 
 # Couleur de badge par plateforme (repli : gris ardoise).
-SOURCE_COLORS = {
-    "linkedin": "#1C1B19",
-    "wttj": "#A8761F",
-    "welcome_to_the_jungle": "#A8761F",
-    "jobteaser": "#A8761F",
+SOURCE_COLORS: dict[str, str] = {
+    "linkedin": "#0A66C2",
+    "wttj": "#FFCD00",
+    "welcome_to_the_jungle": "#FFCD00",
+    "ats": "#059669",
+    "academic": "#7C3AED",
+    "jobteaser": "#FF5A5F",
+    "manual": "#64748B",
+    "manuel": "#64748B",
+    "gmail": "#EA4335",
 }
 
 SOURCE_FALLBACK_COLOR = "#475569"
 
 # Ordre d'affichage préféré des plateformes ; les sources inconnues suivent.
-SOURCE_ORDER = ["linkedin", "wttj", "welcome_to_the_jungle", "jobteaser"]
+SOURCE_ORDER: tuple[str, ...] = ("linkedin", "wttj", "ats", "academic", "jobteaser")
 
 # Candidatures enregistrées hors scraping (formulaire du Kanban, import des mails).
 SOURCE_MANUAL = "manuel"
@@ -405,6 +414,7 @@ SEEN_DECISION_LABELS = {
     SEEN_VALIDATED: "Retenue",
     SEEN_REJECTED_BI: "Refusée — hors sujet",
     SEEN_REJECTED_CONTRACT: "Refusée — contrat incompatible",
+    SEEN_REJECTED_TITLE: "Refusée — titre hors cible",
     SEEN_OUT_OF_WINDOW: "Hors fenêtre temporelle",
     SEEN_DUPLICATE: "Doublon du run",
     SEEN_KNOWN: "Déjà connue",

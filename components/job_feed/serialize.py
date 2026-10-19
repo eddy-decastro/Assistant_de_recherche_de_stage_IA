@@ -69,10 +69,21 @@ def _limited(text: str) -> str:
     return text if len(text) <= DESCRIPTION_LIMIT else text[:DESCRIPTION_LIMIT] + TRUNCATION_MARK
 
 
-def _texts(values: Any) -> list[str]:
-    if not isinstance(values, (list, tuple)):
+def _texts(values: Any, limit: int | None = None) -> list[str]:
+    if isinstance(values, str):
+        try:
+            import json
+            parsed = json.loads(values)
+            if isinstance(parsed, (list, tuple)):
+                values = parsed
+            else:
+                values = [values]
+        except Exception:
+            values = [values]
+    elif not isinstance(values, (list, tuple)):
         return []
-    return [str(item) for item in values if str(item).strip()]
+    res = [str(item).strip() for item in values if str(item).strip()]
+    return res[:limit] if limit is not None else res
 
 
 def _http_url(value: Any) -> str:
@@ -134,6 +145,21 @@ def _sub_scores(job: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     if not keys:
         keys = list(SUB_SCORE_KEYS)
+
+    evidence_raw = job.get("evidence")
+    if isinstance(evidence_raw, str):
+        try:
+            import json
+            evidence_dict = json.loads(evidence_raw)
+            if not isinstance(evidence_dict, dict):
+                evidence_dict = {}
+        except Exception:
+            evidence_dict = {}
+    elif isinstance(evidence_raw, dict):
+        evidence_dict = evidence_raw
+    else:
+        evidence_dict = {}
+
     items = []
     for key in keys:
         value = coerce_sub_score(raw.get(key))
@@ -144,6 +170,7 @@ def _sub_scores(job: dict[str, Any]) -> list[dict[str, Any]]:
                 "short": SUB_SCORE_SHORT_LABELS.get(key, SUB_SCORE_LABELS.get(key, key)),
                 "value": value,
                 "tone": _SUBSCORE_TONES.get(value, "alert"),
+                "evidence": str(evidence_dict.get(key) or "").strip(),
             }
         )
     return items
@@ -162,14 +189,52 @@ def _signals(job: dict[str, Any]) -> list[dict[str, str]]:
     return items
 
 
-def serialize_job(job: dict[str, Any], keywords: Sequence[str], group: str = "") -> dict[str, Any]:
+def serialize_job(
+    job: dict[str, Any],
+    keywords: Sequence[str] | int = (),
+    group: str = "",
+    index: int = 0,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Convertit une offre de la base en dictionnaire JSON pour le composant."""
+    if isinstance(keywords, int):
+        kw_seq: Sequence[str] = ()
+    else:
+        kw_seq = keywords
+    _ = index
+
     reranked = is_reranked(job)
     score = effective_score(job)
     align_label, align_tone = score_alignment(score)
     status = job.get("status") or STATUS_NEW
     verdict = (job.get("verdict") or "") if reranked else ""
     quality = job.get("quality_score")
+
+    company_note_raw = job.get("company_note")
+    if isinstance(company_note_raw, str) and company_note_raw.strip().startswith("{"):
+        try:
+            import json
+            company_note_dict = json.loads(company_note_raw)
+        except Exception:
+            company_note_dict = {}
+    elif isinstance(company_note_raw, dict):
+        company_note_dict = company_note_raw
+    else:
+        company_note_dict = None
+
+    if company_note_dict is not None:
+        if company_note_dict.get("known") is True:
+            company_note_str = str(company_note_dict.get("note") or "").strip()
+        else:
+            company_note_str = ""
+    elif isinstance(company_note_raw, str):
+        company_note_str = company_note_raw.strip()
+    else:
+        company_note_str = ""
+
+    questions_entretien = _texts(job.get("questions_entretien"), limit=5)
+    user_notes_str = str(job.get("user_notes") or "").strip()
+
     return {
         "id": str(job.get("id")),
         "title": _one_line(job.get("title")) or "Offre sans titre",
@@ -194,7 +259,7 @@ def serialize_job(job: dict[str, Any], keywords: Sequence[str], group: str = "")
         "badges": _badges(job),
         "sub_scores": _sub_scores(job),
         "signals": _signals(job),
-        "technologies": detected_technologies(job, keywords),
+        "technologies": detected_technologies(job, kw_seq),
         "strengths": _texts(job.get("match_reasons")),
         "red_flags": _texts(job.get("red_flags")),
         "reasoning": _multiline(job.get("reasoning")) if reranked else "",
@@ -202,6 +267,9 @@ def serialize_job(job: dict[str, Any], keywords: Sequence[str], group: str = "")
         "rejection_reason": (job.get("rejection_reason") or "").strip(),
         "url": _http_url(job.get("url")),
         "group": group,
+        "company_note": company_note_str,
+        "questions_entretien": questions_entretien,
+        "user_notes": user_notes_str,
     }
 
 

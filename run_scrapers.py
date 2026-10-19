@@ -422,32 +422,38 @@ def _rerank_top(
                     continue
                 consecutive_errs = 0
 
-                db.update_rerank(
-                    job["id"],
-                    result["rerank_score"],
-                    verdict=result.get("verdict"),
-                    match_reasons=result.get("match_reasons"),
-                    red_flags=result.get("red_flags"),
-                    tech_stack=result.get("tech_stack"),
-                    sub_scores=result.get("sub_scores"),
-                    hard_cap_triggered=result.get("hard_cap_triggered"),
-                    reasoning=result.get("reasoning", ""),
-                    contract_type=result.get("contract_type"),
-                    structure_type=result.get("structure_type"),
-                    category_confidence=result.get("category_confidence"),
-                    rd_nature=result.get("rd_nature"),
-                    duration_months=result.get("duration_months"),
-                    is_cesure=result.get("is_cesure"),
-                    quality_score=result.get("quality_score"),
-                    floor_value=result.get("floor_value"),
-                    floor_reason=result.get("floor_reason"),
-                    cap_applied=result.get("cap_applied"),
-                    exclusion_reason=result.get("exclusion_reason"),
-                    scaleup_suggested=result.get("scaleup_suggested"),
-                    signals_json=result.get("signals"),
-                    company_note_json=result.get("company_note"),
-                    grading_version=result.get("grading_version", "v3"),
-                )
+                rerank_kwargs = {
+                    "verdict": result.get("verdict"),
+                    "match_reasons": result.get("match_reasons"),
+                    "red_flags": result.get("red_flags"),
+                    "tech_stack": result.get("tech_stack"),
+                    "sub_scores": result.get("sub_scores"),
+                    "hard_cap_triggered": result.get("hard_cap_triggered"),
+                    "reasoning": result.get("reasoning", ""),
+                    "contract_type": result.get("contract_type"),
+                    "structure_type": result.get("structure_type"),
+                    "category_confidence": result.get("category_confidence"),
+                    "rd_nature": result.get("rd_nature"),
+                    "duration_months": result.get("duration_months"),
+                    "is_cesure": result.get("is_cesure"),
+                    "quality_score": result.get("quality_score"),
+                    "floor_value": result.get("floor_value"),
+                    "floor_reason": result.get("floor_reason"),
+                    "cap_applied": result.get("cap_applied"),
+                    "exclusion_reason": result.get("exclusion_reason"),
+                    "scaleup_suggested": result.get("scaleup_suggested"),
+                    "signals_json": result.get("signals"),
+                    "company_note_json": result.get("company_note"),
+                    "grading_version": result.get("grading_version", "v3"),
+                    "evidence_json": result.get("evidence"),
+                    "questions_entretien": result.get("questions_entretien"),
+                }
+                try:
+                    db.update_rerank(job["id"], result["rerank_score"], **rerank_kwargs)
+                except TypeError:
+                    rerank_kwargs.pop("evidence_json", None)
+                    rerank_kwargs.pop("questions_entretien", None)
+                    db.update_rerank(job["id"], result["rerank_score"], **rerank_kwargs)
                 evaluated_count += 1
                 cap_note = (
                     f" [verrou: {result['hard_cap_triggered']}]"
@@ -491,32 +497,38 @@ def _rerank_top(
 
             consecutive_api_errors = 0
 
-            db.update_rerank(
-                job["id"],
-                result["rerank_score"],
-                verdict=result.get("verdict"),
-                match_reasons=result.get("match_reasons"),
-                red_flags=result.get("red_flags"),
-                tech_stack=result.get("tech_stack"),
-                sub_scores=result.get("sub_scores"),
-                hard_cap_triggered=result.get("hard_cap_triggered"),
-                reasoning=result.get("reasoning", ""),
-                contract_type=result.get("contract_type"),
-                structure_type=result.get("structure_type"),
-                category_confidence=result.get("category_confidence"),
-                rd_nature=result.get("rd_nature"),
-                duration_months=result.get("duration_months"),
-                is_cesure=result.get("is_cesure"),
-                quality_score=result.get("quality_score"),
-                floor_value=result.get("floor_value"),
-                floor_reason=result.get("floor_reason"),
-                cap_applied=result.get("cap_applied"),
-                exclusion_reason=result.get("exclusion_reason"),
-                scaleup_suggested=result.get("scaleup_suggested"),
-                signals_json=result.get("signals"),
-                company_note_json=result.get("company_note"),
-                grading_version=result.get("grading_version", "v3"),
-            )
+            rerank_kwargs = {
+                "verdict": result.get("verdict"),
+                "match_reasons": result.get("match_reasons"),
+                "red_flags": result.get("red_flags"),
+                "tech_stack": result.get("tech_stack"),
+                "sub_scores": result.get("sub_scores"),
+                "hard_cap_triggered": result.get("hard_cap_triggered"),
+                "reasoning": result.get("reasoning", ""),
+                "contract_type": result.get("contract_type"),
+                "structure_type": result.get("structure_type"),
+                "category_confidence": result.get("category_confidence"),
+                "rd_nature": result.get("rd_nature"),
+                "duration_months": result.get("duration_months"),
+                "is_cesure": result.get("is_cesure"),
+                "quality_score": result.get("quality_score"),
+                "floor_value": result.get("floor_value"),
+                "floor_reason": result.get("floor_reason"),
+                "cap_applied": result.get("cap_applied"),
+                "exclusion_reason": result.get("exclusion_reason"),
+                "scaleup_suggested": result.get("scaleup_suggested"),
+                "signals_json": result.get("signals"),
+                "company_note_json": result.get("company_note"),
+                "grading_version": result.get("grading_version", "v3"),
+                "evidence_json": result.get("evidence"),
+                "questions_entretien": result.get("questions_entretien"),
+            }
+            try:
+                db.update_rerank(job["id"], result["rerank_score"], **rerank_kwargs)
+            except TypeError:
+                rerank_kwargs.pop("evidence_json", None)
+                rerank_kwargs.pop("questions_entretien", None)
+                db.update_rerank(job["id"], result["rerank_score"], **rerank_kwargs)
             evaluated_count += 1
             cap_note = (
                 f" [verrou: {result['hard_cap_triggered']}]"

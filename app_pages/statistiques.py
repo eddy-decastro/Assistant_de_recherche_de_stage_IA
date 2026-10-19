@@ -7,22 +7,44 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from utils.layout import page_header
-from utils.data import (
-    get_database,
-    parse_timestamp,
-    _esc,
-    tone_class,
-    source_label,
-    source_color,
-    load_jobs,
-    effective_score,
-    is_reranked,
-    Filters,
-    filter_jobs,
+from src.constants import (
+    HARD_CAP_LABELS,
+    REFUSAL_REASON,
+    RUN_ERROR,
+    RUN_INTERRUPTED,
+    RUN_LABELS,
+    RUN_OK,
+    RUN_PARTIAL,
+    RUN_RUNNING,
+    SOURCE_ORDER,
+    STATUS_APPLIED,
+    STATUS_IGNORED,
+    STATUS_INTERVIEW,
+    STATUS_NEW,
+    STATUS_REJECTED,
+    STRUCTURE_TYPE_LABELS,
+    TIER_1,
+    coerce_sub_score,
+    is_incomplete_stop,
+    pass_label,
+    seen_decision_label,
+    stop_reason_label,
 )
-from src.constants import *
 from src.storage.database import Database
+from utils.data import (
+    Filters,
+    _esc,
+    effective_score,
+    filter_jobs,
+    get_database,
+    is_reranked,
+    load_jobs,
+    parse_timestamp,
+    source_color,
+    source_label,
+    tone_class,
+)
+from utils.layout import page_header
 
 db = get_database()
 
@@ -618,48 +640,58 @@ def _render_geo_and_companies(jobs: list[dict[str, Any]], db: Database) -> None:
 
     st.markdown('<hr class="sc-rule">', unsafe_allow_html=True)
 
-    # C. Match des Plateformes : LinkedIn vs JobTeaser
+    # C. Comparatif dynamique des plateformes sources
     st.markdown(
         '<div class="sc-telemetry"><div class="sc-section" style="font-size:1.2rem;">'
-        "Comparatif des Plateformes : LinkedIn vs JobTeaser</div></div>",
+        "Comparatif par plateforme source</div></div>",
         unsafe_allow_html=True,
     )
 
-    col_li, col_jt = st.columns(2, gap="large")
+    present_sources = {str(j.get("source") or "").lower() for j in jobs if j.get("source")}
+    active_sources = [s for s in SOURCE_ORDER if s in present_sources]
+    for s in sorted(present_sources):
+        if s not in active_sources:
+            active_sources.append(s)
 
-    sources_data = {}
-    for src in ["linkedin", "jobteaser"]:
-        src_jobs = [j for j in jobs if (j.get("source") or "").lower() == src]
-        src_reranked = [j for j in src_jobs if is_reranked(j)]
-        avg_score = (sum(effective_score(j) for j in src_reranked) / len(src_reranked)) if src_reranked else 0.0
-        cœur_cible = [j for j in src_jobs if effective_score(j) >= 80.0]
-        # Rejets enregistrés dans seen_jobs
-        rejected_seen = db.get_rejected_seen_jobs(limit=10000, source=src) if hasattr(db, "get_rejected_seen_jobs") else []
-        sources_data[src] = {
-            "total": len(src_jobs),
-            "evaluated": len(src_reranked),
-            "avg_score": avg_score,
-            "top80": len(cœur_cible),
-            "rejected": len(rejected_seen),
-        }
+    if not active_sources:
+        active_sources = ["linkedin", "wttj"]
 
-    with col_li:
-        li = sources_data["linkedin"]
-        st.markdown("#### LinkedIn")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Offres retenues", f"{li['total']}")
-        c2.metric("Score R&D moyen", f"{li['avg_score']:.1f} / 100")
-        c3.metric("Cœur de cible (≥80)", f"{li['top80']}")
-        st.caption(f"Cartes éliminées par le filtre métier : {li['rejected']} offres écartées")
+    cols = st.columns(max(1, len(active_sources)), gap="large")
 
-    with col_jt:
-        jt = sources_data["jobteaser"]
-        st.markdown("#### JobTeaser")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Offres retenues", f"{jt['total']}")
-        c2.metric("Score R&D moyen", f"{jt['avg_score']:.1f} / 100")
-        c3.metric("Cœur de cible (≥80)", f"{jt['top80']}")
-        st.caption(f"Cartes éliminées par le filtre métier : {jt['rejected']} offres écartées")
+    for col, src_key in zip(cols, active_sources):
+        with col:
+            if src_key == "wttj":
+                src_jobs = [j for j in jobs if (j.get("source") or "").lower() in ("wttj", "welcome_to_the_jungle")]
+            else:
+                src_jobs = [j for j in jobs if (j.get("source") or "").lower() == src_key]
+
+            total_count = len(src_jobs)
+            src_reranked = [j for j in src_jobs if is_reranked(j)]
+            if src_reranked:
+                avg_score = sum(effective_score(j) for j in src_reranked) / len(src_reranked)
+            elif src_jobs:
+                avg_score = sum(effective_score(j) for j in src_jobs) / len(src_jobs)
+            else:
+                avg_score = 0.0
+
+            top_count = sum(
+                1 for j in src_jobs
+                if any(v in str(j.get("verdict") or "").upper() for v in ("EXCELLENT", "BON"))
+            )
+
+            full_desc_count = sum(1 for j in src_jobs if len(str(j.get("description") or "").strip()) >= 300)
+            full_desc_rate = (full_desc_count / total_count * 100.0) if total_count > 0 else 0.0
+
+            st.markdown(f"#### {source_label(src_key)}")
+            c1, c2 = st.columns(2)
+            c1.metric("Offres retenues", f"{total_count}")
+            c2.metric("Score moyen", f"{avg_score:.1f} / 100")
+            c3, c4 = st.columns(2)
+            c3.metric("EXCELLENT / BON", f"{top_count}")
+            c4.metric("Descriptions complètes", f"{full_desc_rate:.0f} %")
+            if hasattr(db, "get_rejected_seen_jobs"):
+                rejected_seen = db.get_rejected_seen_jobs(limit=10000, source=src_key)
+                st.caption(f"Cartes éliminées par le filtre métier : {len(rejected_seen)} offres écartées")
 
 
 # --------------------------------------------------------------------------- #

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -72,41 +73,91 @@ def normalize_text_for_evidence(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+_CITATION_LOCK = threading.Lock()
 _GLOBAL_CITATION_STATS = {"checked": 0, "verified": 0, "rejected": 0}
 
+_STOPWORDS_FR_EN: frozenset[str] = frozenset({
+    "le", "la", "les", "de", "du", "des", "un", "une", "et", "ou", "en", "au", "aux",
+    "pour", "par", "sur", "dans", "avec", "ce", "ces", "son", "sa", "ses",
+    "the", "and", "of", "to", "in", "for", "on", "with", "a", "an", "is", "are",
+    "as", "at", "by", "from",
+})
 
-def verify_citation(citation: str | None, full_text: str, tolerance: float = 0.8) -> bool:
+
+def reset_citation_stats() -> None:
+    """Réinitialise les compteurs globaux de vérification des citations."""
+    with _CITATION_LOCK:
+        _GLOBAL_CITATION_STATS["checked"] = 0
+        _GLOBAL_CITATION_STATS["verified"] = 0
+        _GLOBAL_CITATION_STATS["rejected"] = 0
+
+
+def get_citation_stats() -> dict[str, int]:
+    """Retourne une copie thread-safe des statistiques de vérification des citations."""
+    with _CITATION_LOCK:
+        return dict(_GLOBAL_CITATION_STATS)
+
+
+def verify_citation(
+    citation: str | None,
+    full_text: str | None = None,
+    tolerance: float = 0.8,
+    *,
+    description: str | None = None,
+) -> bool:
     """Vérifie si une citation apparaît dans le texte de l'offre (tolérance 80% des mots)."""
-    global _GLOBAL_CITATION_STATS
-    if not citation or not full_text:
+    doc = description if full_text is None else full_text
+    if not citation or not doc:
         return False
     norm_cit = normalize_text_for_evidence(citation)
     if not norm_cit or norm_cit in ("non precise", "non", "null", "none"):
         return False
 
-    norm_doc = normalize_text_for_evidence(full_text)
-    _GLOBAL_CITATION_STATS["checked"] += 1
+    norm_doc = normalize_text_for_evidence(doc)
+    with _CITATION_LOCK:
+        _GLOBAL_CITATION_STATS["checked"] += 1
 
     # 1. Correspondance exacte en sous-chaîne
     if norm_cit in norm_doc:
-        _GLOBAL_CITATION_STATS["verified"] += 1
+        with _CITATION_LOCK:
+            _GLOBAL_CITATION_STATS["verified"] += 1
         return True
 
-    words_cit = norm_cit.split()
+    # Découpage en excluant les tokens d'1 seul caractère pour que les élisions françaises
+    # (d', l', n', s', c', j') ne faussent jamais le ratio.
+    words_cit = [w for w in norm_cit.split() if len(w) > 1]
+    words_doc = [w for w in norm_doc.split() if len(w) > 1]
     if not words_cit:
-        _GLOBAL_CITATION_STATS["rejected"] += 1
+        with _CITATION_LOCK:
+            _GLOBAL_CITATION_STATS["rejected"] += 1
         return False
+
+    doc_words_set = set(words_doc)
 
     if len(words_cit) <= 2:
         ok = norm_cit in norm_doc
-        if ok:
-            _GLOBAL_CITATION_STATS["verified"] += 1
-        else:
-            _GLOBAL_CITATION_STATS["rejected"] += 1
+        with _CITATION_LOCK:
+            if ok:
+                _GLOBAL_CITATION_STATS["verified"] += 1
+            else:
+                _GLOBAL_CITATION_STATS["rejected"] += 1
         return ok
 
+    # Si len(words_cit) >= 4, vérification renforcée des mots porteurs hors stopwords
+    if len(words_cit) >= 4:
+        content_cit = [w for w in words_cit if w not in _STOPWORDS_FR_EN]
+        if len(content_cit) >= 3:
+            content_ratio = sum(1 for w in content_cit if w in doc_words_set) / len(content_cit)
+            if content_ratio < 0.75:
+                with _CITATION_LOCK:
+                    _GLOBAL_CITATION_STATS["rejected"] += 1
+                logger.info(
+                    "Citation non vérifiée (mots porteurs insuffisants %.2f < 0.75) : %r",
+                    content_ratio, citation,
+                )
+                return False
+
     # 2. Fenêtre glissante avec tolérance 80%
-    words_doc = norm_doc.split()
     doc_len = len(words_doc)
     cit_len = len(words_cit)
     required_matches = int(math.ceil(tolerance * cit_len))
@@ -116,10 +167,12 @@ def verify_citation(citation: str | None, full_text: str, tolerance: float = 0.8
     for i in range(max(1, doc_len - window_size + 1)):
         window = set(words_doc[i : i + window_size])
         if len(target_set.intersection(window)) >= required_matches:
-            _GLOBAL_CITATION_STATS["verified"] += 1
+            with _CITATION_LOCK:
+                _GLOBAL_CITATION_STATS["verified"] += 1
             return True
 
-    _GLOBAL_CITATION_STATS["rejected"] += 1
+    with _CITATION_LOCK:
+        _GLOBAL_CITATION_STATS["rejected"] += 1
     logger.info("Citation non vérifiée : %r", citation)
     return False
 

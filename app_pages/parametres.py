@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pypdf
 import streamlit as st
@@ -18,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.candidate import get_candidate_info, get_cv_path, get_cv_text, save_local_candidate
-from src.config import load_config, save_config
+from src.config import DEFAULT_CONFIG_PATH, load_config, save_config
 from utils.layout import page_header
 from utils.data import bump_data_version, get_database, load_jobs
 from utils.task_manager import (
@@ -28,14 +29,16 @@ from utils.task_manager import (
 )
 
 CV_PATH = get_cv_path()
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 page_header("Paramètres et profil", "Personnalisez votre CV, vos critères de collecte et la ré-évaluation par Gemini.")
 
-tab_cv, tab_scraping, tab_v3, tab_rerank = st.tabs([
+tab_cv, tab_scraping, tab_v3, tab_rerank, tab_auto = st.tabs([
     "CV et profil",
     "Recherches et collecte",
     "Grille de scoring v3",
     "Re-notation des offres",
+    "Automatisations & Sources",
 ])
 
 
@@ -585,3 +588,214 @@ with tab_rerank:
             st.rerun()
         else:
             st.error(msg)
+
+
+def _save_yaml_preserving_comments(config_path: Path, new_cfg: dict[str, Any]) -> None:
+    """Met à jour config.yaml en préservant commentaires et ordre ruamel.yaml si possible."""
+    try:
+        from ruamel.yaml import YAML
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml_rt.load(f)
+
+        if "scrapers" not in data:
+            data["scrapers"] = {}
+        data["scrapers"]["enabled_sources"] = new_cfg.get("scrapers", {}).get("enabled_sources", [])
+
+        if "automations" not in data:
+            data["automations"] = {}
+        for k, v in new_cfg.get("automations", {}).items():
+            data["automations"][k] = v
+
+        tmp = config_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml_rt.dump(data, f)
+        tmp.replace(config_path)
+        load_config.cache_clear()
+    except Exception:
+        save_config(new_cfg, config_path)
+
+
+# =========================================================================== #
+# ONGLET 5 : AUTOMATISATIONS & SOURCES
+# =========================================================================== #
+with tab_auto:
+    st.subheader("Automatisations et sources de collecte", anchor=False)
+    st.write(
+        "Activez ou désactivez les sources de collecte et les fonctionnalités automatisées "
+        "du pipeline (collecte parallèle, relances, sauvegardes cloud, pré-génération)."
+    )
+
+    cfg = load_config()
+    scrapers_cfg = cfg.get("scrapers", {})
+    enabled_sources = scrapers_cfg.get("enabled_sources", ["linkedin", "wttj"])
+    automations_cfg = cfg.get("automations", {})
+
+    st.markdown("#### 1. Sources de collecte actives")
+    st.caption("Sélectionnez les plateformes d'emploi à interroger lors des collectes de fond.")
+
+    src_col1, src_col2 = st.columns(2)
+    with src_col1:
+        toggle_li = st.toggle(
+            "LinkedIn",
+            value=("linkedin" in enabled_sources),
+            key="source_toggle_linkedin",
+            help="Scraping public des offres de stage en France.",
+        )
+        toggle_ats = st.toggle(
+            "Scale-ups IA & Tech (ATS Direct : Lever, Greenhouse, Ashby, SmartRecruiters)",
+            value=("ats" in enabled_sources),
+            key="source_toggle_ats",
+            help="Collecte directe via les API/carrières de 40+ scale-ups IA (Mistral, Poolside, Alan, etc.).",
+        )
+        toggle_jobteaser = st.toggle(
+            "JobTeaser",
+            value=("jobteaser" in enabled_sources),
+            key="source_toggle_jobteaser",
+            help="Offres du Career Center étudiant.",
+        )
+    with src_col2:
+        toggle_wttj = st.toggle(
+            "Welcome to the Jungle",
+            value=("wttj" in enabled_sources),
+            key="source_toggle_wttj",
+            help="Offres d'écosystème tech & startups via l'API Algolia WTTJ.",
+        )
+        toggle_academic = st.toggle(
+            "R&D Publique & CIFRE (Inria, CNRS, CEA)",
+            value=("academic" in enabled_sources),
+            key="source_toggle_academic",
+            help="Flux de stages et thèses R&D publique et laboratoires académiques.",
+        )
+
+    st.markdown("---")
+    st.markdown("#### 2. Automatisations du projet")
+    st.caption("Activez les processus intelligents d'arrière-plan.")
+
+    auto_col1, auto_col2 = st.columns(2)
+    with auto_col1:
+        par_scraping = st.toggle(
+            "Collecte multi-sources en parallèle (accélère la collecte x2)",
+            value=bool(automations_cfg.get("parallel_scraping", True)),
+            key="auto_par_scraping",
+            help="Interroge simultanément les différentes plateformes au lieu de les scraper séquentiellement.",
+        )
+        followup_enabled = st.toggle(
+            "Rappels de relance dans le Kanban (badge J+14 sur les candidatures sans réponse)",
+            value=bool(automations_cfg.get("followup_reminders_enabled", True)),
+            key="auto_followup_reminders",
+            help="Affiche un badge de relance bien visible sur les offres envoyées depuis plus de N jours sans réponse.",
+        )
+        followup_days = st.number_input(
+            "Seuil de relance (jours) :",
+            min_value=3,
+            max_value=60,
+            value=int(automations_cfg.get("followup_days_threshold", 14)),
+            step=1,
+            key="auto_followup_days",
+            help="Nombre de jours avant d'afficher le rappel de relance (défaut : 14 jours).",
+        )
+        cloud_backup = st.toggle(
+            "Sauvegarde quotidienne horodatée de la base sur Cloudflare R2",
+            value=bool(automations_cfg.get("cloud_backup_enabled", True)),
+            key="auto_cloud_backup",
+            help="Exporte et archive la base SQLite sur Cloudflare R2 après chaque passe complète.",
+        )
+        cloud_retention = st.number_input(
+            "Rétention des sauvegardes cloud (jours) :",
+            min_value=1,
+            max_value=30,
+            value=int(automations_cfg.get("cloud_backup_retention_days", 7)),
+            step=1,
+            key="auto_cloud_retention",
+            help="Durée de conservation des instantanés quotidiens dans le bucket distant.",
+        )
+
+    with auto_col2:
+        pregen_enabled = st.toggle(
+            "Pré-générer automatiquement les lettres de motivation du Top N (score ≥ seuil)",
+            value=bool(automations_cfg.get("pregenerate_letters_enabled", False)),
+            key="auto_pregen_letters",
+            help="Rédige les lettres en tâche de fond pour les meilleures offres dès qu'elles sont évaluées.",
+        )
+        pregen_top_n = st.number_input(
+            "Nombre d'offres Top N à pré-générer :",
+            min_value=1,
+            max_value=10,
+            value=int(automations_cfg.get("pregenerate_letters_top_n", 3)),
+            step=1,
+            key="auto_pregen_n",
+            help="Nombre maximal de lettres pré-rédigées par session de scoring.",
+        )
+        pregen_min_score = st.number_input(
+            "Score minimal pour pré-génération :",
+            min_value=50,
+            max_value=100,
+            value=int(automations_cfg.get("pregenerate_letters_min_score", 85)),
+            step=5,
+            key="auto_pregen_score",
+            help="Seuil de score pour déclencher la rédaction automatique.",
+        )
+        expired_enabled = st.toggle(
+            "Archiver automatiquement les offres 'Nouveau' expirées (> 14 jours et 404)",
+            value=bool(automations_cfg.get("check_expired_offers_enabled", False)),
+            key="auto_check_expired",
+            help="Vérifie le lien HTTP des offres de plus de 14 jours et les déplace en archivé si l'annonce est retirée.",
+        )
+        notif_enabled = st.toggle(
+            "Envoyer un résumé par Webhook (Discord / Slack / Telegram) en fin de pipeline",
+            value=bool(automations_cfg.get("notifications_enabled", False)),
+            key="auto_notif_enabled",
+            help="Transmet une notification récapitulative des nouvelles pépites détectées vers le webhook configuré.",
+        )
+        notif_min_score = st.number_input(
+            "Score minimal pour notification :",
+            min_value=50,
+            max_value=100,
+            value=int(automations_cfg.get("notification_min_score", 75)),
+            step=5,
+            key="auto_notif_score",
+            help="Seules les offres atteignant ce score sont incluses dans la notification.",
+        )
+        pref_learning = st.toggle(
+            "Calibration automatique du juge LLM selon les offres Postulées / Archivées",
+            value=bool(automations_cfg.get("enable_preference_learning", False)),
+            key="auto_pref_learning",
+            help="Ajuste dynamiquement les priorités du juge en observant vos décisions de candidature.",
+        )
+
+    st.markdown("---")
+    if st.button("Enregistrer les automatisations et sources", type="primary", key="save_automations_btn", icon=":material/save:"):
+        new_enabled_sources: list[str] = []
+        if toggle_li:
+            new_enabled_sources.append("linkedin")
+        if toggle_wttj:
+            new_enabled_sources.append("wttj")
+        if toggle_ats:
+            new_enabled_sources.append("ats")
+        if toggle_academic:
+            new_enabled_sources.append("academic")
+        if toggle_jobteaser:
+            new_enabled_sources.append("jobteaser")
+
+        cfg.setdefault("scrapers", {})
+        cfg["scrapers"]["enabled_sources"] = new_enabled_sources
+
+        cfg.setdefault("automations", {})
+        cfg["automations"]["parallel_scraping"] = bool(par_scraping)
+        cfg["automations"]["followup_reminders_enabled"] = bool(followup_enabled)
+        cfg["automations"]["followup_days_threshold"] = int(followup_days)
+        cfg["automations"]["cloud_backup_enabled"] = bool(cloud_backup)
+        cfg["automations"]["cloud_backup_retention_days"] = int(cloud_retention)
+        cfg["automations"]["pregenerate_letters_enabled"] = bool(pregen_enabled)
+        cfg["automations"]["pregenerate_letters_top_n"] = int(pregen_top_n)
+        cfg["automations"]["pregenerate_letters_min_score"] = int(pregen_min_score)
+        cfg["automations"]["check_expired_offers_enabled"] = bool(expired_enabled)
+        cfg["automations"]["notifications_enabled"] = bool(notif_enabled)
+        cfg["automations"]["notification_min_score"] = int(notif_min_score)
+        cfg["automations"]["enable_preference_learning"] = bool(pref_learning)
+
+        _save_yaml_preserving_comments(CONFIG_PATH, cfg)
+        bump_data_version()
+        st.success("Paramètres d'automatisations et sources enregistrés.")

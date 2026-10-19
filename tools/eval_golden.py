@@ -25,8 +25,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
-from src.matching.llm_judge import compute_final_score, is_title_excluded_contract
+from src.matching.llm_judge import LLMJudge, compute_final_score, is_title_excluded_contract
 from src.matching.scorer import Scorer
+from src.matching.scoring_v3 import get_citation_stats, reset_citation_stats
 from src.storage.database import Database
 
 GOLDEN_CSV_PATH = PROJECT_ROOT / "data" / "golden_set.csv"
@@ -421,11 +422,113 @@ Sur la base de la distribution observée sur l'échantillon réel :
     print(f"Rapport comparatif généré avec succès dans : {REPORT_MD_PATH}")
 
 
+def evaluate_golden_set_live(limit: int = 0) -> dict[str, Any]:
+    """Évalue réellement le golden set avec LLMJudge en direct."""
+    if not GOLDEN_CSV_PATH.exists():
+        print(f"Erreur : {GOLDEN_CSV_PATH} introuvable.")
+        return {}
+
+    judge = LLMJudge()
+    if not (getattr(judge, "enabled", False) or judge.available):
+        print(f"Erreur : LLMJudge indisponible (clé API {judge.api_key_env} manquante).")
+        sys.exit(2)
+
+    reset_citation_stats()
+
+    expected_scores: list[float] = []
+    real_scores: list[float] = []
+    binary_matches = 0
+    total = 0
+
+    rows: list[dict[str, Any]] = []
+
+    with open(GOLDEN_CSV_PATH, "r", encoding="utf-8") as f:
+        reader = list(csv.DictReader(f))
+
+    if limit > 0:
+        reader = reader[:limit]
+
+    print("=================================================================")
+    print(f"       ÉVALUATION LIVE DU GOLDEN SET AVEC {judge.model.upper()}  ")
+    print("=================================================================")
+
+    for index, row in enumerate(reader, start=1):
+        total += 1
+        exp_score = float(row.get("expected_score") or 50.0)
+        exp_act = str(row.get("expected_action") or "IGNORER").strip()
+
+        job = {
+            "title": row.get("title", ""),
+            "company": row.get("company", ""),
+            "location": row.get("location", ""),
+            "description": row.get("description", ""),
+        }
+
+        result = judge.judge(job)
+        score_val = float(result.get("rerank_score") or 0.0)
+
+        expected_scores.append(exp_score)
+        real_scores.append(score_val)
+
+        exp_binary = (exp_act == "POSTULER") or (exp_score >= 70)
+        real_binary = score_val >= 70
+        if exp_binary == real_binary:
+            binary_matches += 1
+
+        rows.append({
+            "company": row.get("company", ""),
+            "title": row.get("title", ""),
+            "exp_score": exp_score,
+            "real_score": score_val,
+            "verdict": result.get("verdict", "N/A"),
+            "notes": row.get("notes", ""),
+        })
+
+        print(
+            f"  [{index:02d}/{len(reader):02d}] {score_val:3.0f}/100 (attendu {exp_score:3.0f}) - "
+            f"{row.get('company', '')[:20]:<20} | {row.get('title', '')[:35]}"
+        )
+
+    spearman_corr = compute_spearman_rank_correlation(expected_scores, real_scores)
+    bin_accuracy = (binary_matches / total * 100.0) if total > 0 else 0.0
+    cit_stats = get_citation_stats()
+
+    print("\n-----------------------------------------------------------------")
+    print(f"Offres évaluées                 : {total}")
+    print(f"Corrélation de rang de Spearman : {spearman_corr:.3f}")
+    print(f"Précision binaire               : {bin_accuracy:.1f} % ({binary_matches}/{total})")
+    print(f"Statistiques de citations       : {cit_stats}")
+    print("=================================================================\n")
+
+    return {
+        "total": total,
+        "spearman": spearman_corr,
+        "binary_accuracy": bin_accuracy,
+        "citation_stats": cit_stats,
+        "rows": rows,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Évaluation du système de scoring v3.")
     parser.add_argument("--golden-only", action="store_true", help="Évalue uniquement le jeu de données golden_set.csv")
     parser.add_argument("--limit", type=int, default=50, help="Nombre d'offres réelles à comparer (défaut : 50)")
+    parser.add_argument(
+        "--live-llm",
+        action="store_true",
+        help="Appelle réellement LLMJudge sur le golden set au lieu du mock déterministe",
+    )
+    parser.add_argument(
+        "--limit-golden",
+        type=int,
+        default=0,
+        help="Limite le nombre d'offres évaluées en mode --live-llm",
+    )
     args = parser.parse_args()
+
+    if args.live_llm:
+        evaluate_golden_set_live(limit=args.limit_golden)
+        return
 
     evaluate_golden_set()
     if not args.golden_only:

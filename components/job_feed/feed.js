@@ -286,6 +286,7 @@ function createInstance(root) {
         ),
       ),
       h('div', { class: 'chips' }, badges),
+      job.company_note ? h('div', { class: 'detail-company-note' }, job.company_note) : null,
       h(
         'div',
         { class: 'actions' },
@@ -312,10 +313,11 @@ function createInstance(root) {
             job.sub_scores.map((s) =>
               h(
                 'div',
-                { class: `sub tone-${s.tone}`, title: s.label },
+                { class: `sub sub-row tone-${s.tone}`, title: s.evidence || s.label },
                 h('span', {}, s.short),
                 h('span', { class: 'bar' }, [1, 2, 3, 4, 5].map((n) => h('i', { class: n <= s.value ? 'on' : '' }))),
                 h('span', { class: 'sub-value' }, `${s.value}/5`),
+                s.evidence ? h('div', { class: 'sub-evidence' }, `« ${s.evidence} »`) : null,
               ),
             ),
           ),
@@ -346,6 +348,21 @@ function createInstance(root) {
     } else {
       parts.push(
         section('Verdict du juge', h('p', { class: 'muted' }, 'Offre non évaluée à ce stade : lancez `python run_pipeline.py` pour déclencher le reranking.')),
+      )
+    }
+
+    if (job.questions_entretien && job.questions_entretien.length > 0) {
+      parts.push(
+        h(
+          'div',
+          { class: 'section detail-section' },
+          h('h3', { class: 'section-label' }, "Questions clés pour l'entretien"),
+          h(
+            'ul',
+            { class: 'list-plain pos signal-list' },
+            job.questions_entretien.map((q) => h('li', { class: 'signal-item' }, q)),
+          ),
+        ),
       )
     }
 

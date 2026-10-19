@@ -44,14 +44,76 @@ from src.matching.llm_providers import (  # noqa: F401  (ré-exports : ancien em
 from src.matching.scoring_v3 import (  # noqa: F401  (ré-exports : ancien emplacement)
     ScoreBreakdown,
     compute_final_score,
+    get_citation_stats,
     is_title_excluded_contract,
     normalize_text_for_evidence,
+    reset_citation_stats,
     verdict_from_score,
     verify_citation,
 )
 
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
+
+PROVIDER_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com",
+    "groq": "https://api.groq.com/openai/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
+def _resolve_api_key(provider: str, config: dict[str, Any] | None = None) -> str:
+    """Résout la clé API pour un fournisseur donné depuis l'environnement ou la configuration."""
+    prov = (provider or "").strip().casefold()
+    env_name = "GEMINI_API_KEY" if prov == "google" else f"{prov.upper()}_API_KEY"
+    load_env_file()
+    key = os.environ.get(env_name, "")
+    if not key and isinstance(config, dict):
+        llm_cfg = config.get("llm", {})
+        key = str(llm_cfg.get(f"{prov}_api_key") or llm_cfg.get("api_key") or "")
+    return str(key or "").strip()
+
+
+def build_preference_calibration_block(jobs: list[dict[str, Any]], max_examples: int = 3) -> str:
+    """Construit un bloc XML concis de calibration basé sur l'historique des candidatures."""
+    if not jobs:
+        return ""
+
+    positives: list[dict[str, Any]] = []
+    negatives: list[dict[str, Any]] = []
+
+    for j in jobs:
+        st = str(j.get("status") or "")
+        raw_score = j.get("rerank_score") if j.get("rerank_score") is not None else j.get("relevance_score")
+        try:
+            score_val = float(raw_score) if raw_score is not None else 0.0
+        except (ValueError, TypeError):
+            score_val = 0.0
+
+        if st in ("Postulé", "Entretien", "Offre") and len(positives) < max_examples:
+            positives.append(j)
+        elif st == "Ignoré" and score_val >= 60 and len(negatives) < max_examples:
+            negatives.append(j)
+
+    if not positives and not negatives:
+        return ""
+
+    lines = ["<calibration_candidat>", "Préférences observées du candidat pour guider l'évaluation :"]
+    if positives:
+        lines.append("Offres retenues ou postulées (profils appréciés) :")
+        for p in positives:
+            t = p.get("title") or "Offre"
+            c = p.get("company") or "Entreprise inconnue"
+            lines.append(f"- {t} chez {c}")
+    if negatives:
+        lines.append("Offres bien notées mais ignorées (profils non souhaités) :")
+        for n in negatives:
+            t = n.get("title") or "Offre"
+            c = n.get("company") or "Entreprise inconnue"
+            lines.append(f"- {t} chez {c}")
+    lines.append("</calibration_candidat>")
+    return "\n".join(lines)
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -114,6 +176,7 @@ class LLMJudge:
         api_key: str | None = None,
         client: genai.Client | None = None,
         rate_limiter: GeminiRateLimiter | None = None,
+        calibration_block: str = "",
     ) -> None:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
@@ -134,6 +197,30 @@ class LLMJudge:
             load_env_file()
             self.api_key = os.environ.get(self.api_key_env, "")
 
+        self.fallback_provider = str(
+            llm_cfg.get("fallback_provider") or ("google" if self.provider != "google" else "deepseek")
+        ).strip().casefold()
+        self.fallback_model = str(
+            llm_cfg.get("fallback_model")
+            or ("gemini-2.5-flash" if self.fallback_provider == "google" else "deepseek-chat")
+        ).strip()
+        if self.fallback_provider != self.provider:
+            self.fallback_api_key = _resolve_api_key(self.fallback_provider, {})
+        else:
+            self.fallback_api_key = ""
+
+        self.calibration_block = calibration_block or ""
+        if (
+            not self.calibration_block
+            and self.config.get("automations", {}).get("enable_preference_learning", False)
+        ):
+            # Le bloc pourra être alimenté dynamiquement via set_calibration_from_jobs
+            pass
+
+    def set_calibration_from_jobs(self, jobs: list[dict[str, Any]], max_examples: int = 3) -> None:
+        """Définit le bloc XML de calibration à partir des offres passées."""
+        self.calibration_block = build_preference_calibration_block(jobs, max_examples=max_examples)
+
     @property
     def openai_compatible(self) -> bool:
         """True si le juge passe par un endpoint compatible OpenAI (DeepSeek, Groq...)."""
@@ -148,8 +235,13 @@ class LLMJudge:
 
     @property
     def available(self) -> bool:
-        """True si une clé API est configurée."""
-        return bool(self.api_key)
+        """True si une clé API principale ou de secours est configurée."""
+        return bool(self.api_key or self.fallback_api_key)
+
+    @property
+    def enabled(self) -> bool:
+        """Alias de available."""
+        return self.available
 
     # ------------------------------------------------------------------ #
     # Construction des messages
@@ -159,7 +251,7 @@ class LLMJudge:
         raw_tier = job.get("company_tier")
         tier_label_map = {1: "tier_1", 2: "neutre", 3: "esn"}
         tier_label = tier_label_map.get(raw_tier, "neutre" if raw_tier != 1 else "tier_1")
-        
+
         user_content = (
             "<offre>\n"
             f"Titre : {job.get('title', '')}\n"
@@ -171,17 +263,47 @@ class LLMJudge:
         if cv_text:
             anonymized = anonymize_cv(cv_text)
             user_content += f"\n\n<cv_candidat>\n{anonymized[:6000]}\n</cv_candidat>"
+        if self.calibration_block:
+            user_content += f"\n\n{self.calibration_block.strip()}"
         return user_content
+
+    # Alias pour compatibilité
+    _build_user_prompt = _build_content
 
     # ------------------------------------------------------------------ #
     # Appel API
     # ------------------------------------------------------------------ #
+    def _post_google_native(
+        self,
+        user_content: str,
+        model: str | None = None,
+        api_key: str | None = None,
+    ) -> str:
+        """Exécute un appel direct à l'API Google GenAI native."""
+        logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+        target_key = api_key or self.api_key
+        target_model = model or self.model
+        client = self._client if (self._client and api_key is None) else genai.Client(api_key=target_key)
+
+        self.rate_limiter.wait_for_slot()
+        response = client.models.generate_content(
+            model=target_model,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=get_system_prompt(),
+                temperature=self.temperature,
+                response_mime_type="application/json",
+                response_schema=get_response_schema(),
+            ),
+        )
+        return str(response.text)
+
     @retry(
         wait=wait_exponential(multiplier=2, min=4, max=60),
         stop=stop_after_attempt(5),
         retry=retry_if_exception(_is_api_retryable),
         after=_log_retry,
-        reraise=True
+        reraise=True,
     )
     def _post_chat(self, user_content: str) -> str:
         """Appelle l'API du fournisseur actif et retourne le contenu texte (avec retries défensifs)."""
@@ -194,35 +316,42 @@ class LLMJudge:
             return OpenAICompatibleProvider(
                 api_key=self.api_key, base_url=self.base_url, model=self.model
             ).generate(user_content, system_prompt)
-        logging.getLogger("google_genai.models").setLevel(logging.ERROR)
-        client = self._client or genai.Client(api_key=self.api_key)
-        
-        self.rate_limiter.wait_for_slot()
-        response = client.models.generate_content(
-            model=self.model,
-            contents=user_content,
-            config=types.GenerateContentConfig(
-                system_instruction=get_system_prompt(),
-                temperature=self.temperature,
-                response_mime_type="application/json",
-                response_schema=get_response_schema(),
-            )
-        )
-        return response.text
+        return self._post_google_native(user_content, model=self.model, api_key=self.api_key)
 
+    def _post_chat_fallback(self, user_content: str) -> str:
+        """Envoie la requête au fournisseur de secours avec l'endpoint et le format adaptés."""
+        if not self.fallback_api_key:
+            raise ValueError(f"Clé API absente pour le fournisseur de secours {self.fallback_provider}")
+
+        if self.fallback_provider == "google":
+            return self._post_google_native(
+                user_content, model=self.fallback_model, api_key=self.fallback_api_key
+            )
+
+        base_url = PROVIDER_BASE_URLS.get(self.fallback_provider, self.base_url)
+        system_prompt = (
+            f"{get_system_prompt()}\n\nRéponds uniquement par un objet JSON respectant "
+            f"ce JSON Schema :\n{json.dumps(get_response_schema(), ensure_ascii=False)}"
+        )
+        return OpenAICompatibleProvider(
+            api_key=self.fallback_api_key, base_url=base_url, model=self.fallback_model
+        ).generate(user_content, system_prompt)
 
     # ------------------------------------------------------------------ #
     # Parsing / normalisation v3
     # ------------------------------------------------------------------ #
-    def _parse_response(self, content: str | None, job: dict[str, Any]) -> dict[str, Any]:
+    def _parse_response(self, content: str | dict[str, Any] | None, job: dict[str, Any]) -> dict[str, Any]:
         """Parse la réponse JSON du LLM en structure normalisée v3 avec compute_final_score."""
-        cleaned = _CODE_FENCE_RE.sub("", content or "").strip()
-        try:
-            data = json.loads(cleaned)
-        except (json.JSONDecodeError, TypeError) as exc:
-            return self._fallback(job, reason=f"Réponse LLM non parsable ({exc}).")
-        if not isinstance(data, dict):
-            return self._fallback(job, reason="Réponse LLM invalide (JSON non-objet).")
+        if isinstance(content, dict):
+            data = content
+        else:
+            cleaned = _CODE_FENCE_RE.sub("", content or "").strip()
+            try:
+                data = json.loads(cleaned)
+            except (json.JSONDecodeError, TypeError) as exc:
+                return self._fallback(job, reason=f"Réponse LLM non parsable ({exc}).")
+            if not isinstance(data, dict):
+                return self._fallback(job, reason="Réponse LLM invalide (JSON non-objet).")
 
         info_level = str(data.get("information_level") or "").strip().upper()
         if info_level not in ("COMPLET", "PARTIEL", "INSUFFISANT"):
@@ -466,19 +595,54 @@ class LLMJudge:
             return self._fallback(
                 job, reason=f"{self.api_key_env} absente — analyse LLM ignorée.", is_api_error=True
             )
+
+        user_content = self._build_content(job, cv_text)
+
+        # 1. Tentative avec le fournisseur principal si disponible
+        if self.api_key:
+            try:
+                content = self._post_chat(user_content)
+                return self._parse_response(content, job)
+            except Exception as exc:
+                if self.fallback_api_key:
+                    logger.warning(
+                        "LLMJudge primary provider (%s) failed (%s); falling back to %s (%s)",
+                        self.provider,
+                        exc,
+                        self.fallback_provider,
+                        self.fallback_model,
+                    )
+                    try:
+                        raw = self._post_chat_fallback(user_content)
+                        return self._parse_response(raw, job)
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "LLMJudge fallback provider (%s) also failed (%s)",
+                            self.fallback_provider,
+                            fallback_exc,
+                        )
+                        return self._fallback(
+                            job,
+                            reason=f"Erreur API {self.provider} ({exc}) et fallback {self.fallback_provider} ({fallback_exc}).",
+                            is_api_error=True,
+                        )
+
+                if isinstance(exc, APIError):
+                    reason = f"Erreur API Gemini ({exc.code} - {exc.message})."
+                elif isinstance(exc, requests.RequestException):
+                    reason = f"Erreur API {self.provider} ({exc})."
+                else:
+                    reason = f"Réponse API {self.provider} inattendue : {exc}."
+                return self._fallback(job, reason=reason, is_api_error=True)
+
+        # 2. Clé principale absente mais clé de secours configurée
         try:
-            content = self._post_chat(self._build_content(job, cv_text))
-            return self._parse_response(content, job)
-        except APIError as exc:
+            raw = self._post_chat_fallback(user_content)
+            return self._parse_response(raw, job)
+        except Exception as fallback_exc:
             return self._fallback(
-                job, reason=f"Erreur API Gemini ({exc.code} - {exc.message}).", is_api_error=True
-            )
-        except requests.RequestException as exc:
-            return self._fallback(
-                job, reason=f"Erreur API {self.provider} ({exc}).", is_api_error=True
-            )
-        except Exception as exc:
-            return self._fallback(
-                job, reason=f"Réponse API Gemini inattendue : {exc}.", is_api_error=True
+                job,
+                reason=f"Erreur API fallback {self.fallback_provider} ({fallback_exc}).",
+                is_api_error=True,
             )
 

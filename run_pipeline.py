@@ -18,11 +18,21 @@ if str(PROJECT_ROOT) not in sys.path:
 import argparse
 from run_scrapers import main as run_scrapers_main  # noqa: E402
 from backfill_descriptions import main as run_backfill_main  # noqa: E402
+from src.config import load_config  # noqa: E402
+from src.constants import STATUS_NEW  # noqa: E402
+from src.notifications import (  # noqa: E402
+    archive_expired_offers,
+    archive_old_offers,
+    pregenerate_top_cover_letters,
+    send_pipeline_digest,
+)
 from src.storage.cloud_storage import (  # noqa: E402
+    backup_remote_database,
     download_database,
     is_cloud_storage_configured,
     upload_database,
 )
+from src.storage.database import Database  # noqa: E402
 from src.storage.db_merge import USER_COLUMNS  # noqa: E402
 
 logger = logging.getLogger("pipeline")
@@ -97,28 +107,76 @@ def main(argv: list[str] | None = None) -> None:
             upload_database(prefer_remote_columns=USER_COLUMNS)
         return
 
+    db = Database()
+
     print("\n" + "=" * 60)
     print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & WTTJ)")
     print("=" * 60)
     # Lancement de la collecte (hybride)
-    degraded_sources = run_scrapers_main([])
+    degraded_sources = run_scrapers_main([]) or 0
 
     print("\n" + "=" * 60)
     print(" 📖 ÉTAPE 2 : ENRICHISSEMENT DES DESCRIPTIONS (Backfill)")
     print("=" * 60)
-    # Rattrapage pour alimenter correctement le LLM
-    run_backfill_main([])
+    # Rattrapage pour alimenter correctement le LLM (uniquement s'il y a des offres manquantes)
+    if db.get_jobs_missing_description(limit=1):
+        run_backfill_main([])
+    else:
+        logger.info("Aucune offre sans description : étape 2 (backfill) ignorée.")
 
     print("\n" + "=" * 60)
     print(" 🧠 ÉTAPE 3 : RERANKING LLM")
     print("=" * 60)
-    # Évaluation de l'intégralité des nouvelles offres (limite haute à 1000)
-    run_scrapers_main(["--no-collect", "--trigger-rerank", "--top-rerank", "1000"])
+    # Évaluation des nouvelles offres (uniquement si des offres sont non notées)
+    if db.get_unranked_jobs(limit=1):
+        run_scrapers_main(["--no-collect", "--trigger-rerank", "--top-rerank", "1000"])
+    else:
+        logger.info("Toutes les offres éligibles sont déjà notées par le juge LLM : étape 3 ignorée.")
+
+    # Étape 4 : n'exécute le recalcul que si des offres v1 subsistent (le juge v3 calcule déjà le score exact)
+    if db.get_v1_jobs(limit=1):
+        print("\n" + "=" * 60)
+        print(" 🔄 ÉTAPE 4 : RECALCUL DÉTERMINISTE DES SCORES V3 (Pénalités & Planchers)")
+        print("=" * 60)
+        run_scrapers_main(["--recompute-scores"])
+    else:
+        logger.info("Toutes les offres sont déjà au format v3 : étape 4 (recompute-scores) ignorée.")
 
     print("\n" + "=" * 60)
-    print(" 🔄 ÉTAPE 4 : RECALCUL DÉTERMINISTE DES SCORES V3 (Pénalités & Planchers)")
+    print(" 🤖 ÉTAPE AUTOMATISATIONS : Nettoyage, Pré-génération & Notifications")
     print("=" * 60)
-    run_scrapers_main(["--recompute-scores"])
+    cfg = load_config()
+    auto_cfg = cfg.get("automations") or {}
+
+    if auto_cfg.get("auto_archive_enabled", False):
+        old_archived = archive_old_offers(db, cfg)
+        if old_archived:
+            logger.info("Offres anciennes archivées : %d", old_archived)
+
+    if auto_cfg.get("check_expired_offers_enabled", False):
+        archived = archive_expired_offers(db, cfg)
+        if archived:
+            logger.info("Offres expirées archivées : %d", archived)
+
+    if auto_cfg.get("pregenerate_letters_enabled", False):
+        generated = pregenerate_top_cover_letters(db, cfg)
+        if generated:
+            logger.info("Lettres de motivation pré-générées : %d", generated)
+
+    if auto_cfg.get("cloud_backup_enabled", True) and is_cloud_storage_configured():
+        retention = int(auto_cfg.get("cloud_backup_retention_days", 7))
+        try:
+            backup_remote_database(max_backups=retention)
+            logger.info("Sauvegarde distante Cloudflare R2 créée (rétention: %d jours).", retention)
+        except Exception as exc:
+            logger.warning("Échec de la sauvegarde distante Cloudflare R2 : %s", exc)
+
+    if auto_cfg.get("notifications_enabled", False):
+        try:
+            recent_new = db.get_jobs(statuses=STATUS_NEW, limit=15)
+        except TypeError:
+            recent_new = db.get_jobs(status=STATUS_NEW, limit=15)
+        send_pipeline_digest(recent_new, cfg, degraded_sources=degraded_sources)
 
     if sync_enabled:
         print("\n" + "=" * 60)

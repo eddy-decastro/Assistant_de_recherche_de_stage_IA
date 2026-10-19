@@ -23,7 +23,7 @@ logger = logging.getLogger("src.storage.db_merge")
 # Colonnes écrites par l'utilisateur depuis l'app (kanban, candidatures). En cas de
 # conflit, le pipeline doit laisser gagner la version distante (celle de l'app).
 USER_COLUMNS: dict[str, tuple[str, ...]] = {
-    "jobs": ("status", "rejection_reason", "applied_at"),
+    "jobs": ("status", "rejection_reason", "applied_at", "cover_letter", "user_notes"),
 }
 
 
@@ -181,3 +181,9 @@ def _merge_table(
                 [*updates.values(), *key],
             )
             stats.updated += 1
+
+
+# Alias pour compatibilité
+merge_sqlite_files = merge_remote_changes
+
+__all__ = ["USER_COLUMNS", "MergeStats", "merge_remote_changes", "merge_sqlite_files"]

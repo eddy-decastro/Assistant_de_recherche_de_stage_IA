@@ -251,3 +251,155 @@ def test_televersement_concurrent_refusionne(tmp_path: Path) -> None:
     r2.write_to(final)
     rows = jobs_of(final)
     assert "x" in rows and rows["a"][4] == 77.0
+
+
+def test_database_user_columns_and_rerank_evidence(tmp_path: Path) -> None:
+    from src.storage.database import Database
+
+    db_path = tmp_path / "test_user_cols.db"
+    db = Database(db_path)
+    job_data = {
+        "id": "job-1",
+        "title": "Stage Python",
+        "company": "Tech Corp",
+        "url": "https://example.com/job-1",
+    }
+    db.upsert_job(job_data)
+
+    # Test update_cover_letter
+    assert db.update_cover_letter("job-1", "Ma super lettre de motivation") is True
+    job = db.get_job("job-1")
+    assert job is not None
+    assert job["cover_letter"] == "Ma super lettre de motivation"
+    assert db.update_cover_letter("non-existent", "Lettre") is False
+
+    # Test update_user_notes
+    assert db.update_user_notes("job-1", "Contacter le recruteur sur LinkedIn") is True
+    job = db.get_job("job-1")
+    assert job is not None
+    assert job["user_notes"] == "Contacter le recruteur sur LinkedIn"
+    assert db.update_user_notes("non-existent", "Notes") is False
+
+    # Test update_rerank avec evidence_json et questions_entretien
+    assert db.update_rerank(
+        "job-1",
+        rerank_score=85.5,
+        verdict="OUI",
+        evidence_json={"profil": "Bac+5 recherché", "mission": "IA et NLP"},
+        questions_entretien=["Parlez-moi de votre expérience NLP", "Connaissez-vous PyTorch ?"],
+    ) is True
+
+    job = db.get_job("job-1")
+    assert job is not None
+    assert job["rerank_score"] == 85.5
+    assert job["verdict"] == "OUI"
+    assert job["evidence"] == {"profil": "Bac+5 recherché", "mission": "IA et NLP"}
+    assert job["questions_entretien"] == [
+        "Parlez-moi de votre expérience NLP",
+        "Connaissez-vous PyTorch ?",
+    ]
+    assert job["cover_letter"] == "Ma super lettre de motivation"
+    assert job["user_notes"] == "Contacter le recruteur sur LinkedIn"
+    assert "evidence_json" not in job
+    assert "questions_json" not in job
+
+    # Test clear_rerank resets evidence_json and questions_json, but leaves cover_letter and user_notes intact
+    cleared = db.clear_rerank(limit=10)
+    assert "job-1" in cleared
+    job_after = db.get_job("job-1")
+    assert job_after is not None
+    assert job_after["rerank_score"] is None
+    assert job_after["evidence"] == {}
+    assert job_after["questions_entretien"] == []
+    assert job_after["cover_letter"] == "Ma super lettre de motivation"
+    assert job_after["user_notes"] == "Contacter le recruteur sur LinkedIn"
+
+    # Test clear_rerank_scores
+    db.update_rerank(
+        "job-1",
+        rerank_score=92.0,
+        evidence_json={"profil": "Master"},
+        questions_entretien=["Question 1"],
+    )
+    count_cleared = db.clear_rerank_scores()
+    assert count_cleared == 1
+    job_after_all = db.get_job("job-1")
+    assert job_after_all is not None
+    assert job_after_all["rerank_score"] is None
+    assert job_after_all["evidence"] == {}
+    assert job_after_all["cover_letter"] == "Ma super lettre de motivation"
+
+
+def test_merge_preserves_cover_letter_and_user_notes(tmp_path: Path) -> None:
+    from src.storage.db_merge import USER_COLUMNS, merge_sqlite_files
+
+    local_db = tmp_path / "local.db"
+    remote_db = tmp_path / "remote.db"
+    base_db = tmp_path / "base.db"
+
+    schema_extended = """
+    CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        status TEXT,
+        applied_at TEXT,
+        rejection_reason TEXT,
+        rerank_score REAL,
+        cover_letter TEXT,
+        user_notes TEXT
+    );
+    """
+    for p in (base_db, local_db, remote_db):
+        conn = sqlite3.connect(p)
+        conn.executescript(schema_extended)
+        conn.close()
+
+    # Base commune : job-1 et job-2 sans lettre ni notes
+    conn = sqlite3.connect(base_db)
+    conn.execute(
+        "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("job-1", "Stage 1", "NOUVEAU", None, None, 50.0, None, None),
+    )
+    conn.execute(
+        "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("job-2", "Stage 2", "NOUVEAU", None, None, 60.0, None, None),
+    )
+    conn.commit()
+    conn.close()
+
+    # Local : l'utilisateur a rédigé cover_letter et user_notes sur job-1 (remote est NULL)
+    shutil.copyfile(base_db, local_db)
+    conn = sqlite3.connect(local_db)
+    conn.execute(
+        "UPDATE jobs SET cover_letter = 'Lettre locale', user_notes = 'Note locale' WHERE id = 'job-1'"
+    )
+    conn.commit()
+    conn.close()
+
+    # Remote : l'utilisateur sur une autre instance a rédigé cover_letter et user_notes sur job-2 (local est NULL)
+    shutil.copyfile(base_db, remote_db)
+    conn = sqlite3.connect(remote_db)
+    conn.execute(
+        "UPDATE jobs SET cover_letter = 'Lettre distante', user_notes = 'Note distante' WHERE id = 'job-2'"
+    )
+    conn.commit()
+    conn.close()
+
+    # Fusion avec USER_COLUMNS
+    stats = merge_sqlite_files(local_db, remote_db, base_db, prefer_remote=USER_COLUMNS)
+    assert stats.updated >= 1
+
+    conn = sqlite3.connect(local_db)
+    rows = {
+        r[0]: dict(zip(["cover_letter", "user_notes"], r[1:]))
+        for r in conn.execute("SELECT id, cover_letter, user_notes FROM jobs")
+    }
+    conn.close()
+
+    # Local job-1 : 'Lettre locale' et 'Note locale' préservées (remote inchangé/NULL)
+    assert rows["job-1"]["cover_letter"] == "Lettre locale"
+    assert rows["job-1"]["user_notes"] == "Note locale"
+
+    # Local job-2 : 'Lettre distante' et 'Note distante' intégrées (local inchangé/NULL)
+    assert rows["job-2"]["cover_letter"] == "Lettre distante"
+    assert rows["job-2"]["user_notes"] == "Note distante"
