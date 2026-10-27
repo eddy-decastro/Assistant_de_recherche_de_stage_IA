@@ -652,11 +652,23 @@ def test_scoring_v3_database() -> None:
             assert fetched_exclu["status"] == STATUS_EXCLUDED
             assert fetched_exclu["exclusion_reason"] == "Contrat incompatible: ALTERNANCE"
 
-            # 4. recompute_scores
+            # 4. Offre non evaluee : ne doit pas être altérée par recompute_scores
+            job_unranked = {
+                "id": "unranked_job",
+                "title": "Stage ML non évalué",
+                "company": "Owkin",
+                "url": "http://test.com/unranked",
+                "status": STATUS_NEW,
+            }
+            db.upsert_job(job_unranked)
+
+            # 5. recompute_scores
             recomputed = db.recompute_scores()
             assert recomputed >= 1
             fetched_v3_recomp = db.get_job("v3_job")
             assert fetched_v3_recomp["rerank_score"] >= 70
+            fetched_unranked = db.get_job("unranked_job")
+            assert fetched_unranked["rerank_score"] is None
 
         finally:
             db.engine.dispose()

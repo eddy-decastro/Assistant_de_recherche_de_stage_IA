@@ -809,6 +809,7 @@ class Database:
             if record is None:
                 return False
             record.rerank_score = float(rerank_score)
+            record.final_score = float(rerank_score)
             record.verdict = verdict
             record.match_reasons = _encode_json_list(match_reasons)
             record.red_flags = _encode_json_list(red_flags)
@@ -893,11 +894,15 @@ class Database:
         updated_count = 0
 
         with self.SessionLocal() as session:
-            stmt = select(Job).where(Job.grading_version == "v3")
+            stmt = select(Job).where(
+                Job.grading_version == "v3",
+                Job.rerank_score.is_not(None),
+            )
             rows = session.execute(stmt).scalars().all()
 
             for job in rows:
                 job_dict = job.to_dict()
+
                 parsed = {
                     "contract_type": job.contract_type or "AUTRE",
                     "duration_months": job.duration_months,
@@ -914,6 +919,7 @@ class Database:
                 breakdown = compute_final_score(parsed, job_dict, cfg)
                 job.quality_score = float(breakdown.quality_score)
                 job.rerank_score = float(breakdown.final_score)
+                job.final_score = float(breakdown.final_score)
                 job.floor_value = breakdown.floor_value
                 job.floor_reason = breakdown.floor_reason
                 job.cap_applied = breakdown.cap_applied

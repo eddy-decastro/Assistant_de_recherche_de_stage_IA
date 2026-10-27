@@ -52,7 +52,7 @@ from src.matching.scoring_v3 import (  # noqa: F401  (ré-exports : ancien empla
     verify_citation,
 )
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
 
 PROVIDER_BASE_URLS: dict[str, str] = {
@@ -202,7 +202,7 @@ class LLMJudge:
         ).strip().casefold()
         self.fallback_model = str(
             llm_cfg.get("fallback_model")
-            or ("gemini-2.5-flash" if self.fallback_provider == "google" else "deepseek-chat")
+            or ("gemini-3.5-flash-lite" if self.fallback_provider == "google" else "deepseek-chat")
         ).strip()
         if self.fallback_provider != self.provider:
             self.fallback_api_key = _resolve_api_key(self.fallback_provider, {})

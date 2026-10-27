@@ -583,7 +583,8 @@ llm:
   rate_limit_rpm: 60
   rate_limit_rpd: 5000
   concurrency: 4
-  fallback_provider: null
+  fallback_provider: google
+  fallback_model: gemini-3.5-flash-lite
 # Champs publics uniquement. Téléphone, email (et CV) : data/candidate.local.yaml
 # (page Paramètres) ou secrets CANDIDATE_PHONE, CANDIDATE_EMAIL, CANDIDATE_CV.
 # Voir src/candidate.py.

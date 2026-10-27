@@ -365,7 +365,7 @@ def test_llm_judge_multi_provider_fallback() -> None:
         "provider": "deepseek",
         "model": "deepseek-chat",
         "fallback_provider": "google",
-        "fallback_model": "gemini-2.5-flash",
+        "fallback_model": "gemini-3.5-flash-lite",
     }
     judge = LLMJudge(config=custom_cfg, api_key="test_deepseek_key")
     judge.fallback_api_key = "test_google_key"
