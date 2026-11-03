@@ -535,7 +535,7 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
                 default=[],
                 format_func=lambda t: V4_TAG_LABELS.get(t, t),
             )
-            sort_by = st.selectbox(
+            sort_by = st.radio(
                 "Ordre de tri du flux",
                 options=["v3", "v4", "v4_class"],
                 index=0,

@@ -1,16 +1,10 @@
 # ============================================================
-# stage_copilot — Dépendances Déploiement Cloud (Streamlit / Render)
+# stage_copilot — Dépendances Déploiement Cloud & Web App
 # ============================================================
-# Version légère optimisée pour le Cloud :
-# - Aucun dépassement de mémoire (OOM / Killed)
-# - Démarrage et installation ultra-rapides (< 10s)
-# - Scraping & Embeddings lourds exécutés en local
 
 # --- Client HTTP & API ---
 httpx
-# Appels OpenAI-compatibles (juge DeepSeek, lettres de motivation)
 requests
-# Retries du juge LLM
 tenacity
 
 # --- Scraping (indispensables au cron GitHub Actions) ---
@@ -23,13 +17,14 @@ pydantic>=2.0
 
 # --- Configuration YAML ---
 PyYAML
-# Écriture de config.yaml en conservant les commentaires (pages Paramètres et Pipeline)
 ruamel.yaml
 
 # --- ORM / Base de données SQLite ---
 SQLAlchemy
 
-# --- Interface Web & Visualisation ---
+# --- API Backend (FastAPI) & Interface Web ---
+fastapi>=0.110
+uvicorn>=0.29
 streamlit>=1.63
 pandas
 altair
