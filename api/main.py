@@ -30,7 +30,7 @@ from src.constants import (
     source_label,
 )
 from src.matching.claude_pack import build_claude_pack
-from src.matching.cover_letter import CoverLetterGenerator
+from src.matching.cover_letter import CoverLetterGenerator, check_letter
 from src.matching.pdf_exporter import generate_cover_letter_pdf
 from src.matching.scoring_v4 import LLMJudgeV4
 from src.storage.database import Database
@@ -287,14 +287,17 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         if job is None:
             raise HTTPException(status_code=404, detail="Offre introuvable")
 
+        warnings: list[str] = []
         if payload.edited_text is not None and not payload.regenerate:
             letter = payload.edited_text
             source = "edited"
+            warnings = check_letter(letter, job=job)
         else:
             existing = str(job.get("cover_letter") or "").strip()
             if existing and not payload.regenerate:
                 letter = existing
                 source = "cached"
+                warnings = check_letter(letter, job=job)
             else:
                 gen = CoverLetterGenerator()
                 letter = gen.generate(
@@ -303,9 +306,16 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
                     allow_fallback=True,
                 )
                 source = gen.last_source
+                warnings = list(gen.last_warnings)
 
         db.update_cover_letter(job_id, letter)
-        return {"ok": True, "id": job_id, "cover_letter": letter, "source": source}
+        return {
+            "ok": True,
+            "id": job_id,
+            "cover_letter": letter,
+            "source": source,
+            "warnings": warnings,
+        }
 
     @app.get("/api/jobs/{job_id}/cover-letter.pdf")
     def download_cover_letter_pdf(

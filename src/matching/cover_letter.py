@@ -268,23 +268,27 @@ def generate_algorithmic_cover_letter(
             "After completing French preparatory classes in Physics and Chemistry (PC* at Lycée Descartes in Tours), "
             "I joined IMT Mines Alès while completing a Bachelor's degree (Licence 3) in General Mathematics at the "
             "University of Montpellier in parallel, before joining the M2 Mathematics in Action at Mines Saint-Étienne "
-            "(co-accredited with Centrale Lyon and ENS Lyon). What motivates me most in machine learning is knowing when "
-            "a model makes mistakes, measuring it honestly, and deploying reliable models. During my research internship "
-            "at UPC (Universitat Politècnica de Catalunya) in Barcelona from May to August 2026, I audited the robustness "
-            "of a neural network bank fraud detector (AUC 98 %), where an adapted attack fooled the model in 48 % of cases. "
-            "I designed a graph-based defense analyzing the internal activations of the network, which intercepted 68 % of "
-            "successful attacks, and evaluated it with a pre-specified statistical protocol showing no significant advantage "
-            "over a simpler SVM model. This taught me not to settle for a good number, but to verify that a gain is real. "
-            "In my hospital length-of-stay project on around 70,000 patients, I built predictions with a guaranteed error "
-            "margin containing the true value in 90 % of cases as targeted, reduced intervals by 11 % without losing "
-            "reliability, and deployed the model as an API with more than 120 tests. I also built CinéFilm IA for semantic "
-            "movie recommendation over more than 6,000 films, and PanTS on 420 GB of 3D medical scanners. Leading a summer "
-            "camp for about thirty teenagers with the Scouts Unitaires de France, presiding the EM'Aumônerie association "
-            "for one year, and giving weekly math tutoring taught me how to organize teamwork and communicate clearly."
+            "(co-accredited with Centrale Lyon and ENS Lyon), covering stochastic modeling, optimization, statistical "
+            "learning, high-performance computing, and uncertainty quantification. What motivates me most in machine "
+            "learning is knowing when a model makes mistakes, measuring it honestly, and deploying reliable models. "
+            "During my research internship at UPC (Universitat Politècnica de Catalunya) in Barcelona from May to August "
+            "2026, I audited the robustness of a neural network bank fraud detector (AUC 98 %), where an adapted attack "
+            "fooled the model in 48 % of cases. I designed a graph-based defense analyzing the internal functioning of "
+            "the network, which intercepted 68 % of successful attacks, and evaluated it with a pre-specified statistical "
+            "protocol showing no significant advantage over a simpler SVM model. This taught me not to settle for a good "
+            "number, but to verify that a gain is real. In my MedStay-CI hospital length-of-stay project on around 70,000 "
+            "patients, I built predictions with a guaranteed error margin containing the true value in 90 % of cases as "
+            "targeted, reduced intervals by 11 % without losing reliability, and deployed the model as an API with more "
+            "than 120 tests. I also built Stage Copilot to collect and evaluate more than 1,200 internship offers, "
+            "CinéFilm IA for semantic movie recommendation over more than 6,000 films, and PanTS on 420 GB of 3D medical "
+            "scanners (82 % accuracy, +10 points over baseline). Leading a summer camp for about thirty teenagers with "
+            "the Scouts Unitaires de France, presiding the EM'Aumônerie association for one year, and giving weekly math "
+            "tutoring taught me how to organize teamwork and communicate clearly."
         )
         p_vous = (
             f"Your internship offer for the position of {raw_title} at {raw_company} directly matches my background in "
-            f"applied mathematics, statistical learning, uncertainty quantification, and software engineering."
+            f"applied mathematics, statistical learning, uncertainty quantification, and software engineering, as well as "
+            f"my desire to work on concrete modeling and evaluation problems with your team."
         )
         if custom_instruction and custom_instruction.strip():
             p_vous += f" In particular, I take note of this priority: {custom_instruction.strip()}."
@@ -293,7 +297,7 @@ def generate_algorithmic_cover_letter(
             f"and software implementation required for {raw_title}. I would bring a methodical approach to setting up "
             f"clear baselines, measuring model stability, identifying failure modes, and writing clean, well-tested code. "
             f"Working with your team would allow me to deepen my practice on real problems while sharing clear and "
-            f"reproducible experimental results."
+            f"reproducible experimental results throughout the project."
         )
         if has_suite:
             p_nous += " As the offer mentions a possible continuation, I would also be interested in discussing a PhD or CIFRE track."
@@ -324,16 +328,17 @@ def generate_algorithmic_cover_letter(
         "à vérifier qu'un gain est réel. Dans mon projet MedStay-CI de prévision de la durée d'hospitalisation sur "
         "environ 70 000 patients, j'ai construit une marge d'erreur qui contient la vraie valeur dans 90 % des cas comme "
         "visé, réduit les intervalles de 11 % sans perte de fiabilité, et mis le modèle en service sous forme d'API avec "
-        "plus de 120 tests. J'ai également développé CinéFilm IA (recommandation de films par recherche sémantique sur "
-        "plus de 6 000 films) et participé au projet PanTS sur 420 Go de scanners 3D. Enfin, la direction d'un camp d'été "
-        "pour une trentaine d'adolescents chez les Scouts Unitaires de France, la présidence de l'association EM'Aumônerie "
-        "pendant un an et les cours particuliers de mathématiques chaque semaine m'ont appris à m'organiser et à "
-        "travailler avec rigueur et clarté."
+        "plus de 120 tests. J'ai également développé Stage Copilot (plus de 1 200 offres évaluées), CinéFilm IA "
+        "(recommandation de films par recherche sémantique sur plus de 6 000 films) et participé au projet PanTS sur "
+        "420 Go de scanners 3D (82 % de bonnes réponses, +10 points sur la référence). Enfin, la direction d'un camp "
+        "d'été pour une trentaine d'adolescents chez les Scouts Unitaires de France, la présidence de l'association "
+        "EM'Aumônerie pendant un an et les cours particuliers de mathématiques chaque semaine m'ont appris à m'organiser "
+        "et à travailler avec rigueur et clarté."
     )
     p_vous = (
         f"Votre offre pour le poste « {raw_title} » au sein de {raw_company} retient mon attention par la cohérence "
         f"entre les missions proposées et ma formation en mathématiques appliquées, apprentissage statistique et "
-        f"développement logiciel."
+        f"développement logiciel, ainsi que par la possibilité de travailler sur un sujet concret au sein de votre équipe."
     )
     if custom_instruction and custom_instruction.strip():
         p_vous += f" Je prends notamment en compte votre priorité concernant : {custom_instruction.strip()}."
@@ -368,6 +373,109 @@ def generate_algorithmic_cover_letter(
         "Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées."
     )
     return "\n\n".join([subject, salutation, p_intro, p_moi, p_vous, p_nous, p_closing, signature_block]).strip()
+
+
+_NUMBER_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\d{1,3}(?:[\s\u00a0\u202f,]\d{3})+(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?(?![A-Za-z0-9_])"
+)
+_THOUSANDS_RE = re.compile(r"^\d{1,3}(?:[\s\u00a0\u202f,]\d{3})+$")
+_PHONE_RE = re.compile(r"(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}")
+_URL_RE = re.compile(r"https?://\S+")
+_DATE_EXEMPT_NUMBERS: frozenset[str] = frozenset(
+    {"1", "2", "3", "4", "5", "6", "2022", "2023", "2024", "2025", "2026", "2027", "2028"}
+)
+
+
+def _normalize_number_token(token: str) -> str:
+    clean = token.strip()
+    if _THOUSANDS_RE.match(clean):
+        return re.sub(r"[\s\u00a0\u202f,]", "", clean)
+    return re.sub(r"[\s\u00a0\u202f]", "", clean).replace(",", ".")
+
+
+def _extract_normalized_numbers(text: str) -> list[tuple[str, str]]:
+    if not text:
+        return []
+    stripped = _URL_RE.sub(" ", text)
+    stripped = _PHONE_RE.sub(" ", stripped)
+    results: list[tuple[str, str]] = []
+    for match in _NUMBER_TOKEN_RE.finditer(stripped):
+        raw = match.group(0).strip()
+        norm = _normalize_number_token(raw)
+        if norm:
+            results.append((raw, norm))
+    return results
+
+
+def check_letter(
+    text: str,
+    facts: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
+    *,
+    check_length: bool = True,
+) -> list[str]:
+    """Vérifie automatiquement une lettre générée et retourne la liste des problèmes (vide si OK)."""
+    if not text or not text.strip():
+        return ["Lettre vide."]
+
+    facts_data = facts if facts is not None else get_letter_facts()
+    job_data = job or {}
+    problems: list[str] = []
+
+    # 1. Nombres autorisés : faits vérifiés + offre + exceptions de dates/durées
+    allowed_numbers: set[str] = set(_DATE_EXEMPT_NUMBERS)
+    facts_str = yaml.safe_dump(facts_data, allow_unicode=True, sort_keys=False) if facts_data else ""
+    for _, norm in _extract_normalized_numbers(facts_str):
+        allowed_numbers.add(norm)
+    for tok in re.findall(r"\d+", facts_str):
+        allowed_numbers.add(tok)
+
+    job_str = " ".join(
+        str(job_data.get(k) or "") for k in ("title", "company", "location", "description")
+    )
+    for _, norm in _extract_normalized_numbers(job_str):
+        allowed_numbers.add(norm)
+    for tok in re.findall(r"\d+", job_str):
+        allowed_numbers.add(tok)
+
+    for raw_num, norm_num in _extract_normalized_numbers(text):
+        if norm_num not in allowed_numbers:
+            problems.append(f"Nombre non sourcé dans les faits ou l'offre : « {raw_num} »")
+
+    # 2. Mots interdits
+    interdits = (facts_data or {}).get("interdits") or []
+    text_lower = text.lower()
+    for word in interdits:
+        w = str(word).strip()
+        if w and w.lower() in text_lower:
+            problems.append(f"Terme interdit détecté : « {w} »")
+
+    # 3. Crochets
+    if "[" in text or "]" in text:
+        problems.append("Crochets détectés dans la lettre (`[` ou `]`).")
+
+    # 4. Nombre de mots (420 à 600)
+    if check_length:
+        words_count = len(text.split())
+        if not (420 <= words_count <= 600):
+            problems.append(
+                f"Longueur hors cible : {words_count} mots (attendu entre 420 et 600 mots)."
+            )
+
+    # 5. Langue identique à celle de l'offre
+    job_lang_source = f"{job_data.get('title') or ''} {job_data.get('description') or ''}".strip()
+    if job_lang_source:
+        offer_is_en = is_english_text(job_lang_source)
+        letter_is_en = is_english_text(text)
+        if offer_is_en != letter_is_en:
+            expected_lang = "anglais" if offer_is_en else "français"
+            actual_lang = "anglais" if letter_is_en else "français"
+            problems.append(
+                f"Langue incorrecte : lettre en {actual_lang} pour une offre en {expected_lang}."
+            )
+
+    return problems
 
 
 class CoverLetterGenerator:
@@ -594,24 +702,13 @@ class CoverLetterGenerator:
             custom_instruction=custom_instruction,
         )
 
-    def generate(
+    def _generate_llm_once(
         self,
         job: dict[str, Any],
-        cv_text: str | None = None,
+        cv: str,
         custom_instruction: str | None = None,
-        allow_fallback: bool = True,
-    ) -> str:
-        """Génère une lettre de motivation (DeepSeek V3 prioritaire, Gemini en secours)."""
-        if not self.available:
-            return (
-                "⚠️ Clé GEMINI_API_KEY ou DEEPSEEK_API_KEY manquante dans votre fichier .env.\n\n"
-                "Veuillez ajouter une clé API pour pouvoir générer des lettres de motivation."
-            )
-
-        cv = cv_text or get_cv_text()
-        if not cv.strip():
-            return "⚠️ Aucun CV trouvé : enregistrez-le dans Paramètres ou définissez le secret CANDIDATE_CV."
-
+    ) -> str | None:
+        """Exécute un appel à la cascade LLM (DeepSeek puis Gemini)."""
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
 
         # Niveau 1 : DeepSeek V3 (modèle principal)
@@ -661,9 +758,48 @@ class CoverLetterGenerator:
                     self.last_error = f"⚠️ Erreur : {exc}"
                     continue
 
+        return None
+
+    def generate(
+        self,
+        job: dict[str, Any],
+        cv_text: str | None = None,
+        custom_instruction: str | None = None,
+        allow_fallback: bool = True,
+    ) -> str:
+        """Génère une lettre de motivation (DeepSeek V3 prioritaire, Gemini en secours) et la vérifie."""
+        self.last_warnings = []
+        if not self.available:
+            return (
+                "⚠️ Clé GEMINI_API_KEY ou DEEPSEEK_API_KEY manquante dans votre fichier .env.\n\n"
+                "Veuillez ajouter une clé API pour pouvoir générer des lettres de motivation."
+            )
+
+        cv = cv_text or get_cv_text()
+        if not cv.strip():
+            return "⚠️ Aucun CV trouvé : enregistrez-le dans Paramètres ou définissez le secret CANDIDATE_CV."
+
+        letter = self._generate_llm_once(job, cv, custom_instruction=custom_instruction)
+        if letter is not None:
+            problems = check_letter(letter, self.facts, job)
+            if problems:
+                problems_block = "\n".join(f"- {p}" for p in problems)
+                retry_instruction = (
+                    (f"{custom_instruction.strip()}\n\n" if custom_instruction and custom_instruction.strip() else "")
+                    + f"CORRECTIONS OBLIGATOIRES (ton premier brouillon a échoué aux vérifications suivantes) :\n{problems_block}"
+                )
+                retried = self._generate_llm_once(job, cv, custom_instruction=retry_instruction)
+                if retried is not None:
+                    letter = retried
+                    problems = check_letter(letter, self.facts, job)
+            self.last_warnings = problems
+            return letter
+
         # Niveau 3 : Moteur algorithmique déterministe de secours
         if allow_fallback:
-            return self.generate_fallback(job, cv_text=cv, custom_instruction=custom_instruction)
+            fb_letter = self.generate_fallback(job, cv_text=cv, custom_instruction=custom_instruction)
+            self.last_warnings = check_letter(fb_letter, self.facts, job)
+            return fb_letter
 
         return self.last_error or "⚠️ Impossible de générer la lettre après plusieurs tentatives."
 

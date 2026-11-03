@@ -101,6 +101,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
 
     session_key = f"cover_letter_{job_id}"
     source_key = f"cover_letter_source_{job_id}"
+    warnings_key = f"cover_letter_warnings_{job_id}"
     version_key = f"cover_letter_version_{job_id}"
     version = int(st.session_state.get(version_key, 0))
     cached_letter = str(st.session_state.get(session_key) or "")
@@ -122,6 +123,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
             new_letter = generator.generate(job)
             st.session_state[session_key] = new_letter
             st.session_state[source_key] = generator.last_source
+            st.session_state[warnings_key] = list(generator.last_warnings)
             version += 1
             st.session_state[version_key] = version
             editor_key = f"editor_{session_key}_{version}"
@@ -154,6 +156,10 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         st.warning(
             "Lettre de secours générique, à personnaliser avant envoi"
         )
+
+    warnings_list = st.session_state.get(warnings_key) or []
+    if warnings_list:
+        st.warning("Points à vérifier dans la lettre : " + " · ".join(str(w) for w in warnings_list))
 
     edited = st.text_area(
         "Brouillon de la lettre (éditable directement avant envoi) :",
@@ -286,6 +292,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 new_l = generator.generate(job, custom_instruction=custom_inst, allow_fallback=True)
                 st.session_state[session_key] = new_l
                 st.session_state[source_key] = generator.last_source
+                st.session_state[warnings_key] = list(generator.last_warnings)
                 st.session_state[version_key] = version + 1
                 try:
                     get_database().update_cover_letter(str(job_id), new_l)
@@ -307,6 +314,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                 if new_l and not new_l.startswith(_WARN_PREFIX):
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "deepseek"
+                    st.session_state[warnings_key] = list(generator.last_warnings)
                     st.session_state[version_key] = version + 1
                     try:
                         get_database().update_cover_letter(str(job_id), new_l)
@@ -319,6 +327,7 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
                     new_l = generator.generate_fallback(job, custom_instruction=custom_inst)
                     st.session_state[session_key] = new_l
                     st.session_state[source_key] = "fallback"
+                    st.session_state[warnings_key] = []
                     st.session_state[version_key] = version + 1
                     try:
                         get_database().update_cover_letter(str(job_id), new_l)

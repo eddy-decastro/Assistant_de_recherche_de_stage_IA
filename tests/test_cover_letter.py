@@ -79,7 +79,7 @@ def test_generator_mock_client() -> None:
     """Vérifie la génération avec un client mocké."""
     mock_client = MagicMock()
     mock_response = MagicMock()
-    mock_response.text = "EDDY\nÉlève-ingénieur\n\nObjet : Candidature au stage\n\nMadame, Monsieur..."
+    mock_response.text = generate_algorithmic_cover_letter(SAMPLE_JOB)
     mock_client.models.generate_content.return_value = mock_response
 
     generator = CoverLetterGenerator(api_key="valid-key", deepseek_api_key="", client=mock_client)
@@ -89,6 +89,7 @@ def test_generator_mock_client() -> None:
     mock_client.models.generate_content.assert_called_once()
     call_kwargs = mock_client.models.generate_content.call_args[1]
     assert call_kwargs["config"].system_instruction == generator.system_prompt
+    assert generator.last_warnings == []
 
 
 def test_candidate_info_loading() -> None:
@@ -427,5 +428,61 @@ def test_no_thesis_instruction_when_offer_explicitly_excludes_thesis() -> None:
     fallback_letter = generate_algorithmic_cover_letter(job)
     assert "thèse" not in fallback_letter.lower()
     assert "cifre" not in fallback_letter.lower()
+
+
+def test_check_letter_detects_all_rules() -> None:
+    from src.candidate import get_letter_facts
+    from src.matching.cover_letter import check_letter
+
+    facts = get_letter_facts()
+    valid_fr = generate_algorithmic_cover_letter(SAMPLE_JOB)
+    assert check_letter(valid_fr, facts, SAMPLE_JOB) == []
+
+    # 1. Chiffre inventé (« 97 % »)
+    with_invented_num = valid_fr + " Précision de 97 % obtenue."
+    probs_num = check_letter(with_invented_num, facts, SAMPLE_JOB)
+    assert any("97" in p for p in probs_num)
+
+    # 2. Mot interdit (« Spearman »)
+    with_spearman = valid_fr + " Corrélation de Spearman élevée."
+    probs_forb = check_letter(with_spearman, facts, SAMPLE_JOB)
+    assert any("Spearman" in p for p in probs_forb)
+
+    # 3. Crochet
+    with_bracket = valid_fr + " [Nom du recruteur]"
+    probs_bracket = check_letter(with_bracket, facts, SAMPLE_JOB)
+    assert any("Crochet" in p or "[" in p for p in probs_bracket)
+
+    # 4. Lettre de 300 mots
+    words_300 = " ".join(["mot"] * 300) + " le la les des pour avec dans stage stagiaire recherche"
+    probs_len = check_letter(words_300, facts, SAMPLE_JOB)
+    assert any("Longueur" in p or "mots" in p for p in probs_len)
+
+    # 5. Lettre anglaise pour une offre française
+    en_job = {
+        "title": "Research Intern - Machine Learning",
+        "company": "DeepMind",
+        "description": "We are looking for an intern working with the team on deep learning experience and skills.",
+    }
+    en_letter = generate_algorithmic_cover_letter(en_job)
+    probs_lang = check_letter(en_letter, facts, SAMPLE_JOB)
+    assert any("Langue" in p for p in probs_lang)
+
+
+def test_generator_retries_once_when_check_letter_fails() -> None:
+    mock_client = MagicMock()
+    bad_resp = MagicMock()
+    bad_resp.text = "Objet : Stage\n\nMadame, Monsieur, précision de 97 % et Spearman."
+    good_resp = MagicMock()
+    good_resp.text = generate_algorithmic_cover_letter(SAMPLE_JOB)
+    mock_client.models.generate_content.side_effect = [bad_resp, good_resp]
+
+    generator = CoverLetterGenerator(api_key="valid-key", deepseek_api_key="", client=mock_client)
+    result = generator.generate(SAMPLE_JOB, cv_text="CV mock")
+
+    assert mock_client.models.generate_content.call_count == 2
+    assert "97 %" not in result
+    assert generator.last_warnings == []
+
 
 
