@@ -241,6 +241,19 @@ class Job(Base):
     evidence_json = Column(Text, nullable=True)
     questions_json = Column(Text, nullable=True)
 
+    # --- Grille v4 (« étoiles + fourchette + classe ») ---
+    v4_class = Column(String(10), nullable=True, index=True)
+    v4_stars_json = Column(Text, nullable=True)
+    v4_center = Column(Float, nullable=True)
+    v4_adjustment = Column(Integer, nullable=True)
+    v4_class_score = Column(Float, nullable=True)
+    v4_display_score = Column(Float, nullable=True, index=True)
+    v4_tags_json = Column(Text, nullable=True)
+    v4_flags_json = Column(Text, nullable=True)
+    v4_raw_json = Column(Text, nullable=True)
+    v4_model = Column(String(100), nullable=True)
+    v4_graded_at = Column(DateTime, nullable=True)
+
     def to_dict(self) -> dict[str, Any]:
         data = {column.name: getattr(self, column.name) for column in self.__table__.columns}
         for name in _JSON_COLUMNS:
@@ -262,6 +275,23 @@ class Job(Base):
                 data["company_note"] = {}
         else:
             data["company_note"] = {}
+        # Décodage structuré v4
+        if data.get("v4_stars_json"):
+            try:
+                data["v4_stars"] = json.loads(data["v4_stars_json"])
+            except Exception:
+                data["v4_stars"] = {}
+        else:
+            data["v4_stars"] = {}
+        data["v4_tags"] = _decode_json_list(data.get("v4_tags_json"))
+        data["v4_flags"] = _decode_json_list(data.get("v4_flags_json"))
+        if data.get("v4_raw_json"):
+            try:
+                data["v4_raw"] = json.loads(data["v4_raw_json"])
+            except Exception:
+                data["v4_raw"] = {}
+        else:
+            data["v4_raw"] = {}
         # Normalisation booléenne
         data["rd_nature"] = bool(data.get("rd_nature"))
         data["is_cesure"] = bool(data.get("is_cesure"))
@@ -443,6 +473,18 @@ class Database:
                 "user_notes": "TEXT",
                 "evidence_json": "TEXT",
                 "questions_json": "TEXT",
+                # Grille v4 (étoiles + fourchette + classe)
+                "v4_class": "VARCHAR(10)",
+                "v4_stars_json": "TEXT",
+                "v4_center": "FLOAT",
+                "v4_adjustment": "INTEGER",
+                "v4_class_score": "FLOAT",
+                "v4_display_score": "FLOAT",
+                "v4_tags_json": "TEXT",
+                "v4_flags_json": "TEXT",
+                "v4_raw_json": "TEXT",
+                "v4_model": "VARCHAR(100)",
+                "v4_graded_at": "DATETIME",
             },
             "seen_jobs": {
                 # Empreinte du filtre métier d'un rejet (réévaluation automatique).
@@ -499,6 +541,7 @@ class Database:
             
             # Création manuelle d'index pour les tables existantes
             conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_rerank_score ON jobs (rerank_score)")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_v4_display_score ON jobs (v4_display_score)")
             conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_jobs_source ON jobs (source)")
 
             # Guérison des offres corrompues par un échec technique API (ex: 429 quota Gemini)

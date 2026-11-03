@@ -245,6 +245,96 @@ SIGNAL_BONUSES: dict[str, int] = {
 BENCHMARK_PENALTY = 5
 MAX_BONUS_TOTAL = 10
 
+# --- Grille v4 (« étoiles + fourchette + classe ») ---
+V4_CLASSES: tuple[str, ...] = ("A", "B", "C", "D", "E")
+
+V4_CLASS_LABELS: dict[str, str] = {
+    "A": "Recherche",
+    "B": "IA / R&D en entreprise",
+    "C": "Bonne entreprise (domaine voisin)",
+    "D": "ESN / Conseil ingénierie",
+    "E": "Hors cible",
+}
+
+V4_CLASS_TONES: dict[str, str] = {
+    "A": "positive",
+    "B": "positive",
+    "C": "accent",
+    "D": "warn",
+    "E": "alert",
+}
+
+V4_CLASS_OFFSETS: dict[str, int] = {
+    "A": 0,
+    "B": -3,
+    "C": -10,
+    "D": -18,
+    "E": -35,
+}
+
+V4_AXIS_KEYS: tuple[str, ...] = (
+    "apprendre",
+    "technique",
+    "debouche",
+    "logistique",
+)
+
+V4_AXIS_LABELS: dict[str, str] = {
+    "apprendre": "Apprendre",
+    "technique": "Technique",
+    "debouche": "Débouché",
+    "logistique": "Logistique",
+}
+
+V4_AXIS_WEIGHTS: dict[str, float] = {
+    "apprendre": 1.1,
+    "technique": 1.0,
+    "debouche": 1.3,
+    "logistique": 0.6,
+}
+
+V4_TAGS: tuple[str, ...] = (
+    "defense",
+    "finance",
+    "trading",
+    "petite_structure",
+    "class_doubt",
+    "teletravail",
+    "anglais_requis",
+    "these_cifre",
+    "pre_embauche",
+    "donnees_reelles",
+    "ml_scientifique",
+)
+
+V4_TAG_LABELS: dict[str, str] = {
+    "defense": "Défense",
+    "finance": "Finance",
+    "trading": "Trading",
+    "petite_structure": "Petite structure (<15)",
+    "class_doubt": "Hésitation classe",
+    "teletravail": "Télétravail",
+    "anglais_requis": "Anglais requis",
+    "these_cifre": "Thèse / CIFRE",
+    "pre_embauche": "Pré-embauche",
+    "donnees_reelles": "Données réelles",
+    "ml_scientifique": "ML scientifique",
+}
+
+V4_TAG_TONES: dict[str, str] = {
+    "defense": "warn",
+    "finance": "warn",
+    "trading": "warn",
+    "petite_structure": "warn",
+    "class_doubt": "warn",
+    "teletravail": "accent",
+    "anglais_requis": "mute",
+    "these_cifre": "positive",
+    "pre_embauche": "positive",
+    "donnees_reelles": "positive",
+    "ml_scientifique": "positive",
+}
+
 
 
 _NUMBER_RE = re.compile(r"-?\d+(?:[.,]\d+)?")

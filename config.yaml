@@ -269,6 +269,30 @@ scoring_v3:
     good: 70
     mixed: 50
 
+scoring_v4:
+  enabled: false
+  axis_weights:
+    apprendre: 1.1
+    technique: 1.0
+    debouche: 1.3
+    logistique: 0.6
+  band_half_width: 10
+  class_offsets:
+    A: 0
+    B: -3
+    C: -10
+    D: -18
+    E: -35
+  weak_axis:
+    enabled: true
+    apprendre_max_stars_cap: 1
+    apprendre_class_score_cap: 55
+    technique_zero_force_class: E
+  adjust_bounds:
+  - -10
+  - 10
+  high_star_needs_quote: 4
+
 scoring:
   model_name: all-MiniLM-L6-v2
   max_seq_length: 256

@@ -675,6 +675,47 @@ def test_scoring_v3_database() -> None:
     print("[OK] test_scoring_v3_database : colonnes, exclusion, v1_jobs et recompute")
 
 
+def test_v4_additive_migration(tmp_path: Path) -> None:
+    """Vérifie que les 11 colonnes v4 sont présentes sans écraser les colonnes v3."""
+    db_file = tmp_path / "test_v4_mig.db"
+    db = Database(db_file)
+    try:
+        db.upsert_job(
+            {
+                "id": "job_v4_test",
+                "title": "Stage Research ML",
+                "company": "Inria",
+                "url": "https://example.com/inria",
+                "rerank_score": 88.0,
+                "verdict": "EXCELLENT",
+                "v4_class": "A",
+                "v4_stars_json": '{"apprendre": 5, "technique": 5, "debouche": 4, "logistique": 5}',
+                "v4_center": 95.0,
+                "v4_adjustment": 3,
+                "v4_class_score": 98.0,
+                "v4_display_score": 98.0,
+                "v4_tags_json": '["these_cifre", "ml_scientifique"]',
+                "v4_flags_json": "[]",
+                "v4_raw_json": '{"class": "A"}',
+                "v4_model": "gemini-3.5-flash-lite",
+            }
+        )
+        fetched = db.get_job("job_v4_test")
+        assert fetched is not None
+        assert fetched["rerank_score"] == 88.0
+        assert fetched["verdict"] == "EXCELLENT"
+        assert fetched["v4_class"] == "A"
+        assert fetched["v4_center"] == 95.0
+        assert fetched["v4_adjustment"] == 3
+        assert fetched["v4_class_score"] == 98.0
+        assert fetched["v4_display_score"] == 98.0
+        assert fetched["v4_stars"]["apprendre"] == 5
+        assert "these_cifre" in fetched["v4_tags"]
+        assert fetched["v4_model"] == "gemini-3.5-flash-lite"
+    finally:
+        db.engine.dispose()
+
+
 if __name__ == "__main__":
     main()
     test_scoring_v3_database()
