@@ -18,8 +18,13 @@ from src.constants import (
     STRUCTURE_TYPE_LABELS,
     STRUCTURE_TYPES,
     TIER_LABELS,
+    V4_CLASSES,
+    V4_CLASS_LABELS,
+    V4_TAGS,
+    V4_TAG_LABELS,
     source_label,
 )
+from src.matching.claude_pack import build_claude_pack
 from src.matching.cover_letter import CoverLetterGenerator
 from src.matching.pdf_exporter import generate_cover_letter_pdf
 from utils.data import (
@@ -510,6 +515,37 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
                 help="Ne conserver que les offres des entreprises sélectionnées.",
             )
 
+        with st.expander("Notation v4 (étoiles + classes)"):
+            v4_classes = st.multiselect(
+                "Classes v4 (mission)",
+                options=list(V4_CLASSES),
+                default=[],
+                format_func=lambda c: f"{c} — {V4_CLASS_LABELS.get(c, c)}",
+                help="Filtre sur les classes A à E de la grille v4. Une seule classe sélectionnée trie par note de classe.",
+            )
+            v4_tags = st.multiselect(
+                "Étiquettes v4 (inclure)",
+                options=list(V4_TAGS),
+                default=[],
+                format_func=lambda t: V4_TAG_LABELS.get(t, t),
+            )
+            exclude_v4_tags = st.multiselect(
+                "Étiquettes v4 (masquer)",
+                options=list(V4_TAGS),
+                default=[],
+                format_func=lambda t: V4_TAG_LABELS.get(t, t),
+            )
+            sort_by = st.selectbox(
+                "Ordre de tri du flux",
+                options=["v3", "v4", "v4_class"],
+                index=0,
+                format_func=lambda k: {
+                    "v3": "Score v3 (par défaut)",
+                    "v4": "Note affichée v4 (général)",
+                    "v4_class": "Note de classe v4 (intra-classe)",
+                }[k],
+            )
+
         with st.expander("Affichage"):
             display_mode = st.selectbox("Mode de flux", options=[DISPLAY_FLAT, DISPLAY_GROUPED])
             page_size = st.selectbox(
@@ -539,6 +575,63 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
         flags=tuple(flags),
         hide_excluded=hide_excluded,
         hide_defense_ethics=hide_defense_ethics,
+        v4_classes=tuple(v4_classes),
+        v4_tags=tuple(v4_tags),
+        exclude_v4_tags=tuple(exclude_v4_tags),
+        sort_by=sort_by,
     )
+
+
+@st.dialog("Pack Claude (Claude in Chrome + Projet Claude)", width="large")
+def show_claude_pack_dialog(jobs_subset: list[dict[str, Any]]) -> None:
+    """Génère et affiche le Pack Claude (prompt navigateur + JSON Projet Claude + PDFs locaux)."""
+    if not jobs_subset:
+        st.warning("Aucune offre sélectionnée.")
+        return
+
+    db = get_database()
+    with st.spinner(f"Préparation du Pack Claude ({len(jobs_subset)} offre(s))..."):
+        pack = build_claude_pack(jobs_subset, db=db, save_pdfs=True)
+        bump_data_version()
+
+    st.caption(
+        f"**{pack['count']} offre(s) prête(s)** · PDFs générés dans `{pack['output_dir']}`"
+    )
+
+    tab_chrome, tab_project, tab_files = st.tabs(
+        ["Prompt Claude in Chrome", "JSON Projet Claude", "Lettres & PDFs générés"]
+    )
+    with tab_chrome:
+        st.markdown(
+            "Copiez ce prompt dans **Claude in Chrome** pour remplir automatiquement "
+            "les formulaires de candidature avec vos coordonnées et le chemin exact des PDFs :"
+        )
+        st.code(pack["chrome_prompt"], language="markdown")
+    with tab_project:
+        st.markdown(
+            "Export structuré pour alimenter un **Projet Claude** (offres, scores v3/v4, "
+            "arguments clés, questions d'entretien et lettres de motivation) :"
+        )
+        st.download_button(
+            "Télécharger le JSON Projet Claude",
+            data=pack["claude_project_json"].encode("utf-8"),
+            file_name="pack_projet_claude.json",
+            mime="application/json",
+            width="stretch",
+            icon=":material/download:",
+        )
+        st.code(pack["claude_project_json"], language="json")
+    with tab_files:
+        for b in pack["bundles"]:
+            st.markdown(f"**{_esc(b['company'])}** — {_esc(b['title'])}")
+            if b.get("pdf_path"):
+                st.caption(f"PDF : `{b['pdf_path']}`")
+            if b.get("url", "").startswith("http"):
+                st.link_button(
+                    f"Ouvrir l'offre ({b['company']}) ↗",
+                    b["url"],
+                    width="stretch",
+                )
+
 
 

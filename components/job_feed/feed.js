@@ -16,10 +16,41 @@ const KEY_COMMANDS = {
 const EXCERPT_LENGTH = 420
 const TOAST_MS = 6000
 const STORAGE_KEY = 'job_feed:selected'
+const STAR_FULL = String.fromCharCode(9733)
+const STAR_EMPTY = String.fromCharCode(9734)
 
 // ---------- Logique pure (testée sous Node) ----------
 function keyToCommand(key) {
   return Object.hasOwn(KEY_COMMANDS, key) ? KEY_COMMANDS[key] : null
+}
+
+function formatStars(stars) {
+  const n = Math.max(0, Math.min(5, Math.round(Number(stars) || 0)))
+  return STAR_FULL.repeat(n) + STAR_EMPTY.repeat(5 - n)
+}
+
+function formatV4Badge(job) {
+  if (!job || !job.v4_class || job.v4_display_score == null) return ''
+  return `${job.v4_class} · ${job.v4_display_score}`
+}
+
+function toggleCheckSelection(checkedIds, visibleIds, targetId, shiftKey = false, lastCheckedId = null) {
+  const next = new Set(checkedIds)
+  const shouldCheck = !next.has(targetId)
+  if (shiftKey && lastCheckedId && visibleIds.includes(lastCheckedId) && visibleIds.includes(targetId)) {
+    const i1 = visibleIds.indexOf(lastCheckedId)
+    const i2 = visibleIds.indexOf(targetId)
+    const [start, end] = i1 < i2 ? [i1, i2] : [i2, i1]
+    for (let i = start; i <= end; i += 1) {
+      if (shouldCheck) next.add(visibleIds[i])
+      else next.delete(visibleIds[i])
+    }
+  } else if (shouldCheck) {
+    next.add(targetId)
+  } else {
+    next.delete(targetId)
+  }
+  return { checked: Array.from(next), lastCheckedId: targetId }
 }
 
 function excerpt(text, length = EXCERPT_LENGTH) {
@@ -100,7 +131,7 @@ function reconcileOverrides(overrides, jobs, attempts, maxAttempts = 2) {
 
 // L'annulation n'est proposée que vers un statut que le serveur accepte.
 function canUndo(previous, statuses) {
-  return Object.values(statuses).includes(previous)
+  return [statuses.new, statuses.applied, statuses.interview, statuses.ignored].includes(previous)
 }
 
 // ---------- Rendu DOM ----------
@@ -155,6 +186,8 @@ function createInstance(root) {
     selected: null,
     segment: 'all',
     overrides: {},
+    checked: new Set(),
+    lastCheckedId: null,
     mobileDetail: false,
     toastTimer: null,
     lastDetailId: null,
@@ -185,23 +218,60 @@ function createInstance(root) {
 
   function renderSegments() {
     const base = visibleJobs(inst.data.jobs, { ...options(), segment: 'all' })
-    countEl.textContent = `${base.length} offre${base.length > 1 ? 's' : ''}`
-    segmentsEl.replaceChildren(
-      ...SEGMENTS.map((seg) =>
-        h(
-          'button',
-          {
-            type: 'button',
-            role: 'tab',
-            class: 'seg' + (seg.key === inst.segment ? ' active' : ''),
-            'aria-selected': String(seg.key === inst.segment),
-            onclick: () => { inst.segment = seg.key; render() },
-          },
-          seg.label,
-          h('span', { class: 'seg-n' }, String(base.filter(seg.test).length)),
-        ),
+    const currentVisible = visible()
+    const visibleIds = currentVisible.map((j) => j.id)
+    for (const id of Array.from(inst.checked)) {
+      if (!base.some((j) => j.id === id)) inst.checked.delete(id)
+    }
+    const allVisibleChecked = visibleIds.length > 0 && visibleIds.every((id) => inst.checked.has(id))
+    countEl.replaceChildren(
+      h('span', {}, `${base.length} offre${base.length > 1 ? 's' : ''}`),
+      visibleIds.length
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn-inline-check',
+              onclick: () => {
+                if (allVisibleChecked) {
+                  for (const id of visibleIds) inst.checked.delete(id)
+                } else {
+                  for (const id of visibleIds) inst.checked.add(id)
+                }
+                render()
+              },
+            },
+            allVisibleChecked ? 'Tout décocher' : 'Tout sélectionner',
+          )
+        : null,
+    )
+    const segButtons = SEGMENTS.map((seg) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          role: 'tab',
+          class: 'seg' + (seg.key === inst.segment ? ' active' : ''),
+          'aria-selected': String(seg.key === inst.segment),
+          onclick: () => { inst.segment = seg.key; render() },
+        },
+        seg.label,
+        h('span', { class: 'seg-n' }, String(base.filter(seg.test).length)),
       ),
     )
+    const S = inst.data.statuses
+    const bulkBar = inst.checked.size > 0
+      ? h(
+          'div',
+          { class: 'bulk-bar', role: 'toolbar', 'aria-label': 'Actions groupées' },
+          h('span', { class: 'bulk-count' }, `${inst.checked.size} sélectionnée${inst.checked.size > 1 ? 's' : ''}`),
+          h('button', { type: 'button', class: 'btn-bulk', onclick: () => bulkChangeStatus(S.ignored) }, 'Archiver'),
+          h('button', { type: 'button', class: 'btn-bulk tone-alert', onclick: () => bulkChangeStatus(S.rejected || 'REJETÉ') }, 'Corbeille'),
+          h('button', { type: 'button', class: 'btn-bulk', onclick: () => bulkChangeStatus(S.applied) }, 'Postulé'),
+          h('button', { type: 'button', class: 'btn-bulk primary', onclick: () => emitClaudePack(Array.from(inst.checked)) }, 'Pack Claude'),
+        )
+      : null
+    segmentsEl.replaceChildren(...segButtons, bulkBar)
   }
 
   function renderList(list) {
@@ -210,6 +280,7 @@ function createInstance(root) {
       listEl.replaceChildren(h('li', { class: 'empty', role: 'presentation' }, 'Aucune offre ne correspond aux filtres courants.'))
       return new Map()
     }
+    const visibleIds = list.map((j) => j.id)
     const rows = new Map()
     const nodes = []
     let lastGroup = null
@@ -220,14 +291,37 @@ function createInstance(root) {
       }
       const status = effectiveStatus(job, inst.overrides)
       const selected = job.id === inst.selected
+      const isChecked = inst.checked.has(job.id)
+      const v4Badge = formatV4Badge(job)
+      const checkInput = h('input', {
+        type: 'checkbox',
+        class: 'row-check',
+        checked: isChecked ? 'checked' : null,
+        'aria-label': `Sélectionner ${job.title}`,
+        onclick: (ev) => {
+          ev.stopPropagation()
+          const res = toggleCheckSelection(
+            Array.from(inst.checked),
+            visibleIds,
+            job.id,
+            Boolean(ev.shiftKey),
+            inst.lastCheckedId,
+          )
+          inst.checked = new Set(res.checked)
+          inst.lastCheckedId = res.lastCheckedId
+          render()
+        },
+      })
+      checkInput.checked = isChecked
       const row = h(
         'li',
         {
-          class: 'row' + (selected ? ' selected' : ''),
+          class: 'row' + (selected ? ' selected' : '') + (isChecked ? ' checked' : ''),
           role: 'option',
           'aria-selected': String(selected),
           onclick: () => select(job.id, true),
         },
+        checkInput,
         h('div', { class: `score tone-${job.align_tone}`, title: `${job.align_label} (${job.score_origin})` }, String(job.score)),
         h(
           'div',
@@ -238,6 +332,7 @@ function createInstance(root) {
         h(
           'div',
           { class: 'row-flags' },
+          v4Badge ? chip(v4Badge, job.v4_class_tone || 'accent', 'v4-pill') : null,
           job.hard_cap ? chip('Plafonné', 'alert') : null,
           status === inst.data.statuses.new ? h('i', { class: 'dot-new', title: 'Nouveau' }) : null,
         ),
@@ -292,6 +387,7 @@ function createInstance(root) {
         { class: 'actions' },
         url ? h('a', { class: 'btn primary', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Postuler ↗') : null,
         h('button', { type: 'button', class: 'btn', onclick: () => emitLetter(job) }, 'Lettre'),
+        h('button', { type: 'button', class: 'btn', onclick: () => emitClaudePack([job.id]) }, 'Pack Claude'),
         actionsFor(status, S).map((a) => h('button', { type: 'button', class: 'btn', onclick: () => changeStatus(job, a.status) }, a.label)),
       ),
     ]
@@ -302,6 +398,50 @@ function createInstance(root) {
       )
     }
     if (job.rejection_reason) parts.push(section('Écartée par le filtre métier', h('p', { class: 'pre' }, job.rejection_reason)))
+
+    if (job.v4_class) {
+      const v4BadgeText = formatV4Badge(job) || job.v4_class
+      const adjStr = job.v4_adjustment != null ? (job.v4_adjustment > 0 ? `+${job.v4_adjustment}` : String(job.v4_adjustment)) : '0'
+      const centerStr = job.v4_center != null ? job.v4_center.toFixed(1) : '—'
+      parts.push(
+        section(
+          'Notation v4 (étoiles + fourchette + classe)',
+          h(
+            'div',
+            { class: 'v4-header' },
+            chip(`Classe ${v4BadgeText}`, job.v4_class_tone || 'accent', 'v4-pill'),
+            job.v4_class_label ? h('span', { class: 'v4-meta' }, job.v4_class_label) : null,
+            job.v4_class_score != null ? h('span', { class: 'v4-meta' }, `Note de classe : ${job.v4_class_score}/100 (centre ${centerStr}, ajust. ${adjStr})`) : null,
+          ),
+          job.v4_summary ? h('p', { class: 'v4-summary' }, job.v4_summary) : null,
+          job.v4_class_reason ? h('p', { class: 'detail-company-note' }, `Justification classe : ${job.v4_class_reason}`) : null,
+          job.v4_axes && job.v4_axes.length
+            ? h(
+                'div',
+                { class: 'grid v4-axes' },
+                job.v4_axes.map((ax) => {
+                  const tooltip = [ax.reason, ax.quote ? `« ${ax.quote} »` : ''].filter(Boolean).join(' — ')
+                  return h(
+                    'div',
+                    { class: `sub sub-row tone-${ax.tone || 'accent'}`, title: tooltip || ax.label },
+                    h('span', {}, ax.label),
+                    h('span', { class: 'v4-stars' }, formatStars(ax.stars)),
+                    h('span', { class: 'sub-value' }, `${ax.stars}/5`),
+                    ax.reason ? h('div', { class: 'sub-evidence' }, ax.reason) : null,
+                    ax.quote ? h('div', { class: 'sub-evidence' }, `« ${ax.quote} »`) : null,
+                  )
+                }),
+              )
+            : null,
+          job.v4_tags && job.v4_tags.length
+            ? h('div', { class: 'chips' }, job.v4_tags.map((t) => chip(t.label, t.tone)))
+            : null,
+          job.v4_flags && job.v4_flags.length
+            ? h('div', { class: 'chips' }, job.v4_flags.map((f) => chip(f, 'warn')))
+            : null,
+        ),
+      )
+    }
 
     if (job.sub_scores.length) {
       parts.push(
@@ -400,6 +540,24 @@ function createInstance(root) {
 
   function emitLetter(job) {
     inst.setTrigger('action', { type: 'letter', id: job.id })
+  }
+
+  function emitClaudePack(ids) {
+    if (!ids || !ids.length) return
+    inst.setTrigger('action', { type: 'claude_pack', ids })
+  }
+
+  function bulkChangeStatus(status) {
+    const ids = Array.from(inst.checked)
+    if (!ids.length || !status) return
+    for (const id of ids) {
+      inst.overrides[id] = status
+    }
+    inst.checked.clear()
+    inst.setTrigger('action', { type: 'bulk_status', ids, status })
+    hideToast()
+    render()
+    root.focus({ preventScroll: true })
   }
 
   function changeStatus(job, status) {

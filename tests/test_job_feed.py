@@ -265,6 +265,73 @@ def test_apply_status_action() -> None:
     assert apply_status_action(db, {"type": "status", "id": "a1", "status": STATUS_NEW}, boom) == "failed"
 
 
+def test_serialize_v4_fields_and_bulk_actions() -> None:
+    v4_job = {
+        **RERANKED,
+        "v4_class": "B",
+        "v4_display_score": 89.5,
+        "v4_class_score": 92.5,
+        "v4_center": 89.5,
+        "v4_adjustment": 3,
+        "v4_stars": {
+            "apprendre": {"stars": 4, "reason": "Encadrant ML", "quote": "suivi par un chercheur", "unknown": False},
+            "technique": {"stars": 4, "reason": "DL avancé", "quote": "modélisation PyTorch", "unknown": False},
+            "debouche": {"stars": 5, "reason": "Scale-up IA + CDI", "quote": "reputation", "unknown": False},
+            "logistique": {"stars": 5, "reason": "Paris 6 mois", "quote": "Paris", "unknown": False},
+        },
+        "v4_tags": ["pre_embauche", "donnees_reelles"],
+        "v4_flags": ["[CITATION_NON_VERIFIEE:logistique]"],
+        "v4_raw": {"summary": "Stage R&D ML chez Mistral", "class_reason": "Scale-up IA"},
+    }
+    data = serialize_job(v4_job, ())
+    assert data["v4_class"] == "B"
+    assert data["v4_display_score"] == 90
+    assert data["v4_class_score"] == 92
+    assert len(data["v4_axes"]) == 4
+    assert data["v4_axes"][0]["key"] == "apprendre" and data["v4_axes"][0]["stars"] == 4
+    assert [t["key"] for t in data["v4_tags"]] == ["pre_embauche", "donnees_reelles"]
+    assert data["v4_summary"] == "Stage R&D ML chez Mistral"
+
+    assert parse_action({"type": "bulk_status", "ids": ["a1", "a2"], "status": STATUS_REJECTED}) == {
+        "type": "bulk_status",
+        "ids": ["a1", "a2"],
+        "status": STATUS_REJECTED,
+    }
+    assert parse_action({"type": "claude_pack", "ids": ["a1"]}) == {
+        "type": "claude_pack",
+        "ids": ["a1"],
+    }
+    assert parse_action({"type": "bulk_status", "ids": [], "status": STATUS_IGNORED}) is None
+
+
+def test_filter_jobs_v4_class_sorts_by_v4_class_score() -> None:
+    from utils.data import Filters, filter_jobs
+
+    jobs = [
+        {**JOB, "id": "b1", "v4_class": "B", "v4_class_score": 82.0, "v4_display_score": 79.0, "rerank_score": 90.0},
+        {**JOB, "id": "b2", "v4_class": "B", "v4_class_score": 94.0, "v4_display_score": 91.0, "rerank_score": 75.0},
+        {**JOB, "id": "a1", "v4_class": "A", "v4_class_score": 98.0, "v4_display_score": 98.0, "rerank_score": 95.0},
+    ]
+    res = filter_jobs(jobs, Filters(v4_classes=("B",)))
+    assert [j["id"] for j in res] == ["b2", "b1"]
+
+
+def test_claude_pack_builder(tmp_path: Path) -> None:
+    from src.matching.claude_pack import build_claude_pack
+
+    pack = build_claude_pack(
+        [{**RERANKED, "cover_letter": "Madame, Monsieur, Voici ma lettre."}],
+        db=None,
+        output_dir=tmp_path,
+        save_pdfs=True,
+    )
+    assert pack["count"] == 1
+    assert "Mistral AI" in pack["chrome_prompt"]
+    assert "Mistral AI" in pack["claude_project_json"]
+    pdf_path = Path(pack["bundles"][0]["pdf_path"])
+    assert pdf_path.exists() and pdf_path.stat().st_size > 100
+
+
 def test_job_feed_se_monte_sans_exception(tmp_path: Path) -> None:
     from streamlit.testing.v1 import AppTest
 

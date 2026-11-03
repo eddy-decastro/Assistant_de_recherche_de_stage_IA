@@ -8,7 +8,13 @@ import streamlit as st
 
 from components.job_feed.actions import apply_status_action, parse_action
 from components.job_feed.serialize import serialize_feed
-from src.constants import STATUS_APPLIED, STATUS_IGNORED, STATUS_INTERVIEW, STATUS_NEW
+from src.constants import (
+    STATUS_APPLIED,
+    STATUS_IGNORED,
+    STATUS_INTERVIEW,
+    STATUS_NEW,
+    STATUS_REJECTED,
+)
 from utils.data import STATUS_LABELS, get_database
 
 _ASSETS = Path(__file__).parent
@@ -31,6 +37,7 @@ _STATUS_CODES = {
     "applied": STATUS_APPLIED,
     "interview": STATUS_INTERVIEW,
     "ignored": STATUS_IGNORED,
+    "rejected": STATUS_REJECTED,
 }
 
 

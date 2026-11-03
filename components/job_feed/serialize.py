@@ -22,6 +22,12 @@ from src.constants import (
     TIER_1,
     TIER_ESN,
     TIER_LABELS,
+    V4_AXIS_KEYS,
+    V4_AXIS_LABELS,
+    V4_CLASS_LABELS,
+    V4_CLASS_TONES,
+    V4_TAG_LABELS,
+    V4_TAG_TONES,
     VERDICT_LABELS,
     coerce_sub_score,
     source_label,
@@ -34,6 +40,7 @@ from utils.data import (
     effective_score,
     group_jobs_by_source,
     is_reranked,
+    job_age_days,
     relative_date,
     score_alignment,
     source_color,
@@ -189,6 +196,70 @@ def _signals(job: dict[str, Any]) -> list[dict[str, str]]:
     return items
 
 
+def _v4_axes(job: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = job.get("v4_stars")
+    if isinstance(raw, str):
+        try:
+            import json
+            raw = json.loads(raw)
+        except Exception:
+            raw = None
+    if not isinstance(raw, dict) or not raw:
+        return []
+    items = []
+    for key in V4_AXIS_KEYS:
+        axis = raw.get(key)
+        if not isinstance(axis, dict):
+            continue
+        try:
+            stars = max(0, min(5, int(axis.get("stars", 0))))
+        except Exception:
+            stars = 0
+        reason = _one_line(axis.get("reason"))
+        quote = _one_line(axis.get("quote"))
+        unknown = bool(axis.get("unknown", False))
+        tone = _SUBSCORE_TONES.get(stars, "alert")
+        items.append(
+            {
+                "key": key,
+                "label": V4_AXIS_LABELS.get(key, key),
+                "stars": stars,
+                "reason": reason,
+                "quote": quote,
+                "unknown": unknown,
+                "tone": tone,
+            }
+        )
+    return items
+
+
+def _v4_tags(job: dict[str, Any]) -> list[dict[str, str]]:
+    raw = job.get("v4_tags")
+    if isinstance(raw, str):
+        try:
+            import json
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    items = []
+    seen = set()
+    for tag in raw:
+        key = str(tag or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "key": key,
+                "label": V4_TAG_LABELS.get(key, key),
+                "tone": V4_TAG_TONES.get(key, "mute"),
+            }
+        )
+    return items
+
+
 def serialize_job(
     job: dict[str, Any],
     keywords: Sequence[str] | int = (),
@@ -235,12 +306,29 @@ def serialize_job(
     questions_entretien = _texts(job.get("questions_entretien"), limit=5)
     user_notes_str = str(job.get("user_notes") or "").strip()
 
+    v4_class = str(job.get("v4_class") or "").strip().upper()
+    v4_disp_raw = job.get("v4_display_score")
+    v4_cls_raw = job.get("v4_class_score")
+    v4_ctr_raw = job.get("v4_center")
+    v4_adj_raw = job.get("v4_adjustment")
+    v4_raw_obj = job.get("v4_raw")
+    if isinstance(v4_raw_obj, str):
+        try:
+            import json
+            v4_raw_obj = json.loads(v4_raw_obj)
+        except Exception:
+            v4_raw_obj = None
+    v4_summary = _one_line(v4_raw_obj.get("summary")) if isinstance(v4_raw_obj, dict) else ""
+    v4_class_reason = _one_line(v4_raw_obj.get("class_reason")) if isinstance(v4_raw_obj, dict) else ""
+    v4_adj_reason = _one_line(v4_raw_obj.get("adjustment_reason")) if isinstance(v4_raw_obj, dict) else ""
+
     return {
         "id": str(job.get("id")),
         "title": _one_line(job.get("title")) or "Offre sans titre",
         "company": _one_line(job.get("company")) or "Entreprise inconnue",
         "location": _one_line(job.get("location")),
         "date_label": relative_date(job.get("created_at")),
+        "age_days": job_age_days(job),
         "source_label": source_label(job.get("source")),
         "source_color": source_color(job.get("source")),
         "score": int(round(score)),
@@ -270,6 +358,19 @@ def serialize_job(
         "company_note": company_note_str,
         "questions_entretien": questions_entretien,
         "user_notes": user_notes_str,
+        "v4_class": v4_class,
+        "v4_class_label": V4_CLASS_LABELS.get(v4_class, v4_class) if v4_class else "",
+        "v4_class_tone": V4_CLASS_TONES.get(v4_class, "mute") if v4_class else "mute",
+        "v4_display_score": int(round(float(v4_disp_raw))) if v4_disp_raw is not None else None,
+        "v4_class_score": int(round(float(v4_cls_raw))) if v4_cls_raw is not None else None,
+        "v4_center": float(v4_ctr_raw) if v4_ctr_raw is not None else None,
+        "v4_adjustment": int(v4_adj_raw) if v4_adj_raw is not None else None,
+        "v4_axes": _v4_axes(job),
+        "v4_tags": _v4_tags(job),
+        "v4_flags": _texts(job.get("v4_flags")),
+        "v4_summary": v4_summary,
+        "v4_class_reason": v4_class_reason,
+        "v4_adj_reason": v4_adj_reason,
     }
 
 

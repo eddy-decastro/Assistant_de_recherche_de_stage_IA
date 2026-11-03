@@ -12,7 +12,8 @@ FEED_JS = PROJECT_ROOT / "components" / "job_feed" / "feed.js"
 NODE = shutil.which("node")
 EXPORTS = (
     "\nexport { SEGMENTS, keyToCommand, excerpt, visibleJobs, pickAfterRemoval,"
-    " moveSelection, actionsFor, safeUrl, reconcileOverrides, canUndo }\n"
+    " moveSelection, actionsFor, safeUrl, reconcileOverrides, canUndo,"
+    " formatStars, formatV4Badge, toggleCheckSelection }\n"
 )
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js absent")
@@ -149,4 +150,18 @@ assert.equal(feed.canUndo('IGNORÉ', S), true)
 assert.equal(feed.canUndo('EXCLU', S), false)
 assert.equal(feed.canUndo('REJETÉ', S), false)
 assert.equal(feed.canUndo(undefined, S), false)
+"""))
+
+
+def test_v4_helpers_et_selection_multiple(tmp_path: Path) -> None:
+    _assert_ok(_run(tmp_path, """
+assert.equal(feed.formatStars(4).length, 5)
+assert.equal(feed.formatV4Badge({ v4_class: 'B', v4_display_score: 89 }), 'B · 89')
+assert.equal(feed.formatV4Badge({ v4_class: '', v4_display_score: null }), '')
+
+const visible = ['j1', 'j2', 'j3', 'j4']
+let r = feed.toggleCheckSelection([], visible, 'j1', false, null)
+assert.deepEqual(r.checked, ['j1'])
+r = feed.toggleCheckSelection(r.checked, visible, 'j3', true, r.lastCheckedId)
+assert.deepEqual(r.checked.sort(), ['j1', 'j2', 'j3'])
 """))

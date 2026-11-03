@@ -64,6 +64,14 @@ from src.constants import (
     TIER_LABELS,
     TIER_NEUTRAL,
     VALID_STATUSES,
+    V4_AXIS_KEYS,
+    V4_AXIS_LABELS,
+    V4_CLASSES,
+    V4_CLASS_LABELS,
+    V4_CLASS_TONES,
+    V4_TAGS,
+    V4_TAG_LABELS,
+    V4_TAG_TONES,
     VERDICT_COLORS,
     VERDICT_EXCELLENT,
     VERDICT_GOOD,
@@ -144,6 +152,14 @@ __all__ = [
     "TIER_LABELS",
     "TIER_NEUTRAL",
     "VALID_STATUSES",
+    "V4_AXIS_KEYS",
+    "V4_AXIS_LABELS",
+    "V4_CLASSES",
+    "V4_CLASS_LABELS",
+    "V4_CLASS_TONES",
+    "V4_TAGS",
+    "V4_TAG_LABELS",
+    "V4_TAG_TONES",
     "VERDICT_COLORS",
     "VERDICT_EXCELLENT",
     "VERDICT_GOOD",
@@ -185,6 +201,7 @@ __all__ = [
     "get_database",
     "group_jobs_by_source",
     "is_reranked",
+    "job_age_days",
     "load_jobs",
     "matches_query",
     "parse_timestamp",
@@ -365,6 +382,16 @@ def relative_date(value: Any, now: datetime | None = None) -> str:
     return f"Il y a {months} mois" if months < 12 else f"Il y a {months // 12} an(s)"
 
 
+def job_age_days(job: dict[str, Any], now: datetime | None = None) -> int | None:
+    """Nombre de jours écoulés depuis ``published_at`` ou ``created_at`` (``None`` si inconnu)."""
+    stamp = parse_timestamp(job.get("published_at") or job.get("created_at"))
+    if stamp is None:
+        return None
+    reference = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    delta = reference - stamp
+    return max(0, int(delta.total_seconds() // 86400))
+
+
 def detected_technologies(job: dict[str, Any], keywords: Sequence[str]) -> list[str]:
     """Technologies clés de l'offre.
 
@@ -436,6 +463,11 @@ class Filters:
     flags: tuple[str, ...] = ()
     hide_excluded: bool = True
     hide_defense_ethics: bool = True
+    # v4 filters
+    v4_classes: tuple[str, ...] = ()
+    v4_tags: tuple[str, ...] = ()
+    exclude_v4_tags: tuple[str, ...] = ()
+    sort_by: str = "v3"
 
     def is_default(self) -> bool:
         """Vrai si aucun critère restrictif n'est appliqué.
@@ -454,6 +486,10 @@ class Filters:
             or getattr(self, "selected_companies", ())
             or getattr(self, "structure_types", ())
             or getattr(self, "flags", ())
+            or getattr(self, "v4_classes", ())
+            or getattr(self, "v4_tags", ())
+            or getattr(self, "exclude_v4_tags", ())
+            or getattr(self, "sort_by", "v3") != "v3"
             or not getattr(self, "hide_excluded", True)
             or not getattr(self, "hide_defense_ethics", True)
             or (self.statuses and len(self.statuses) != len(STATUS_ORDER))
@@ -463,7 +499,7 @@ class Filters:
 
 
 def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, Any]]:
-    """Applique les filtres courants au flux d'offres (ordre conservé)."""
+    """Applique les filtres courants au flux d'offres (ordre conservé ou tri v4 si filtré par classe)."""
     terms = search_terms(filters.query)
     statuses = {STATUS_NEW} if filters.hide_processed else set(filters.statuses)
     tiers = set(filters.tiers)
@@ -479,6 +515,12 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     hide_defense_ethics = getattr(filters, "hide_defense_ethics", True)
     structure_types = set(getattr(filters, "structure_types", ()))
     selected_flags = set(getattr(filters, "flags", ()))
+
+    # v4 filters
+    v4_classes = {str(c).upper() for c in getattr(filters, "v4_classes", ()) if c}
+    v4_tags_filter = {str(t).lower() for t in getattr(filters, "v4_tags", ()) if t}
+    exclude_v4_tags_filter = {str(t).lower() for t in getattr(filters, "exclude_v4_tags", ()) if t}
+    sort_by = str(getattr(filters, "sort_by", "v3") or "v3")
 
     # Pré-calcul pour les vérifications de sous-chaînes (>= 3 chars)
     excluded_comps_sub = [c for c in excluded_comps if len(c) >= 3]
@@ -519,6 +561,20 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
             if not job_flags.intersection(selected_flags):
                 continue
 
+        # V4 : Filtre par classe (A..E)
+        if v4_classes:
+            jc = str(job.get("v4_class") or "").upper()
+            if jc not in v4_classes:
+                continue
+
+        # V4 : Filtre par étiquettes v4 (inclusion / exclusion)
+        if v4_tags_filter or exclude_v4_tags_filter:
+            j_tags = {str(t).lower() for t in (job.get("v4_tags") or [])}
+            if v4_tags_filter and not j_tags.intersection(v4_tags_filter):
+                continue
+            if exclude_v4_tags_filter and j_tags.intersection(exclude_v4_tags_filter):
+                continue
+
         # Les offres écartées par la re-validation métier ne polluent pas le flux :
         # elles n'apparaissent que si l'utilisateur coche explicitement « Rejeté ».
         if job.get("status") == STATUS_REJECTED and STATUS_REJECTED not in statuses:
@@ -546,6 +602,27 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
         if terms and not matches_query(job, terms):
             continue
         selected.append(job)
+
+    # Spécification v4 section 8 : quand Eddy filtre sur une classe (ex: B), trier par v4_class_score
+    if len(v4_classes) == 1 or sort_by == "v4_class":
+        selected.sort(
+            key=lambda j: (
+                j.get("v4_class_score") is not None,
+                float(j.get("v4_class_score") or 0.0),
+                effective_score(j),
+            ),
+            reverse=True,
+        )
+    elif sort_by == "v4":
+        selected.sort(
+            key=lambda j: (
+                j.get("v4_display_score") is not None,
+                float(j.get("v4_display_score") or 0.0),
+                effective_score(j),
+            ),
+            reverse=True,
+        )
+
     return selected[: filters.limit] if filters.limit else selected
 
 
