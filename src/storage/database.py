@@ -517,6 +517,17 @@ class Database:
                 """
             )
 
+            # Rattrapage : marquer rejection_reason = 'auto_archive' sur les offres archivées automatiquement
+            conn.exec_driver_sql(
+                """
+                UPDATE jobs
+                SET rejection_reason = 'auto_archive'
+                WHERE status = 'IGNORÉ'
+                  AND rejection_reason IS NULL
+                  AND user_notes LIKE '%[Auto] Archivée%'
+                """
+            )
+
             # Mémoire de collecte : une entrée par offre déjà connue (idempotent :
             # les lignes existantes ne sont jamais écrasées).
             conn.exec_driver_sql(
@@ -590,7 +601,12 @@ class Database:
             session.commit()
             return result.rowcount
 
-    def update_status(self, job_id: str, status: str) -> bool:
+    def update_status(
+        self,
+        job_id: str,
+        status: str,
+        rejection_reason: str | None = None,
+    ) -> bool:
         """Met à jour le statut d'une offre. Retourne False si l'offre n'existe pas."""
         if status not in VALID_STATUSES:
             raise ValueError(f"Statut invalide: {status!r} (attendu: {sorted(VALID_STATUSES)})")
@@ -599,10 +615,38 @@ class Database:
             if record is None:
                 return False
             record.status = status
+            if rejection_reason is not None:
+                record.rejection_reason = rejection_reason[:300] or None
             if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
                 record.applied_at = datetime.utcnow()
             session.commit()
             return True
+
+    def bulk_update_status(
+        self,
+        job_ids: Iterable[str],
+        status: str,
+        rejection_reason: str | None = None,
+    ) -> int:
+        """Met à jour en lot le statut d'une liste d'offres dans une seule transaction."""
+        if status not in VALID_STATUSES:
+            raise ValueError(f"Statut invalide: {status!r} (attendu: {sorted(VALID_STATUSES)})")
+        ids = [str(jid) for jid in job_ids if jid]
+        if not ids:
+            return 0
+        updated = 0
+        now = datetime.utcnow()
+        with self.SessionLocal() as session:
+            rows = session.execute(select(Job).where(Job.id.in_(ids))).scalars().all()
+            for record in rows:
+                record.status = status
+                if rejection_reason is not None:
+                    record.rejection_reason = rejection_reason[:300] or None
+                if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
+                    record.applied_at = now
+                updated += 1
+            session.commit()
+        return updated
 
     def update_cover_letter(self, job_id: str, cover_letter: str | None) -> bool:
         """Sauvegarde ou met à jour la lettre de motivation d'une offre."""

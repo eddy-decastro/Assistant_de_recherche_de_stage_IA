@@ -260,6 +260,7 @@ def test_archive_old_offers(tmp_path: Path) -> None:
         mock_get.assert_not_called()
 
     assert db.get_job("old_new")["status"] == STATUS_IGNORED
+    assert db.get_job("old_new")["rejection_reason"] == "auto_archive"
     assert "[Auto] Archivée" in (db.get_job("old_new")["user_notes"] or "")
     assert db.get_job("recent_new")["status"] == STATUS_NEW
     assert db.get_job("old_applied")["status"] == STATUS_APPLIED

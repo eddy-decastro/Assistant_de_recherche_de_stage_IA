@@ -293,7 +293,7 @@ def archive_old_offers(
         dt = _parse_datetime(job.get("published_at")) or _parse_datetime(job.get("created_at"))
         if not dt or not _is_older_than(dt, age_days):
             continue
-        db.update_status(job["id"], STATUS_IGNORED)
+        db.update_status(job["id"], STATUS_IGNORED, rejection_reason="auto_archive")
         existing_notes = (job.get("user_notes") or "").strip()
         auto_note = f"[Auto] Archivée : offre de plus de {age_days} jours"
         new_notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
