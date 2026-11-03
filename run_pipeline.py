@@ -69,6 +69,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Recalcule en code pur les notes finales, planchers et plafonds de toutes les offres v3 sans appel LLM.",
     )
+    parser.add_argument(
+        "--recompute-scores-v4",
+        action="store_true",
+        help="Recalcule en code pur les notes v4 à partir de v4_raw_json sans appel API.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -94,6 +99,15 @@ def main(argv: list[str] | None = None) -> None:
         print(" 🔄 RECALCUL DES NOTES V3 (Code pur sans appel LLM)")
         print("=" * 60)
         run_scrapers_main(["--recompute-scores"])
+        if sync_enabled:
+            upload_database(prefer_remote_columns=USER_COLUMNS)
+        return
+
+    if args.recompute_scores_v4:
+        print("\n" + "=" * 60)
+        print(" 🔄 RECALCUL DES NOTES V4 (Code pur sans appel API)")
+        print("=" * 60)
+        run_scrapers_main(["--recompute-scores-v4"])
         if sync_enabled:
             upload_database(prefer_remote_columns=USER_COLUMNS)
         return

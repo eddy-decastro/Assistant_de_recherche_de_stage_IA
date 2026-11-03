@@ -1027,6 +1027,129 @@ class Database:
             session.commit()
         return updated_count
 
+    def update_v4(self, job_id: str, v4_result: Mapping[str, Any]) -> bool:
+        """Persiste les colonnes v4 sans toucher aux colonnes v3 ni aux statuts d'Eddy."""
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.v4_class = v4_result.get("v4_class")
+            stars = v4_result.get("v4_stars_json")
+            if isinstance(stars, (dict, list)):
+                record.v4_stars_json = json.dumps(stars, ensure_ascii=False)
+            else:
+                record.v4_stars_json = stars
+            record.v4_center = (
+                float(v4_result["v4_center"]) if v4_result.get("v4_center") is not None else None
+            )
+            record.v4_adjustment = (
+                int(v4_result["v4_adjustment"])
+                if v4_result.get("v4_adjustment") is not None
+                else None
+            )
+            record.v4_class_score = (
+                float(v4_result["v4_class_score"])
+                if v4_result.get("v4_class_score") is not None
+                else None
+            )
+            record.v4_display_score = (
+                float(v4_result["v4_display_score"])
+                if v4_result.get("v4_display_score") is not None
+                else None
+            )
+            tags = v4_result.get("v4_tags_json")
+            if isinstance(tags, (list, tuple, set)):
+                record.v4_tags_json = json.dumps(list(tags), ensure_ascii=False)
+            else:
+                record.v4_tags_json = tags
+            flags = v4_result.get("v4_flags_json")
+            if isinstance(flags, (list, tuple, set)):
+                record.v4_flags_json = json.dumps(list(flags), ensure_ascii=False)
+            else:
+                record.v4_flags_json = flags
+            raw = v4_result.get("v4_raw_json")
+            if isinstance(raw, (dict, list)):
+                record.v4_raw_json = json.dumps(raw, ensure_ascii=False)
+            else:
+                record.v4_raw_json = raw
+            record.v4_model = v4_result.get("v4_model")
+            graded_at = v4_result.get("v4_graded_at")
+            if isinstance(graded_at, str):
+                try:
+                    graded_at = datetime.fromisoformat(graded_at)
+                except ValueError:
+                    graded_at = datetime.utcnow()
+            record.v4_graded_at = graded_at
+            session.commit()
+            return True
+
+    def recompute_scores_v4(self, config: dict[str, Any] | None = None) -> int:
+        """Recalcule center, class_score et display_score à partir de v4_raw_json sans appel API."""
+        from src.config import load_config
+        from src.constants import V4_AXIS_KEYS
+        from src.matching.scoring_v4 import compute_final_score_v4
+
+        cfg = config or load_config()
+        updated_count = 0
+
+        with self.SessionLocal() as session:
+            stmt = select(Job).where(Job.v4_raw_json.is_not(None))
+            rows = session.execute(stmt).scalars().all()
+
+            for job in rows:
+                try:
+                    raw_data = json.loads(job.v4_raw_json or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(raw_data, dict) or "axes" not in raw_data:
+                    continue
+
+                job_dict = job.to_dict()
+                try:
+                    breakdown = compute_final_score_v4(raw_data, job_dict, cfg)
+                except Exception:
+                    continue
+
+                stars_payload = {
+                    k: {
+                        "stars": breakdown.effective_stars[k],
+                        "raw_stars": breakdown.axes[k]["stars"],
+                        "reason": breakdown.axes[k]["reason"],
+                        "quote": breakdown.axes[k]["quote"],
+                        "unknown": breakdown.axes[k]["unknown"],
+                    }
+                    for k in V4_AXIS_KEYS
+                }
+                job.v4_class = breakdown.final_class
+                job.v4_stars_json = json.dumps(stars_payload, ensure_ascii=False)
+                job.v4_center = breakdown.center
+                job.v4_adjustment = breakdown.adjustment
+                job.v4_class_score = breakdown.class_score
+                job.v4_display_score = breakdown.display_score
+                job.v4_tags_json = json.dumps(breakdown.tags, ensure_ascii=False)
+                job.v4_flags_json = json.dumps(breakdown.flags, ensure_ascii=False)
+                updated_count += 1
+
+            session.commit()
+        return updated_count
+
+    def get_unranked_v4_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Offres non encore évaluées en v4, triées par fraîcheur (published_at puis created_at)."""
+        with self.SessionLocal() as session:
+            stmt = (
+                select(Job)
+                .where(
+                    Job.v4_display_score.is_(None),
+                    Job.status != STATUS_REJECTED,
+                )
+                .order_by(
+                    func.coalesce(Job.published_at, Job.created_at).desc(),
+                    Job.created_at.desc(),
+                )
+                .limit(limit)
+            )
+            return [row.to_dict() for row in session.execute(stmt).scalars().all()]
+
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Top des offres NON encore évaluées par le juge LLM.
 

@@ -216,6 +216,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Recalcule en code pur les notes finales, planchers et plafonds v3 sans appel LLM.",
     )
+    parser.add_argument(
+        "--recompute-scores-v4",
+        action="store_true",
+        help="Recalcule en code pur les notes v4 (center, class_score, display_score) à partir de v4_raw_json sans appel API.",
+    )
     return parser.parse_args(argv)
 
 
@@ -689,6 +694,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Recalcul en code pur des notes v3 (--recompute-scores)...")
         updated = db.recompute_scores(config)
         logger.info("Recalcul terminé : %d offre(s) mise(s) à jour.", updated)
+        db.engine.dispose()
+        return 0
+
+    if args.recompute_scores_v4:
+        logger.info("Recalcul en code pur des notes v4 (--recompute-scores-v4)...")
+        updated_v4 = db.recompute_scores_v4(config)
+        logger.info("Recalcul v4 terminé : %d offre(s) mise(s) à jour.", updated_v4)
         db.engine.dispose()
         return 0
 
