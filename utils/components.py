@@ -142,18 +142,17 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
         st.session_state[version_key] = version
         editor_key = f"editor_{session_key}_{version}"
 
-    # Si la lettre a été produite via DeepSeek ou le moteur de secours algorithmique
+    # Si la lettre a été produite via Gemini (secours) ou le moteur de secours algorithmique
     source = st.session_state.get(source_key)
-    if source == "deepseek":
+    if source == "gemini":
         st.info(
-            "**IA de secours DeepSeek V3 active** : Votre lettre a été rédigée avec succès par DeepSeek "
-            "(relais automatique suite à une saturation temporaire de Google Gemini). "
+            "**IA de secours Google Gemini active** : Votre lettre a été rédigée par Gemini "
+            "(relais automatique suite à l'indisponibilité de DeepSeek, modèle principal). "
             "Vous pouvez la copier, la modifier ou la télécharger en PDF."
         )
     elif source == "fallback":
-        st.info(
-            "**Mode de secours algorithmique actif** : Rédigée sur-mesure à partir de votre profil et de l'offre. "
-            "Vous pouvez la copier, la modifier ou la télécharger en PDF, ou tenter une génération IA ci-dessous."
+        st.warning(
+            "Lettre de secours générique, à personnaliser avant envoi"
         )
 
     edited = st.text_area(

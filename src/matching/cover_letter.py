@@ -1,8 +1,8 @@
-"""Générateur de lettres de motivation personnalisées (Gemini).
+"""Générateur de lettres de motivation personnalisées (DeepSeek V3 prioritaire, Gemini en secours).
 
-Utilise le profil candidat (CV et coordonnées, voir src.candidate) et la fiche de poste
-pour produire une lettre de motivation complète, académique et percutante (1 à 1,5 pages,
-environ 500 à 650 mots), directement prête à l'envoi sans aucun placeholder ni crochet.
+Utilise le fichier de faits vérifiés (``data/profil_lettre.yaml`` via ``src.candidate.get_letter_facts``),
+le profil candidat et la fiche de poste pour produire une lettre de motivation sobre,
+factuelle et directement prête à l'envoi sans aucun placeholder ni crochet.
 """
 from __future__ import annotations
 
@@ -11,21 +11,20 @@ import re
 from typing import Any
 
 import requests
+import yaml
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-from src.candidate import get_candidate_info, get_cv_text  # noqa: F401  (ré-export)
+from src.candidate import get_candidate_info, get_cv_text, get_letter_facts  # noqa: F401
 from src.config import load_config
 from src.env import load_env_file
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
 
-# Repli quand aucun profil n'est fourni : champs publics seulement. Téléphone et
-# email viennent de src.candidate (fichier local ou secrets), jamais du code.
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
-    "title": "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)",
+    "title": "Élève-ingénieur IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)",
     "phone": "",
     "email": "",
     "linkedin": "https://www.linkedin.com/in/eddy-de-castro/",
@@ -35,10 +34,13 @@ DEFAULT_CANDIDATE: dict[str, str] = {
 
 
 def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
-    """Construit le prompt système intégrant les coordonnées et le parcours d'excellence du candidat."""
+    """Construit le prompt système intégrant les coordonnées et les règles de véracité du candidat."""
     cand = candidate or DEFAULT_CANDIDATE
     name = cand.get("name", "Eddy DE CASTRO")
-    title = cand.get("title", "Élève-ingénieur IMT Mines Alès — Double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)")
+    title = cand.get(
+        "title",
+        "Élève-ingénieur IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)",
+    )
     phone = cand.get("phone", "")
     email = cand.get("email", "")
     linkedin = cand.get("linkedin", "")
@@ -52,62 +54,28 @@ def build_system_prompt(candidate: dict[str, str] | None = None) -> str:
         sig_lines.append(" | ".join(contacts))
     signature_block = "\n".join(sig_lines)
 
-    return f"""Tu es un expert en recrutement scientifique & tech de haut niveau et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (IMT Mines Alès / Mines Saint-Étienne).
-Ton rôle est de rédiger une lettre de motivation complète, substantielle, argumentée et hautement personnalisée (format développé d'environ 1 à 1,5 pages, soit 500 à 650 mots) pour une offre de stage de fin d'études spécifique, à partir du CV du candidat et de la description du poste.
+    return f"""Tu es un expert en recrutement scientifique & tech et en rédaction de candidatures pour des élèves-ingénieurs de grandes écoles françaises (IMT Mines Alès / Mines Saint-Étienne).
+Ton rôle est de rédiger une lettre de motivation sobre, factuelle et personnalisée pour une offre de stage de fin d'études spécifique.
+
+RÈGLE DE VÉRACITÉ STRICTE :
+- Utilise UNIQUEMENT les faits de la section FAITS VÉRIFIÉS. N'invente aucun chiffre, outil, résultat ni fait sur l'entreprise.
 
 RÈGLE D'OR ABSOLUE : ZÉRO CROCHET, ZÉRO PLACEHOLDER.
 - Il est STRICTEMENT INTERDIT d'utiliser des crochets `[...]` ou des variables non résolues (comme [Nom du Recruteur], [Votre Téléphone], [Adresse de l'Entreprise], etc.).
-- Tout doit être rédigé de façon naturelle, précise et directement exploitable. Le candidat doit pouvoir copier-coller ou exporter la lettre immédiatement sans la moindre retouche manuelle obligatoire.
+- Tout doit être rédigé de façon naturelle, précise et directement exploitable.
 - Ne pas mettre d'adresses postales physiques en en-tête.
 
-POSITIONNEMENT CIBLE DU CANDIDAT :
-"Ingénieur ML à formation mathématique, spécialisé dans les modèles dont on peut mesurer la fiabilité (incertitude, robustesse, évaluation), capable de les mettre en production."
+POSITIONNEMENT DU CANDIDAT :
+"Ingénieur ML à formation mathématique : ce qui me motive est de savoir quand un modèle se trompe et de le mesurer honnêtement, puis de mettre en service des modèles fiables."
 
-STRUCTURE ET CONTENU DÉTAILLÉ DE LA LETTRE (1 à 1,5 pages, ~500-650 mots) :
-1. Objet clair et professionnel :
-   Exemple : "Objet : Candidature au stage de fin d'études — [Intitulé exact du poste]" (en intégrant directement le titre réel, sans aucun crochet).
+PARCOURS SCOLAIRE EXACT À RESPECTER :
+- Classes préparatoires PC* au lycée Descartes de Tours, puis admission à l'IMT Mines Alès.
+- 2e année à l'IMT Mines Alès : majeure Intelligence Artificielle & Data Science, suivie en parallèle de la Licence 3 de Mathématiques Générales à l'Université de Montpellier.
+- 3e année (actuelle) : élève de l'IMT Mines Alès en double diplôme Master 2 Mathématiques en Action (MAEA) à Mines Saint-Étienne (co-accrédité Mines Saint-Étienne, Centrale Lyon et ENS Lyon).
+- NE JAMAIS mentionner le baccalauréat ni le lycée avant la prépa.
 
-2. Formule d'appel :
-   "Madame, Monsieur," (ou nom exact de la personne si mentionné sans ambiguïté dans l'offre).
-
-3. Corps de texte en 4 à 5 paragraphes équilibrés, techniques et approfondis :
-   a. L'ACCROCHE & L'ENTREPRISE (Vous) :
-      Analyser avec pertinence les enjeux, la mission ou les technologies de l'entreprise. Démontrer un intérêt sincère et documenté pour ses projets, ses produits, ses défis R&D ou ses publications.
-
-   b. FORMATION D'EXCELLENCE & TRIPLE PARCOURS MATHS / IA (Moi) :
-      Valoriser le profil académique particulièrement robuste du candidat :
-      Parcours exact, à respecter sans l'inventer ni le déformer :
-      - Classes préparatoires PC* au lycée Descartes de Tours, puis admission à l'IMT Mines Alès.
-      - 1re année à l'IMT Mines Alès : tronc commun du cursus ingénieur généraliste, comme tous les élèves.
-      - 2e année : choix de la spécialité informatique et IA (Intelligence Artificielle & Data Science), suivie EN MÊME TEMPS que la Licence 3 de Mathématiques Générales à l'Université de Montpellier. MENTIONNER EXPLICITEMENT cette Licence 3 menée en parallèle.
-      - 3e année (actuelle) : toujours élève de l'IMT Mines Alès, en double diplôme avec le Master 2 Mathématiques en Action (MAEA, Mines Saint-Étienne, co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon). Les cours se déroulent actuellement à Mines Saint-Étienne, dans le cursus des Mines.
-      - NE JAMAIS mentionner le baccalauréat ni le lycée avant la prépa : tout candidat l'a, cela n'apporte rien. La prépa PC* peut être citée brièvement.
-      - Souligner l'atout de cette double compétence rare : un socle théorique de haut niveau (algèbre linéaire, calcul différentiel, optimisation convexe/non convexe, modélisation stochastique, statistiques inférentielles, quantification d'incertitudes) combiné à une solide rigueur en génie logiciel et Machine Learning appliqué.
-
-   c. RÉALISATIONS CONCRÈTES & PROJETS TECHNIQUES EN MIROIR (Moi) :
-      Illustrer vos compétences en vous appuyant sur 2 réalisations techniques majeures du CV qui font directement écho aux missions du poste :
-      - Projet #1 (IA de confiance & mise en production) : MedStay-CI (quantification d'incertitude certifiée à 89,9 %, régression quantile conforme avec MAPIE / Conformal Prediction, analyse systématique de robustesse face aux dérives de distribution, API REST FastAPI et conteneurisation Docker avec 124 tests automatisés).
-      - Stage R&D à l'UPC Barcelone (Recherche appliquée en robustesse et Graph ML) : modélisation mathématique et expérimentale en graphes de similarité spectrale, benchmarking d'attaques adaptatives sous PyTorch (substitut différentiable BPDA face à PGD/FGSM), rigueur d'évaluation statistique d'hypothèses (test de McNemar, bootstrap apparié), rapport de synthèse R&D et benchmarking. Présenter ce travail avec exactitude comme un projet de recherche appliquée approfondi (pas de prétention de mise en production industrielle).
-      - Autre projet ciblé si pertinent : ML médical sur 420 Go d'images 3D NIfTI (dataset PanTS 2025, descripteurs statistiques HU, Random Forest) ou CinéFilm IA (recherche sémantique vectorielle bilingue temps réel avec bi-encodeur E5-Large sous PyTorch).
-      Faire un pont technique direct et convaincant avec la stack et les responsabilités mentionnées dans l'offre. Aucune mention d'outils no-code comme n8n.
-
-   d. COLLABORATION, VALEUR AJOUTÉE & PROJECTION (Nous) :
-      Expliquer comment le candidat compte s'intégrer, collaborer avec l'équipe et monter rapidement en puissance sur les problématiques du projet.
-      Si l'offre mentionne une perspective de suite ou de thèse, évoquer l'intérêt sincère d'Eddy pour une poursuite en thèse CIFRE ou doctorat académique, sans en faire un prérequis bloquant.
-
-   e. MODALITÉS PRATIQUES & DISPONIBILITÉ :
-      Confirmer la disponibilité pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à partir de début avril 2027.
-
-4. Formule de politesse soignée :
-   Élégante et formelle (ex. "Dans l'attente d'un prochain échange au cours duquel je serai ravi de vous exposer plus en détail mes motivations et l'adéquation de mon profil avec vos projets, je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations les plus distinguées.").
-
-5. Signature complète :
+SIGNATURE COMPLÈTE :
 {signature_block}
-
-RÈGLES DE STYLE :
-- LANGUE : Si l'offre est rédigée en anglais, rédige l'intégralité de la lettre en anglais professionnel soutenu. Sinon, en français soigné, fluide et percutant.
-- TON : Rigueur scientifique, vocabulaire technique précis, assurance mesurée, aucun cliché creux.
-- VÉRACITÉ : Reste strictement conforme aux éléments du CV.
 """
 
 
@@ -122,12 +90,12 @@ def is_english_text(text: str) -> bool:
     en_markers = [
         " the ", " and ", " with ", " for ", " intern", " team ", " working ",
         " skills", " requirements", " experience", " develop", " we are looking",
-        " we offer", " who you are", " about the role", " qualifications", " what you will do"
+        " we offer", " who you are", " about the role", " qualifications", " what you will do",
     ]
     fr_markers = [
         " le ", " la ", " les ", " des ", " pour ", " avec ", " dans ",
         " stage", " stagiaire", " recherche ", " au sein de ", " vous ",
-        " nous ", " missions", " profil", " formation", " candidature"
+        " nous ", " missions", " profil", " formation", " candidature",
     ]
     en_score = sum(lower.count(m) for m in en_markers)
     fr_score = sum(lower.count(m) for m in fr_markers)
@@ -140,14 +108,21 @@ def generate_algorithmic_cover_letter(
     cv_text: str | None = None,
     custom_instruction: str | None = None,
 ) -> str:
-    """Génère une lettre de motivation déterministe de secours (haute fidélité) sans appel API.
+    """Génère une lettre de motivation de secours utilisant exclusivement les faits vérifiés.
 
-    Garantit 100% de disponibilité même en cas de panne, quota épuisé (429) ou
-    surcharge temporaire de l'API Gemini (503).
+    Suit le plan Moi / Vous / Nous, sans éloge inventé sur l'entreprise ni chiffre hors
+    de ``data/profil_lettre.yaml``.
     """
+    _ = cv_text
+    facts = get_letter_facts()
+    identite = facts.get("identite") or {}
     cand = candidate or DEFAULT_CANDIDATE
-    name = cand.get("name", "Eddy DE CASTRO")
-    title_cand = cand.get("title", "Élève-ingénieur Mines de Saint-Étienne — Double diplôme M2 Mathématiques en Action")
+    name = cand.get("name") or identite.get("nom") or "Eddy DE CASTRO"
+    title_cand = (
+        cand.get("title")
+        or identite.get("titre_court")
+        or "Élève-ingénieur IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)"
+    )
     phone = cand.get("phone", "")
     email = cand.get("email", "")
     linkedin = cand.get("linkedin", "https://www.linkedin.com/in/eddy-de-castro/")
@@ -159,193 +134,139 @@ def generate_algorithmic_cover_letter(
     full_text = f"{raw_title} {raw_company} {description}".lower()
 
     contacts = [c for c in [phone, email, linkedin, github] if c]
-    signature_block = f"{name}\n{title_cand}\n" + (" | ".join(contacts) if contacts else "")
+    signature_block = f"{name}\n{title_cand}" + (f"\n{' | '.join(contacts)}" if contacts else "")
+
+    structure_type = str(job.get("structure_type") or "").upper()
+    signals = job.get("signals")
+    if not signals and job.get("signals_json"):
+        try:
+            import json
+            signals = json.loads(job["signals_json"]) if isinstance(job["signals_json"], str) else job["signals_json"]
+        except Exception:
+            signals = {}
+    signals = signals or {}
+    has_suite = bool((signals.get("suite_explicite") or {}).get("present"))
+    if "possibilité de poursuite en thèse : non" in full_text or "poursuite en thèse : non" in full_text:
+        has_suite = False
 
     is_en = is_english_text(full_text)
 
-    is_vision = any(k in full_text for k in ["vision", "image", "imagerie", "segmentation", "détection", "diffusion", "nerf", "3d", "splatting", "biomédical", "médicale"])
-    is_nlp = any(k in full_text for k in ["nlp", "llm", "rag", "transformer", "sémantique", "langage", "texte", "bert", "e5", "agent"])
-    is_graph = any(k in full_text for k in ["graph", "gnn", "graphe", "spectrale", "topologie", "réseau"])
-
     if is_en:
-        salutation = "Dear Hiring Team,"
         subject = f"Subject: Application for End-of-Studies Internship — {raw_title}"
-
-        p_hook = (
-            f"As a leading innovator in its sector, {raw_company} consistently develops state-of-the-art technological and "
-            f"scientific solutions driven by cutting-edge data science and advanced modeling. Impressed by your achievements, "
-            f"your culture of R&D excellence, and your forward-looking projects, I am writing to enthusiastically submit my "
-            f"application for the {raw_title} internship position."
+        salutation = "Dear Hiring Team,"
+        p_intro = (
+            f"Currently in my third year as an engineering student in Artificial Intelligence and Data Science at "
+            f"IMT Mines Alès and enrolled in the M2 Mathematics in Action dual degree at Mines Saint-Étienne, "
+            f"I am applying for the 6-month end-of-studies internship {raw_title} at {raw_company}."
         )
-
-        p_education = (
-            "After the French preparatory classes (PC*, Lycée Descartes, Tours), I joined IMT Mines Alès, where I chose the "
-            "computer science and Artificial Intelligence & Data Science specialization in my second year, while completing a Bachelor's "
-            "Degree (Licence 3) in Mathematics at the University of Montpellier at the same time. I am now in my third year at IMT Mines Alès, "
-            "in a dual degree with the M2 Mathematics in Action (MAEA, co-accredited by École Centrale de Lyon and ENS de Lyon), "
-            "taking the Mines curriculum at Mines Saint-Étienne. This dual background provides me with advanced mathematical mastery — linear algebra, convex and non-convex "
-            "optimization, differential calculus, stochastic processes, and statistical inference — seamlessly combined with rigorous software engineering "
-            "practices and applied Machine Learning."
+        p_moi = (
+            "After completing French preparatory classes in Physics and Chemistry (PC* at Lycée Descartes in Tours), "
+            "I joined IMT Mines Alès while completing a Bachelor's degree (Licence 3) in General Mathematics at the "
+            "University of Montpellier in parallel, before joining the M2 Mathematics in Action at Mines Saint-Étienne "
+            "(co-accredited with Centrale Lyon and ENS Lyon). What motivates me most in machine learning is knowing when "
+            "a model makes mistakes, measuring it honestly, and deploying reliable models. During my research internship "
+            "at UPC (Universitat Politècnica de Catalunya) in Barcelona from May to August 2026, I audited the robustness "
+            "of a neural network bank fraud detector (AUC 98 %), where an adapted attack fooled the model in 48 % of cases. "
+            "I designed a graph-based defense analyzing the internal activations of the network, which intercepted 68 % of "
+            "successful attacks, and evaluated it with a pre-specified statistical protocol showing no significant advantage "
+            "over a simpler SVM model. This taught me not to settle for a good number, but to verify that a gain is real. "
+            "In my hospital length-of-stay project on around 70,000 patients, I built predictions with a guaranteed error "
+            "margin containing the true value in 90 % of cases as targeted, reduced intervals by 11 % without losing "
+            "reliability, and deployed the model as an API with more than 120 tests. I also built CinéFilm IA for semantic "
+            "movie recommendation over more than 6,000 films, and PanTS on 420 GB of 3D medical scanners. Leading a summer "
+            "camp for about thirty teenagers with the Scouts Unitaires de France, presiding the EM'Aumônerie association "
+            "for one year, and giving weekly math tutoring taught me how to organize teamwork and communicate clearly."
         )
-
-        p_experience = (
-            "I demonstrated this synergy between mathematical rigor and deep learning during my R&D research internship at the Universitat "
-            "Politècnica de Catalunya (UPC) in Barcelona. Embedded within an international research team, I designed Graph Neural Network (GNN) "
-            "architectures and spectral similarity algorithms in PyTorch. Confronted with sophisticated code obfuscation techniques, I developed "
-            "a novel bypass based on differentiable substitution (BPDA), scientifically validated through rigorous statistical hypothesis testing "
-            "(McNemar test and paired bootstrap with p < 0.001), elevating detection accuracy to 96.2%. Furthermore, my key software projects "
-            "reflect this standard of excellence: MedStay-CI (certified 89.9% uncertainty quantification using LightGBM quantile regression "
-            "and Conformal Prediction with MAPIE, wrapped in a Dockerized FastAPI service covered by 124 unit tests) and CinéFilm AI "
-            "(sub-100ms real-time semantic vector search using PyTorch and an E5-Large bi-encoder with hybrid dense/lexical scoring)."
+        p_vous = (
+            f"Your internship offer for the position of {raw_title} at {raw_company} directly matches my background in "
+            f"applied mathematics, statistical learning, uncertainty quantification, and software engineering."
         )
-
-        custom_block = ""
         if custom_instruction and custom_instruction.strip():
-            custom_block = f"\n\nRegarding your specific focus: {custom_instruction.strip()}.\n"
-
-        p_fit = (
-            f"Joining {raw_company} represents an inspiring opportunity to dedicate my dual mathematical and software competencies "
-            f"to your engineering challenges. Autonomous, diligent, and adept at bridging cutting-edge scientific literature with high-performance "
-            f"production code, I look forward to contributing actively to your technical roadmap."
+            p_vous += f" In particular, I take note of this priority: {custom_instruction.strip()}."
+        p_nous = (
+            f"During these six months at {raw_company}, I want to contribute concretely to the modeling, evaluation, "
+            f"and software implementation required for {raw_title}. I would bring a methodical approach to setting up "
+            f"clear baselines, measuring model stability, identifying failure modes, and writing clean, well-tested code. "
+            f"Working with your team would allow me to deepen my practice on real problems while sharing clear and "
+            f"reproducible experimental results."
         )
+        if has_suite:
+            p_nous += " As the offer mentions a possible continuation, I would also be interested in discussing a PhD or CIFRE track."
+        p_closing = (
+            "I am available for a 6-month end-of-studies internship starting in early April 2027, and I would be glad "
+            "to discuss my application during an interview.\n\nSincerely,"
+        )
+        return "\n\n".join([subject, salutation, p_intro, p_moi, p_vous, p_nous, p_closing, signature_block]).strip()
 
-        p_logistics = "I am available for a full-time 6-month end-of-studies internship starting in early April 2027."
-        p_closing = "I would welcome the opportunity to discuss my background and how my skills align with your objectives in an interview."
-        valediction = "Sincerely,"
+    subject = f"Objet : Candidature au stage de fin d'études — {raw_title}"
+    salutation = "Madame, Monsieur,"
+    p_intro = (
+        f"Élève-ingénieur en troisième année à l'IMT Mines Alès en spécialité Intelligence Artificielle et Data Science, "
+        f"actuellement en double diplôme dans le Master 2 Mathématiques en Action (MAEA) à Mines Saint-Étienne, "
+        f"je vous adresse ma candidature pour le stage de fin d'études de 6 mois « {raw_title} » au sein de {raw_company}."
+    )
+    p_moi = (
+        "Après une classe préparatoire PC* au lycée Descartes de Tours, j'ai intégré l'IMT Mines Alès et mené en "
+        "parallèle une Licence 3 de Mathématiques Générales à l'Université de Montpellier, avant de rejoindre cette "
+        "année le M2 Mathématiques en Action à Mines Saint-Étienne (co-accrédité avec Centrale Lyon et l'ENS Lyon). "
+        "Ce qui me motive en machine learning est de savoir quand un modèle se trompe, de le mesurer honnêtement, puis "
+        "de mettre en service des modèles fiables. Lors de mon stage de recherche à l'UPC (Universitat Politècnica de "
+        "Catalunya) à Barcelone de mai à août 2026, j'ai audité la robustesse d'un détecteur de fraude bancaire par "
+        "réseau de neurones (AUC 98 %) : une attaque adaptée trompait le modèle dans 48 % des cas. J'ai conçu une "
+        "défense qui analyse le fonctionnement interne du réseau sous forme de graphes et interceptait 68 % des attaques, "
+        "puis je l'ai évaluée avec un protocole statistique fixé à l'avance montrant qu'il n'y avait pas d'avantage "
+        "significatif face à un modèle plus simple (SVM). Ce stage m'a appris à ne pas me contenter d'un bon chiffre et "
+        "à vérifier qu'un gain est réel. Dans mon projet MedStay-CI de prévision de la durée d'hospitalisation sur "
+        "environ 70 000 patients, j'ai construit une marge d'erreur qui contient la vraie valeur dans 90 % des cas comme "
+        "visé, réduit les intervalles de 11 % sans perte de fiabilité, et mis le modèle en service sous forme d'API avec "
+        "plus de 120 tests. J'ai également développé CinéFilm IA (recommandation de films par recherche sémantique sur "
+        "plus de 6 000 films) et participé au projet PanTS sur 420 Go de scanners 3D. Enfin, la direction d'un camp d'été "
+        "pour une trentaine d'adolescents chez les Scouts Unitaires de France, la présidence de l'association EM'Aumônerie "
+        "pendant un an et les cours particuliers de mathématiques chaque semaine m'ont appris à m'organiser et à "
+        "travailler avec rigueur et clarté."
+    )
+    p_vous = (
+        f"Votre offre pour le poste « {raw_title} » au sein de {raw_company} retient mon attention par la cohérence "
+        f"entre les missions proposées et ma formation en mathématiques appliquées, apprentissage statistique et "
+        f"développement logiciel."
+    )
+    if custom_instruction and custom_instruction.strip():
+        p_vous += f" Je prends notamment en compte votre priorité concernant : {custom_instruction.strip()}."
 
-        body_parts = [
-            subject,
-            "",
-            salutation,
-            "",
-            p_hook,
-            "",
-            p_education,
-            "",
-            p_experience + custom_block,
-            "",
-            p_fit,
-            "",
-            p_logistics,
-            "",
-            p_closing,
-            "",
-            valediction,
-            "",
-            signature_block,
-        ]
-        return "\n".join(body_parts).strip()
-
+    if structure_type == "LABO_PUBLIC":
+        p_nous = (
+            f"Pendant ces six mois au sein du laboratoire de {raw_company}, je souhaite contribuer concrètement aux "
+            f"travaux liés au sujet « {raw_title} » : mettre en place un protocole d'évaluation rigoureux, comparer les "
+            f"méthodes étudiées à des références simples, analyser les cas d'échec et documenter les expériences avec soin."
+        )
+    elif structure_type == "SCALEUP_IA":
+        p_nous = (
+            f"Pendant ces six mois au sein de {raw_company}, je souhaite contribuer concrètement au développement et à "
+            f"l'évaluation des modèles pour vos produits et votre roadmap technique autour du poste « {raw_title} », en "
+            f"veillant à la fiabilité des résultats comme à la qualité des tests et de la mise en service."
+        )
     else:
-        salutation = "Madame, Monsieur,"
-        subject = f"Objet : Candidature au stage de fin d'études — {raw_title}"
-
-        p_hook = (
-            f"Acteur de référence dans son domaine, {raw_company} développe des initiatives technologiques et des solutions d'envergure "
-            f"qui mobilisent une expertise de pointe en modélisation et en science des données. Vivement intéressé par vos réalisations, "
-            f"votre culture de l'innovation et vos défis scientifiques actuels, c'est avec un vif intérêt et un enthousiasme certain "
-            f"que je vous adresse ma candidature pour le poste de {raw_title}."
+        p_nous = (
+            f"Pendant ces six mois au sein de {raw_company}, je souhaite contribuer concrètement aux travaux du stage "
+            f"« {raw_title} » : construire des références solides, mesurer honnêtement la fiabilité des modèles sur vos "
+            f"données et livrer un code propre et testé au sein de votre équipe."
+        )
+    if has_suite:
+        p_nous += (
+            " Votre offre mentionnant une suite possible, je serais également intéressé pour échanger sur une "
+            "éventuelle poursuite en thèse ou CIFRE à l'issue du stage."
         )
 
-        p_education = (
-            "Après une classe préparatoire PC* au lycée Descartes de Tours, j'ai intégré l'IMT Mines Alès, où j'ai choisi en deuxième "
-            "année la spécialité informatique et Intelligence Artificielle & Data Science, tout en validant en parallèle une Licence 3 de "
-            "Mathématiques Générales à l'Université de Montpellier. Je suis aujourd'hui en troisième année à l'IMT Mines Alès, en double "
-            "diplôme avec le Master 2 Mathématiques en Action (MAEA, co-accrédité par l'École Centrale de Lyon et l'ENS de Lyon), "
-            "dont je suis actuellement les cours à Mines Saint-Étienne. Cette triple formation me confère une maîtrise "
-            "approfondie des fondements théoriques — algèbre linéaire avancée, optimisation convexe et non convexe, calcul différentiel, "
-            "modélisation stochastique et statistiques inférentielles — associée à une grande rigueur méthodologique et à de solides compétences "
-            "en ingénierie logicielle et Machine Learning appliqué."
-        )
-
-        tech_focus = ""
-        if is_vision:
-            tech_focus = " Particulièrement sensible aux enjeux de traitement d'images et de vision par ordinateur, je sais mobiliser les architectures d'apprentissage profond adaptées à vos données complexes."
-        elif is_nlp:
-            tech_focus = " Passionné par le traitement automatique du langage naturel (NLP) et les architectures de transformers, je dispose d'une solide expérience sur l'exploitation et l'optimisation des représentations vectorielles denses."
-        elif is_graph:
-            tech_focus = " Fort d'une expertise pointue en modélisation relationnelle et Graph Machine Learning, je sais concevoir des représentations spectrales et topologiques performantes."
-
-        p_experience = (
-            "Cette synergie entre rigueur mathématique et mise en œuvre applicative s'est illustrée lors de mon stage de recherche R&D "
-            "au sein du laboratoire de l'Universitat Politècnica de Catalunya (UPC) à Barcelone. Au cœur d'une équipe internationale, j'ai "
-            "développé des architectures de Graph Machine Learning (GNN) et des analyses de similarité spectrale sous PyTorch. Face à des "
-            "mécanismes d'obfuscation complexes, j'ai conçu un contournement reposant sur un substitut différentiable (BPDA), validé scientifiquement "
-            "par des tests d'hypothèses rigoureux (test de McNemar et bootstrap apparié avec p < 0,001), permettant d'atteindre un taux de détection "
-            "de 96,2 %. En parallèle, mes réalisations logicielles témoignent de mon exigence de qualité : conception du projet MedStay-CI "
-            "(quantification d'incertitude certifiée à 89,9 % par régression quantile LightGBM et Conformal Prediction MAPIE, API conteneurisée "
-            "FastAPI/Docker avec 124 tests unitaires) et du moteur CinéFilm IA (recherche sémantique vectorielle bilingue temps réel sous 100 ms via un "
-            f"bi-encodeur E5-Large sous PyTorch).{tech_focus}"
-        )
-
-        custom_block = ""
-        if custom_instruction and custom_instruction.strip():
-            custom_block = f"\n\nEn accord avec vos priorités opérationnelles : {custom_instruction.strip()}.\n"
-
-        structure_type = str(job.get("structure_type") or "").upper()
-        signals = job.get("signals")
-        if not signals and job.get("signals_json"):
-            try:
-                import json
-                signals = json.loads(job["signals_json"]) if isinstance(job["signals_json"], str) else job["signals_json"]
-            except Exception:
-                signals = {}
-        signals = signals or {}
-        has_suite = bool((signals.get("suite_explicite") or {}).get("present"))
-
-        if structure_type == "LABO_PUBLIC":
-            p_fit = (
-                f"Intégrer le laboratoire de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
-                f"au service direct de vos programmes de recherche. Autonome, rigoureux et habitué à explorer la littérature scientifique internationale "
-                f"comme à formaliser des protocoles d'expérimentation rigoureux, je saurai m'adapter rapidement à vos thématiques et contribuer "
-                f"activement à vos travaux R&D."
-            )
-        elif structure_type == "SCALEUP_IA":
-            p_fit = (
-                f"Intégrer les équipes de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
-                f"au service direct de vos défis technologiques et de vos produits. Autonome, rigoureux et attentif à l'impact utilisateur comme à "
-                f"la fiabilité des modèles en production, je saurai m'adapter rapidement à votre rythme d'itération et contribuer efficacement à "
-                f"votre roadmap technique."
-            )
-        else:
-            p_fit = (
-                f"Intégrer les équipes de {raw_company} représente pour moi l'opportunité de mettre cette double culture scientifique et logicielle "
-                f"au service direct de vos projets d'innovation. Autonome, rigoureux et habitué à explorer la littérature scientifique internationale "
-                f"comme à transformer des concepts théoriques en code robuste et performant, je saurai m'adapter rapidement à votre environnement "
-                f"technique et contribuer efficacement à vos objectifs R&D."
-            )
-
-        thesis_sentence = " Particulièrement motivé par les perspectives de ce sujet, je serais également très enthousiaste à l'idée d'envisager une poursuite en thèse CIFRE ou doctorat à l'issue de ce stage." if has_suite else ""
-        p_logistics = f"Je suis disponible pour un stage conventionné de fin d'études (PFE) d'une durée de 6 mois, à compter de début avril 2027.{thesis_sentence}"
-        p_politeness = (
-            "Dans l'attente d'un échange au cours duquel je serai ravi de vous exposer plus en détail la convergence entre mes compétences "
-            "et vos besoins, je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations les plus distinguées."
-        )
-
-        body_parts = [
-            subject,
-            "",
-            salutation,
-            "",
-            p_hook,
-            "",
-            p_education,
-            "",
-            p_experience + custom_block,
-            "",
-            p_fit,
-            "",
-            p_logistics,
-            "",
-            p_politeness,
-            "",
-            signature_block,
-        ]
-        return "\n".join(body_parts).strip()
+    p_closing = (
+        "Je suis disponible pour un stage de fin d'études de 6 mois à partir de début avril 2027 et je serais heureux "
+        "d'échanger avec vous lors d'un entretien.\n\n"
+        "Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées."
+    )
+    return "\n\n".join([subject, salutation, p_intro, p_moi, p_vous, p_nous, p_closing, signature_block]).strip()
 
 
 class CoverLetterGenerator:
-    """Générateur de lettre de motivation via Gemini avec repli automatique haute fidélité."""
+    """Générateur de lettre de motivation (DeepSeek V3 prioritaire, Google Gemini en secours)."""
 
     def __init__(
         self,
@@ -357,12 +278,14 @@ class CoverLetterGenerator:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
         self.model = str(llm_cfg.get("cover_letter_model") or llm_cfg.get("model", DEFAULT_MODEL))
-        self.temperature = float(llm_cfg.get("temperature", 0.2))
+        self.temperature = float(llm_cfg.get("cover_letter_temperature", llm_cfg.get("temperature", 0.2)))
         self.candidate = get_candidate_info(self.config)
+        self.facts = get_letter_facts()
         self.system_prompt = build_system_prompt(self.candidate)
         self._client = client
         self.last_source: str = ""
         self.last_error: str = ""
+        self.last_warnings: list[str] = []
 
         if api_key is not None:
             self.api_key = api_key
@@ -387,11 +310,12 @@ class CoverLetterGenerator:
         cv_text: str,
         custom_instruction: str | None = None,
     ) -> str:
-        """Construit le contenu utilisateur pour le LLM, avec consigne spécifique optionnelle."""
+        """Construit le contenu utilisateur pour le LLM, incluant FAITS VÉRIFIÉS DU CANDIDAT et CV."""
         title = job.get("title", "")
         company = job.get("company", "")
         location = job.get("location", "")
         description = (job.get("description") or "").strip()[:8000]
+        facts_yaml = yaml.safe_dump(self.facts, allow_unicode=True, sort_keys=False) if self.facts else ""
 
         parts = [
             "DONNÉES DU POSTE À POURVOIR :",
@@ -402,12 +326,14 @@ class CoverLetterGenerator:
             f"Description de l'offre :\n{description or '(Description non fournie)'}",
             "",
             "--------------------------------------------------",
+            "FAITS VÉRIFIÉS DU CANDIDAT :",
+            facts_yaml.strip(),
+            "--------------------------------------------------",
             "CV DU CANDIDAT :",
             f"{cv_text}",
             "--------------------------------------------------",
         ]
 
-        # Signaux & adaptation du ton selon structure_type et perspective de suite
         signals = job.get("signals")
         if not signals and job.get("signals_json"):
             try:
@@ -422,28 +348,26 @@ class CoverLetterGenerator:
 
         if structure_type == "LABO_PUBLIC":
             tone_instructions.append(
-                "- ORIENTATION DU TON (Laboratoire public de recherche) : Adopte un ton académique, rigoureux et approfondi. "
-                "Mets en valeur la curiosité intellectuelle, l'état de l'art scientifique, la démarche expérimentale "
-                "et le socle mathématique d'Eddy."
+                "- ORIENTATION DU TON (Laboratoire public de recherche) : Adopte un ton académique, rigoureux et approfondi."
             )
         elif structure_type == "SCALEUP_IA":
             tone_instructions.append(
-                "- ORIENTATION DU TON (Scale-up IA de pointe) : Adopte un ton dynamique et orienté produit / impact. "
-                "Mets en valeur l'ingénierie logicielle robuste, la vitesse d'exécution, la fiabilité des modèles en conditions réelles "
-                "et la capacité à mettre en production des systèmes d'apprentissage efficaces."
+                "- ORIENTATION DU TON (Scale-up IA de pointe) : Adopte un ton dynamique et orienté produit / impact."
             )
         elif structure_type in ("GRAND_GROUPE_RD", "LABO_PRIVE"):
             tone_instructions.append(
-                "- ORIENTATION DU TON (R&D industrielle / labo privé) : Équilibre démarche de recherche appliquée rigoureuse et conscience "
-                "des cas d'usage métiers, du passage à l'échelle et du prototypage industriel."
+                "- ORIENTATION DU TON (R&D industrielle / labo privé) : Équilibre démarche de recherche appliquée et cas d'usage métiers."
             )
 
+        full_lower = f"{title} {description}".lower()
+        explicit_no_thesis = (
+            "possibilité de poursuite en thèse : non" in full_lower
+            or "poursuite en thèse : non" in full_lower
+        )
         suite_sig = signals.get("suite_explicite") or {}
-        if isinstance(suite_sig, dict) and suite_sig.get("present"):
+        if not explicit_no_thesis and isinstance(suite_sig, dict) and suite_sig.get("present"):
             tone_instructions.append(
-                "- PERSPECTIVE DE SUITE / THÈSE (Signal explicite dans l'offre) : L'offre mentionne une perspective de continuité ou de thèse. "
-                "Mentionne avec enthousiasme l'intérêt d'Eddy pour une éventuelle poursuite en thèse CIFRE ou doctorat académique "
-                "à l'issue du stage, sans en faire un prérequis bloquant."
+                "- PERSPECTIVE DE SUITE / THÈSE (Signal explicite dans l'offre) : L'offre mentionne une perspective de continuité ou de thèse."
             )
 
         if tone_instructions:
@@ -461,8 +385,8 @@ class CoverLetterGenerator:
             ])
 
         parts.append(
-            "Rédige maintenant la lettre de motivation complète, développée (environ 1 à 1,5 pages, 500 à 650 mots) "
-            "et strictement sans aucun crochet selon toutes les instructions."
+            "Rédige maintenant la lettre de motivation complète, strictement sans aucun crochet "
+            "et en utilisant uniquement les faits vérifiés."
         )
         return "\n".join(parts)
 
@@ -495,7 +419,7 @@ class CoverLetterGenerator:
         cv_text: str | None = None,
         custom_instruction: str | None = None,
     ) -> str | None:
-        """Génère la lettre de motivation via la deuxième IA : DeepSeek (deepseek-chat)."""
+        """Génère la lettre de motivation via le modèle principal : DeepSeek (deepseek-chat)."""
         if not self.deepseek_api_key:
             return None
 
@@ -513,7 +437,7 @@ class CoverLetterGenerator:
                 {"role": "user", "content": prompt_content},
             ],
             "temperature": self.temperature,
-            "max_tokens": 1800,
+            "max_tokens": 2000,
         }
 
         try:
@@ -556,13 +480,7 @@ class CoverLetterGenerator:
         custom_instruction: str | None = None,
         allow_fallback: bool = True,
     ) -> str:
-        """Génère une lettre de motivation.
-
-        Cascade de résilience :
-        1. DeepSeek V3 (deepseek-chat), prioritaire si DEEPSEEK_API_KEY est définie
-        2. Google Gemini (modèle configuré puis variantes Flash), en secours
-        3. Moteur algorithmique déterministe (zéro API, 100% garanti)
-        """
+        """Génère une lettre de motivation (DeepSeek V3 prioritaire, Gemini en secours)."""
         if not self.available:
             return (
                 "⚠️ Clé GEMINI_API_KEY ou DEEPSEEK_API_KEY manquante dans votre fichier .env.\n\n"
@@ -575,7 +493,7 @@ class CoverLetterGenerator:
 
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
 
-        # Niveau 1 : DeepSeek V3 (prioritaire)
+        # Niveau 1 : DeepSeek V3 (modèle principal)
         if self.deepseek_api_key:
             ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
             if ds_result and not ds_result.startswith("⚠️"):
@@ -622,7 +540,7 @@ class CoverLetterGenerator:
                     self.last_error = f"⚠️ Erreur : {exc}"
                     continue
 
-        # Niveau 3 : Moteur algorithmique déterministe de secours (zéro API, haute fidélité)
+        # Niveau 3 : Moteur algorithmique déterministe de secours
         if allow_fallback:
             return self.generate_fallback(job, cv_text=cv, custom_instruction=custom_instruction)
 
@@ -635,19 +553,14 @@ class CoverLetterGenerator:
         channel: str = "email",
         use_llm: bool = False,
     ) -> str:
-        """Génère un message de relance (email à J+N) ou d'approche directe (LinkedIn < 300 chars).
-
-        Par défaut (use_llm=False), la génération est déterministe instantanée (< 10 ms),
-        très soignée en français, sans consommer de quota d'API.
-        """
+        """Génère un message de relance (email à J+N) ou d'approche directe (LinkedIn < 300 chars)."""
         cand = self.candidate or DEFAULT_CANDIDATE
         cand_name = cand.get("name") or "Eddy DE CASTRO"
-        cand_title = cand.get("title") or "Élève-ingénieur IMT Mines Alès — M2 Mathématiques en Action"
+        cand_title = cand.get("title") or "Élève-ingénieur IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)"
 
         raw_title = str(job.get("title") or "stage").strip()
         raw_company = str(job.get("company") or "votre entreprise").strip()
 
-        # Extraction de 1 ou 2 points forts techniques
         skills: list[str] = []
         raw_skills = (
             job.get("matching_skills")
@@ -675,10 +588,8 @@ class CoverLetterGenerator:
                 skills = ["Modélisation statistique", "Machine Learning appliqué"]
 
         tech_focus = " et ".join(skills[:2]) if len(skills) >= 2 else (skills[0] if skills else "Machine Learning")
-
         ch = (channel or "email").strip().lower()
 
-        # Si LLM demandé et disponible
         if use_llm and self.available:
             try:
                 if ch == "linkedin":
@@ -711,12 +622,11 @@ class CoverLetterGenerator:
             except Exception:
                 pass
 
-        # Template instantané déterministe
         if ch == "linkedin":
             msg = (
                 f"Bonjour,\n"
                 f"Élève-ingénieur Mines Alès & M2 Maths, je candidate au stage de {raw_title} chez {raw_company}. "
-                f"Passionné par vos défis en {tech_focus}, j'aimerais échanger sur vos projets R&D !\n"
+                f"Intéressé par vos travaux en {tech_focus}, j'aimerais échanger sur vos projets R&D.\n"
                 f"{cand_name}"
             )
             if len(msg) >= 300:
@@ -724,14 +634,13 @@ class CoverLetterGenerator:
                 msg = (
                     f"Bonjour,\n"
                     f"Élève Mines Alès & M2 Maths, je candidate au stage {short_title} chez {raw_company}. "
-                    f"Passionné par vos défis en {tech_focus}, j'aimerais échanger sur vos projets R&D !\n"
+                    f"Intéressé par vos travaux en {tech_focus}, j'aimerais échanger sur vos projets R&D.\n"
                     f"{cand_name}"
                 )
             if len(msg) >= 300:
                 msg = msg[:296] + "..."
             return msg
 
-        # Email de relance à J+N (90-130 mots au total)
         subject = f"Objet : Relance — Candidature au stage de {raw_title} — {cand_name}"
         short_title = cand_title.split("—")[0].strip() if "—" in cand_title else cand_title
 
@@ -739,10 +648,10 @@ class CoverLetterGenerator:
             f"{subject}\n\n"
             f"Madame, Monsieur,\n\n"
             f"Je me permets de vous relancer concernant ma candidature transmise il y a {days_since_applied} jours pour le stage de {raw_title} chez {raw_company}.\n\n"
-            f"Toujours très motivé à l'idée d'intégrer vos équipes, je vous réitère mon vif intérêt pour vos projets. "
+            f"Toujours très motivé à l'idée d'intégrer vos équipes, je vous réitère mon intérêt pour vos projets. "
             f"Mon double cursus en mathématiques appliquées (M2 Mathématiques en Action) et IA (Mines Alès) "
-            f"me permettra d'être rapidement opérationnel pour contribuer à vos défis, en particulier sur {tech_focus}.\n\n"
-            f"Disponible dès début avril 2027 pour un stage conventionné de 6 mois, je serais ravi d'échanger avec vous lors d'un entretien.\n\n"
+            f"me permettra d'être rapidement opérationnel pour contribuer à vos travaux, en particulier sur {tech_focus}.\n\n"
+            f"Disponible dès début avril 2027 pour un stage conventionné de 6 mois, je serais heureux d'échanger avec vous lors d'un entretien.\n\n"
             f"En vous remerciant pour votre attention, je vous prie d'agréer, Madame, Monsieur, mes salutations distinguées.\n\n"
             f"{cand_name}\n"
             f"{short_title}"

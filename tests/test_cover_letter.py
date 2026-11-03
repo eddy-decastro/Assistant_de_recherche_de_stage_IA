@@ -175,7 +175,9 @@ def test_algorithmic_cover_letter_french() -> None:
     assert "Eddy DE CASTRO" in letter
     assert "[" not in letter and "]" not in letter
     words = len(letter.split())
-    assert 400 <= words <= 700
+    assert 350 <= words <= 600
+    for forbidden in ("Spearman", "0,93", "0.93", "n8n", "certifié", "certifiée", "96,2", "McNemar", "équipe internationale"):
+        assert forbidden.lower() not in letter.lower()
 
 
 def test_algorithmic_cover_letter_english() -> None:
@@ -196,6 +198,10 @@ def test_algorithmic_cover_letter_english() -> None:
     assert "Sincerely," in letter
     assert "Eddy DE CASTRO" in letter
     assert "[" not in letter and "]" not in letter
+    words = len(letter.split())
+    assert 350 <= words <= 600
+    for forbidden in ("Spearman", "0,93", "0.93", "n8n", "certifié", "certifiée", "96,2", "McNemar", "équipe internationale"):
+        assert forbidden.lower() not in letter.lower()
 
 
 def test_generator_fallback_on_503_error() -> None:
@@ -380,3 +386,17 @@ def test_system_prompt_states_the_exact_academic_path():
     assert "PC* au lycée Descartes de Tours" in prompt
     assert "3e année (actuelle)" in prompt
     assert "NE JAMAIS mentionner le baccalauréat" in prompt
+    for forbidden in ("96,2", "McNemar", "certifiée", "Spearman"):
+        assert forbidden not in prompt
+
+
+def test_get_letter_facts_fallback_to_example(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    from src.candidate import get_letter_facts
+
+    missing = tmp_path / "absent_profil_lettre.yaml"
+    facts = get_letter_facts(path=missing)
+    assert "identite" in facts
+    assert "experiences" in facts
+    assert "interdits" in facts
+    assert any("absent" in rec.message for rec in caplog.records)
+

@@ -16,6 +16,7 @@ par git, écrit par la page Paramètres) s'il existe, sinon ``CANDIDATE_CV``.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from typing import Any
 import yaml
 
 from src.config import PROJECT_ROOT, load_config
+
+logger = logging.getLogger("src.candidate")
 
 CANDIDATE_FIELDS: tuple[str, ...] = (
     "name",
@@ -34,6 +37,8 @@ CANDIDATE_FIELDS: tuple[str, ...] = (
     "location",
 )
 LOCAL_CANDIDATE_PATH = PROJECT_ROOT / "data" / "candidate.local.yaml"
+LETTER_FACTS_PATH = PROJECT_ROOT / "data" / "profil_lettre.yaml"
+LETTER_FACTS_EXAMPLE_PATH = PROJECT_ROOT / "data" / "profil_lettre.example.yaml"
 DEFAULT_CV_PATH = "data/cv_eddy.txt"
 CV_ENV_VAR = "CANDIDATE_CV"
 
@@ -112,3 +117,27 @@ def get_cv_text(config: dict[str, Any] | None = None) -> str:
         return path.read_text(encoding="utf-8")
     _load_env()
     return os.environ.get(CV_ENV_VAR, "")
+
+
+def get_letter_facts(path: Path | None = None) -> dict[str, Any]:
+    """Lit les faits vérifiés du candidat pour les lettres (``data/profil_lettre.yaml``).
+
+    Si le fichier est absent, se rabat sur ``data/profil_lettre.example.yaml`` et émet un
+    avertissement de log.
+    """
+    target = path or LETTER_FACTS_PATH
+    if not target.exists():
+        logger.warning(
+            "Fichier %s absent : repli sur %s pour les faits de la lettre.",
+            target,
+            LETTER_FACTS_EXAMPLE_PATH,
+        )
+        target = LETTER_FACTS_EXAMPLE_PATH
+    if not target.exists():
+        return {}
+    try:
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning("Impossible de lire les faits de la lettre (%s) : %s", target, exc)
+        return {}
