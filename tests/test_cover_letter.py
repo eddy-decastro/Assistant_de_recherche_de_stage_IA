@@ -539,5 +539,49 @@ def test_claude_pack_raises_error_when_llms_fail(tmp_path: Path) -> None:
             prepare_job_application_bundle(job, output_dir=tmp_path)
 
 
+def test_pdf_500_words_fits_on_one_page_and_formatting() -> None:
+    from datetime import date
+    from src.matching.pdf_exporter import (
+        DEFAULT_HEADER_TITLE,
+        format_letter_date,
+        generate_cover_letter_pdf,
+    )
+
+    assert format_letter_date(date(2026, 11, 3), "Paris, France", is_english=False) == "Paris, le 3 novembre 2026"
+    assert format_letter_date(date(2026, 11, 3), "Paris, France", is_english=True) == "Paris, November 3, 2026"
+    assert "IMT Mines Alès" in DEFAULT_HEADER_TITLE
+    assert "Mines Saint-Étienne" in DEFAULT_HEADER_TITLE
+
+    # Générer une lettre d'environ 500 mots
+    base_para = " ".join(["mot"] * 95)
+    letter_500 = (
+        "Objet : Candidature au stage de fin d'études — Modélisation ML\n\n"
+        "Madame, Monsieur,\n\n"
+        f"{base_para}.\n\n"
+        f"{base_para}.\n\n"
+        f"{base_para}.\n\n"
+        f"{base_para}.\n\n"
+        f"{base_para}.\n\n"
+        "Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.\n\n"
+        "Eddy DE CASTRO"
+    )
+    assert 480 <= len(letter_500.split()) <= 540
+
+    pdf_bytes = generate_cover_letter_pdf(letter_500, job=SAMPLE_JOB)
+    assert pdf_bytes.startswith(b"%PDF-")
+
+    try:
+        import io
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        page_count = len(reader.pages)
+    except ImportError:
+        import re
+        page_count = len(re.findall(rb"/Type\s*/Page\b", pdf_bytes))
+
+    assert page_count == 1
+
+
+
 
 
