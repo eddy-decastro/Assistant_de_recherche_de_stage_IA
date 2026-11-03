@@ -286,3 +286,42 @@ def test_v4_recompute_and_status_protection(tmp_path: Path) -> None:
         assert after_custom["v4_display_score"] == 87.5
     finally:
         db.engine.dispose()
+
+
+def test_unranked_jobs_ordered_by_freshness_not_semantic(tmp_path: Path) -> None:
+    """Section 1 : l'étape 1 sémantique est supprimée de l'ordre de passage au juge (tri par fraîcheur)."""
+    db = Database(tmp_path / "test_freshness_order.db")
+    try:
+        # Offre ancienne mais avec un score sémantique/final_score de 99
+        db.upsert_job(
+            {
+                "id": "old_high_sem",
+                "title": "Stage ML Ancien",
+                "company": "A",
+                "url": "https://example.com/old",
+                "description": "Courte description.",
+                "semantic_score": 99.0,
+                "final_score": 99.0,
+                "published_at": datetime(2026, 10, 1, 10, 0, 0),
+                "created_at": datetime(2026, 10, 1, 10, 0, 0),
+            }
+        )
+        # Offre récente mais avec un score sémantique/final_score de 10
+        db.upsert_job(
+            {
+                "id": "fresh_low_sem",
+                "title": "Stage ML Récent",
+                "company": "B",
+                "url": "https://example.com/fresh",
+                "description": "Courte description.",
+                "semantic_score": 10.0,
+                "final_score": 10.0,
+                "published_at": datetime(2026, 11, 2, 10, 0, 0),
+                "created_at": datetime(2026, 11, 2, 10, 0, 0),
+            }
+        )
+        queue = db.get_unranked_jobs(limit=10)
+        assert [j["id"] for j in queue] == ["fresh_low_sem", "old_high_sem"]
+    finally:
+        db.engine.dispose()
+

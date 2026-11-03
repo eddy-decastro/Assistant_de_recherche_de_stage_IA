@@ -1151,13 +1151,18 @@ class Database:
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
 
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Top des offres NON encore évaluées par le juge LLM.
+        """Offres NON encore évaluées par le juge LLM, triées par fraîcheur (published_at puis created_at).
 
         Les offres ayant échoué lors d'un appel API précédent (ex: quota 429) sont
-        également éligibles. Les offres avec description complète sont priorisées
-        afin d'alimenter au mieux le juge LLM.
+        également éligibles. Les offres avec description non vide passent avant les
+        fiches vides, puis sont triées par fraîcheur (published_at puis created_at),
+        sans utiliser le score sémantique MiniLM.
         Les offres écartées par la re-validation métier sont exclues.
         """
+        has_desc = case(
+            (func.coalesce(func.trim(Job.description), "") != "", 1),
+            else_=0,
+        )
         with self.SessionLocal() as session:
             stmt = (
                 select(Job)
@@ -1166,8 +1171,8 @@ class Database:
                     Job.status != STATUS_REJECTED,
                 )
                 .order_by(
-                    func.length(func.coalesce(Job.description, "")).desc(),
-                    Job.final_score.desc(),
+                    has_desc.desc(),
+                    func.coalesce(Job.published_at, Job.created_at).desc(),
                     Job.created_at.desc(),
                 )
                 .limit(limit)
