@@ -101,6 +101,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
     def _serialize_full_job(job: dict[str, Any], keywords: tuple[str, ...]) -> dict[str, Any]:
         base = serialize_job(job, keywords)
         base["cover_letter"] = str(job.get("cover_letter") or "")
+        base["cover_letter_version"] = job.get("cover_letter_version")
         base["created_at"] = str(job.get("created_at") or "")
         base["published_at"] = str(job.get("published_at") or "")
         base["applied_at"] = str(job.get("applied_at") or "")
@@ -303,16 +304,24 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
                 letter = gen.generate(
                     job,
                     custom_instruction=payload.custom_instruction,
-                    allow_fallback=True,
+                    allow_fallback=False,
                 )
+                if not letter or letter.startswith("⚠️"):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=letter
+                        or gen.last_error
+                        or "Échec de génération de la lettre (DeepSeek et Gemini indisponibles).",
+                    )
                 source = gen.last_source
                 warnings = list(gen.last_warnings)
 
-        db.update_cover_letter(job_id, letter)
+        db.update_cover_letter(job_id, letter, version=2)
         return {
             "ok": True,
             "id": job_id,
             "cover_letter": letter,
+            "cover_letter_version": 2,
             "source": source,
             "warnings": warnings,
         }
@@ -329,13 +338,20 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         letter = str(job.get("cover_letter") or "").strip()
         if not letter:
             gen = CoverLetterGenerator()
-            letter = gen.generate(job, allow_fallback=True)
-            db.update_cover_letter(job_id, letter)
+            letter = gen.generate(job, allow_fallback=False)
+            if not letter or letter.startswith("⚠️"):
+                raise HTTPException(
+                    status_code=503,
+                    detail=letter
+                    or gen.last_error
+                    or "Échec de génération de la lettre (DeepSeek et Gemini indisponibles).",
+                )
+            db.update_cover_letter(job_id, letter, version=2)
         pdf_bytes = generate_cover_letter_pdf(letter, job=job)
         company = "".join(
             c for c in str(job.get("company") or "Entreprise") if c.isalnum() or c in ("-", "_", " ")
         ).strip()
-        filename = f"Lettre_Eddy_De_Castro_{company or 'Stage'}.pdf"
+        filename = f"Lettre de motivation Eddy De Castro - {company or 'Stage'}.pdf"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -352,12 +368,19 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         selected = [j for j in jobs if str(j["id"]) in id_set]
         if not selected:
             raise HTTPException(status_code=404, detail="Aucune offre trouvée pour ces identifiants")
-        pack = build_claude_pack(
-            selected,
-            db=db,
-            save_pdfs=True,
-            auto_submit=payload.auto_submit,
-        )
+        real_db_path = (PROJECT_ROOT / "data" / "stage_copilot.db").resolve()
+        current_db_path = Path(str(getattr(db, "db_path", ""))).resolve() if getattr(db, "db_path", None) else real_db_path
+        pack_out_dir = None if current_db_path == real_db_path else (current_db_path.parent / "ready_to_apply")
+        try:
+            pack = build_claude_pack(
+                selected,
+                db=db,
+                output_dir=pack_out_dir,
+                save_pdfs=True,
+                auto_submit=payload.auto_submit,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return pack
 
     @app.post("/api/recompute-v4")

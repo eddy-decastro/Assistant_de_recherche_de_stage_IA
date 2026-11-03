@@ -349,8 +349,11 @@ def pregenerate_top_cover_letters(
 
     for job in selected:
         try:
-            letter = gen.generate(job)
-            if letter:
+            try:
+                letter = gen.generate(job, allow_fallback=False)
+            except TypeError:
+                letter = gen.generate(job)
+            if letter and not str(letter).strip().startswith("⚠️"):
                 db.update_cover_letter(job["id"], letter)
                 generated_count += 1
         except Exception as exc:

@@ -161,6 +161,29 @@ def show_cover_letter_dialog(job: dict[str, Any]) -> None:
     if warnings_list:
         st.warning("Points à vérifier dans la lettre : " + " · ".join(str(w) for w in warnings_list))
 
+    if job.get("cover_letter") and job.get("cover_letter_version") != 2:
+        st.info("Cette lettre a été générée avec l'ancien générateur (v1).")
+        if st.button(
+            "Régénérer avec la v2",
+            key=f"regen_v2_{job_id}",
+            width="stretch",
+            icon=":material/autorenew:",
+        ):
+            with st.spinner("Régénération avec la v2 en cours..."):
+                generator = CoverLetterGenerator()
+                new_l = generator.generate(job, allow_fallback=True)
+                st.session_state[session_key] = new_l
+                st.session_state[source_key] = generator.last_source
+                st.session_state[warnings_key] = list(generator.last_warnings)
+                st.session_state[version_key] = version + 1
+                job["cover_letter_version"] = 2
+                try:
+                    get_database().update_cover_letter(str(job_id), new_l, version=2)
+                    bump_data_version()
+                except Exception as exc:
+                    logger.warning("Impossible de sauvegarder la lettre en base : %s", exc)
+                st.rerun()
+
     edited = st.text_area(
         "Brouillon de la lettre (éditable directement avant envoi) :",
         value=letter_text,

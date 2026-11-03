@@ -485,4 +485,59 @@ def test_generator_retries_once_when_check_letter_fails() -> None:
     assert generator.last_warnings == []
 
 
+def test_claude_pack_writes_three_files_in_tmp_path(tmp_path: Path) -> None:
+    from src.candidate import get_letter_facts
+    from src.matching.claude_pack import prepare_job_application_bundle
+    from src.matching.cover_letter import check_letter
+
+    job = {
+        "id": "abcd1234efgh5678",
+        "title": "Stage R&D Deep Learning / NLP",
+        "company": "Mistral AI",
+        "location": "Paris",
+        "url": "https://mistral.ai/jobs/1",
+        "description": "Recherche stagiaire de fin d'études pour travailler sur des LLM et des architectures de transformers.",
+    }
+    valid_letter = generate_algorithmic_cover_letter(job)
+
+    with patch("src.matching.cover_letter.CoverLetterGenerator.generate", return_value=valid_letter), \
+         patch("src.matching.cover_letter.CoverLetterGenerator._generate_short_llm_once", return_value=None):
+        bundle = prepare_job_application_bundle(job, output_dir=tmp_path)
+
+    offer_dir = tmp_path / "Mistral_AI_abcd1234"
+    assert offer_dir.is_dir()
+
+    lettre_file = offer_dir / "lettre.txt"
+    short_file = offer_dir / "motivation_courte.txt"
+    pdf_file = offer_dir / "Lettre de motivation Eddy De Castro - Mistral AI.pdf"
+
+    assert lettre_file.is_file()
+    assert short_file.is_file()
+    assert pdf_file.is_file()
+    assert pdf_file.read_bytes().startswith(b"%PDF-")
+
+    short_text = short_file.read_text(encoding="utf-8")
+    assert 800 <= len(short_text) <= 1200
+    assert not short_text.lower().startswith("objet")
+    assert "madame, monsieur" not in short_text.lower()
+    assert check_letter(short_text, get_letter_facts(), job, check_length=False) == []
+    assert bundle["short_pitch"] == short_text
+    assert bundle["short_motivation"] == short_text
+
+
+def test_claude_pack_raises_error_when_llms_fail(tmp_path: Path) -> None:
+    from src.matching.claude_pack import prepare_job_application_bundle
+
+    job = {
+        "id": "fail12345678",
+        "title": "Stage R&D",
+        "company": "Mistral AI",
+        "description": "Stage R&D",
+    }
+    with patch("src.matching.cover_letter.CoverLetterGenerator.generate", return_value="⚠️ Impossible de générer la lettre"):
+        with pytest.raises(RuntimeError, match="Impossible de générer"):
+            prepare_job_application_bundle(job, output_dir=tmp_path)
+
+
+
 

@@ -803,6 +803,200 @@ class CoverLetterGenerator:
 
         return self.last_error or "⚠️ Impossible de générer la lettre après plusieurs tentatives."
 
+    def _clean_short_motivation(self, raw_text: str) -> str:
+        """Retire tout objet, formule d'appel, formule de politesse ou signature éventuels."""
+        lines = [ln.strip() for ln in (raw_text or "").splitlines() if ln.strip()]
+        cleaned_lines: list[str] = []
+        cand_name = (self.candidate.get("name") or "Eddy DE CASTRO").lower()
+        for ln in lines:
+            low = ln.lower()
+            if low.startswith(("objet :", "objet:", "subject:", "subject :")):
+                continue
+            if low.startswith(("madame, monsieur", "madame,", "monsieur,", "dear ")):
+                continue
+            if low.startswith(("je vous prie d'agréer", "cordialement", "sincerely", "best regards", "kind regards")):
+                continue
+            if low == cand_name or low.startswith("eddy de castro"):
+                continue
+            cleaned_lines.append(ln)
+        return self._postprocess_letter(" ".join(cleaned_lines))
+
+    def _build_deterministic_short_motivation(self, job: dict[str, Any]) -> str:
+        """Construit une motivation courte (800-1200 car.) factuelle suivant le plan Moi / Vous / Nous."""
+        raw_title = (job.get("title") or "Stage Data Science & Machine Learning").strip()[:80]
+        raw_company = (job.get("company") or "votre organisation").strip()[:50]
+        job_text = f"{raw_title} {job.get('description') or ''}"
+        is_en = is_english_text(job_text)
+        exp1, _ = select_experiences_for_job(job)
+
+        if is_en:
+            moi = (
+                "Currently an AI engineering student at IMT Mines Alès enrolled in the M2 Mathematics in Action dual "
+                "degree at Mines Saint-Étienne, I am motivated by understanding when a machine learning model fails "
+                "and measuring its reliability honestly. Through my research internship at UPC in Barcelona on bank "
+                "fraud detection (where an adapted attack fooled the neural network in 48 % of cases, evaluated with "
+                "a pre-specified statistical protocol) and my MedStay-CI project on around 70,000 patients (guaranteed "
+                "error margin holding in 90 % of cases as targeted), I learned to verify that every gain is real."
+            )
+            vous = (
+                f"Your internship offer for the position of {raw_title} at {raw_company} strongly appeals to me "
+                f"because of the methodological depth of the topic and the opportunity to work on concrete modeling "
+                f"and evaluation problems within your team."
+            )
+            nous = (
+                "Available from early April 2027 for a 6-month end-of-studies internship, I want to contribute "
+                "concretely to your modeling and evaluation workflows, compare methods against simple baselines, "
+                "identify failure modes, and deliver clean, well-tested code."
+            )
+            text = f"{moi} {vous} {nous}"
+        else:
+            if exp1 == "PanTS":
+                exp_sentence = (
+                    "Lors du projet PanTS sur 420 Go de scanners 3D (82 % de bonnes réponses, +10 points sur la "
+                    "référence) et de mon projet MedStay-CI sur environ 70 000 patients (marge d'erreur fiable dans "
+                    "90 % des cas comme visé), j'ai appris à évaluer des modèles avec rigueur avant de les déployer."
+                )
+            elif exp1 == "Stage Copilot ou CinéFilm":
+                exp_sentence = (
+                    "À travers le développement de Stage Copilot (plus de 1 200 offres évaluées par LLM), de CinéFilm "
+                    "IA sur plus de 6 000 films et mon stage de recherche à l'UPC de Barcelone (attaque trompant un "
+                    "détecteur de fraude dans 48 % des cas), j'ai appris à vérifier honnêtement qu'un gain est réel."
+                )
+            else:
+                exp_sentence = (
+                    "Lors de mon stage de recherche à l'UPC de Barcelone sur la robustesse d'un détecteur de fraude "
+                    "(attaque trompant le réseau dans 48 % des cas, évaluée avec un protocole statistique fixé à "
+                    "l'avance) et de mon projet MedStay-CI sur environ 70 000 patients (marge d'erreur fiable dans "
+                    "90 % des cas), j'ai appris à vérifier qu'un gain est réel."
+                )
+            moi = (
+                "Élève-ingénieur en IA à l'IMT Mines Alès et en double diplôme dans le Master 2 Mathématiques en "
+                "Action à Mines Saint-Étienne, ce qui me motive est de savoir quand un modèle se trompe et de le "
+                f"mesurer honnêtement. {exp_sentence}"
+            )
+            vous = (
+                f"Votre offre « {raw_title} » au sein de {raw_company} m'attire par l'exigence du sujet traité et "
+                f"la possibilité d'appliquer ces méthodes de modélisation et d'évaluation sur vos données réelles."
+            )
+            nous = (
+                "Disponible dès début avril 2027 pour six mois, je souhaite contribuer concrètement aux travaux de "
+                "votre équipe, bâtir un protocole d'évaluation solide face à des références simples et livrer des "
+                "modèles fiables et bien testés."
+            )
+            text = f"{moi} {vous} {nous}"
+
+        if len(text) > 1200:
+            text = text[:1195].rsplit(" ", 1)[0] + "."
+        return text
+
+    def _generate_short_llm_once(
+        self,
+        job: dict[str, Any],
+        letter: str | None = None,
+        extra_feedback: str | None = None,
+    ) -> str | None:
+        """Appelle la cascade LLM pour générer une motivation courte (800-1200 caractères)."""
+        if not self.available:
+            return None
+
+        title = job.get("title", "")
+        company = job.get("company", "")
+        description = (job.get("description") or "").strip()[:4000]
+        facts_yaml = yaml.safe_dump(self.facts, allow_unicode=True, sort_keys=False) if self.facts else ""
+        is_en = is_english_text(f"{title} {description}")
+        lang_label = "anglais (English)" if is_en else "français"
+
+        prompt_parts = [
+            f"Rédige une motivation courte en {lang_label} pour le champ « Pourquoi ce poste ? » d'un formulaire de candidature.",
+            "CONTRAINTES STRICTES :",
+            "- Longueur : entre 850 et 1 100 caractères espaces compris (strictement entre 800 et 1 200 caractères).",
+            "- Format : un seul bloc de 4 à 6 phrases, SANS objet, SANS formule d'appel (pas de Madame, Monsieur / Dear), SANS formule de politesse finale et SANS signature.",
+            "- Plan en 3 mouvements (Moi / Vous / Nous) : (1) ingénieur IA IMT Mines Alès + M2 Maths Mines Saint-Étienne et 1-2 expériences vérifiées avec au plus 2 chiffres ; (2) ce qui m'attire concrètement dans cette offre ; (3) ce que j'apporterai pendant les 6 mois dès début avril 2027.",
+            "- Utilise UNIQUEMENT les faits de FAITS VÉRIFIÉS DU CANDIDAT et les éléments de l'offre. N'invente aucun chiffre.",
+            "",
+            f"Offre : {title} — {company}",
+            f"Description : {description}",
+            "",
+            "FAITS VÉRIFIÉS DU CANDIDAT :",
+            facts_yaml.strip(),
+        ]
+        if letter and letter.strip():
+            prompt_parts.extend(["", "LETTRE COMPLÈTE DE RÉFÉRENCE :", letter.strip()[:3000]])
+        if extra_feedback:
+            prompt_parts.extend(["", f"CORRECTION OBLIGATOIRE : {extra_feedback}"])
+
+        prompt_content = "\n".join(prompt_parts)
+
+        if self.deepseek_api_key:
+            try:
+                resp = requests.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.deepseek_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [
+                            {"role": "system", "content": self.system_prompt},
+                            {"role": "user", "content": prompt_content},
+                        ],
+                        "temperature": self.temperature,
+                        "max_tokens": 600,
+                    },
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                raw = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+                if raw:
+                    return self._clean_short_motivation(raw)
+            except Exception:
+                pass
+
+        if self.api_key:
+            client = self._client or genai.Client(api_key=self.api_key)
+            for model_candidate in [self.model, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest"]:
+                if not model_candidate:
+                    continue
+                try:
+                    response = client.models.generate_content(
+                        model=model_candidate,
+                        contents=prompt_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.system_prompt,
+                            temperature=self.temperature,
+                        ),
+                    )
+                    raw = (response.text or "").strip()
+                    if raw:
+                        return self._clean_short_motivation(raw)
+                except Exception:
+                    continue
+        return None
+
+    def generate_short_motivation(
+        self,
+        job: dict[str, Any],
+        letter: str | None = None,
+    ) -> str:
+        """Produit une version courte de 800 à 1 200 caractères (plan Moi/Vous/Nous, sans objet ni signature)."""
+        cand_text = self._generate_short_llm_once(job, letter=letter)
+        if cand_text:
+            probs = check_letter(cand_text, self.facts, job, check_length=False)
+            if not (800 <= len(cand_text) <= 1200):
+                probs.append(f"Longueur actuelle : {len(cand_text)} caractères (attendu entre 800 et 1 200 caractères).")
+            if probs:
+                feedback = " ; ".join(probs)
+                retried = self._generate_short_llm_once(job, letter=letter, extra_feedback=feedback)
+                if retried:
+                    probs_retry = check_letter(retried, self.facts, job, check_length=False)
+                    if not probs_retry and 800 <= len(retried) <= 1200:
+                        return retried
+            else:
+                return cand_text
+
+        return self._build_deterministic_short_motivation(job)
+
     def generate_followup_message(
         self,
         job: dict[str, Any],

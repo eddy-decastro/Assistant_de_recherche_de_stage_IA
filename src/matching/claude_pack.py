@@ -57,34 +57,57 @@ def prepare_job_application_bundle(
     generate_missing_letter: bool = True,
     export_pdf: bool = True,
 ) -> dict[str, Any]:
-    """Prépare le dossier complet d'une offre (lettre, PDF local, pitch, arguments clés)."""
+    """Prépare le dossier complet d'une offre (lettre.txt, motivation_courte.txt, PDF local)."""
     cfg = config or load_config()
     candidate = get_candidate_info(cfg)
     cv_path = get_cv_path(cfg)
     target_dir = Path(output_dir) if output_dir is not None else READY_DIR
+    generator = CoverLetterGenerator(config=cfg)
 
     letter_text = str(job.get("cover_letter") or "").strip()
-    if not letter_text and generate_missing_letter:
-        generator = CoverLetterGenerator(config=cfg)
-        letter_text = generator.generate(job, allow_fallback=True)
-        if db is not None and letter_text and hasattr(db, "update_cover_letter"):
+    if (not letter_text or letter_text.startswith("⚠️")) and generate_missing_letter:
+        letter_text = generator.generate(job, allow_fallback=False)
+        if not letter_text or letter_text.startswith("⚠️"):
+            raise RuntimeError(
+                letter_text
+                or generator.last_error
+                or "Échec de génération de la lettre : DeepSeek et Gemini ont échoué."
+            )
+        if db is not None and hasattr(db, "update_cover_letter"):
             try:
                 db.update_cover_letter(str(job.get("id") or ""), letter_text)
             except Exception:
                 pass
 
+    short_motivation = generator.generate_short_motivation(job, letter_text or None)
+
+    company_raw = (job.get("company") or "Entreprise").strip()
+    company_slug = _safe_slug(company_raw)
+    clean_company = "".join(c for c in company_raw if c.isalnum() or c in ("-", "_", " ")).strip() or "Entreprise"
+    job_id_short = str(job.get("id") or "job")[:8]
+    offer_dir = target_dir / f"{company_slug}_{job_id_short}"
+
     pdf_path_str = ""
-    if export_pdf and letter_text:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        company_slug = _safe_slug(job.get("company") or "Entreprise")
-        job_id_short = str(job.get("id") or "job")[:8]
-        pdf_file = target_dir / f"Lettre_Eddy_De_Castro_{company_slug}_{job_id_short}.pdf"
-        try:
-            pdf_bytes = generate_cover_letter_pdf(letter_text, candidate_info=candidate, job=job)
-            pdf_file.write_bytes(pdf_bytes)
-            pdf_path_str = str(pdf_file.resolve())
-        except Exception:
-            pdf_path_str = ""
+    letter_txt_path_str = ""
+    short_txt_path_str = ""
+    if letter_text:
+        offer_dir.mkdir(parents=True, exist_ok=True)
+        letter_file = offer_dir / "lettre.txt"
+        letter_file.write_text(letter_text, encoding="utf-8")
+        letter_txt_path_str = str(letter_file.resolve())
+
+        short_file = offer_dir / "motivation_courte.txt"
+        short_file.write_text(short_motivation, encoding="utf-8")
+        short_txt_path_str = str(short_file.resolve())
+
+        if export_pdf:
+            pdf_file = offer_dir / f"Lettre de motivation Eddy De Castro - {clean_company}.pdf"
+            try:
+                pdf_bytes = generate_cover_letter_pdf(letter_text, candidate_info=candidate, job=job)
+                pdf_file.write_bytes(pdf_bytes)
+                pdf_path_str = str(pdf_file.resolve())
+            except Exception:
+                pdf_path_str = ""
 
     v4_score = job.get("v4_display_score")
     v3_score = job.get("rerank_score") if job.get("rerank_score") is not None else job.get("final_score")
@@ -99,10 +122,14 @@ def prepare_job_application_bundle(
         "v4_class": job.get("v4_class"),
         "v4_display_score": round(float(v4_score), 1) if v4_score is not None else None,
         "v3_score": round(float(v3_score), 1) if v3_score is not None else None,
-        "short_pitch": build_short_pitch(job, candidate),
+        "short_pitch": short_motivation,
+        "short_motivation": short_motivation,
         "match_reasons": list(job.get("match_reasons") or []),
         "tech_stack": list(job.get("tech_stack") or []),
         "cover_letter": letter_text,
+        "offer_dir": str(offer_dir.resolve()) if letter_text else "",
+        "letter_txt_path": letter_txt_path_str,
+        "short_motivation_path": short_txt_path_str,
         "cover_letter_pdf_path": pdf_path_str,
         "pdf_path": pdf_path_str,
         "cv_file_path": str(cv_path.resolve()) if cv_path.exists() else "",

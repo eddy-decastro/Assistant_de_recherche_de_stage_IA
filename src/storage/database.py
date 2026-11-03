@@ -237,6 +237,7 @@ class Job(Base):
     company_note_json = Column(Text, nullable=True)
     grading_version = Column(String(10), default="v3", nullable=True)
     cover_letter = Column(Text, nullable=True)
+    cover_letter_version = Column(Integer, nullable=True)
     user_notes = Column(Text, nullable=True)
     evidence_json = Column(Text, nullable=True)
     questions_json = Column(Text, nullable=True)
@@ -470,6 +471,7 @@ class Database:
                 "company_note_json": "TEXT",
                 "grading_version": "VARCHAR(10) DEFAULT 'v1'",
                 "cover_letter": "TEXT",
+                "cover_letter_version": "INTEGER",
                 "user_notes": "TEXT",
                 "evidence_json": "TEXT",
                 "questions_json": "TEXT",
@@ -691,13 +693,20 @@ class Database:
             session.commit()
         return updated
 
-    def update_cover_letter(self, job_id: str, cover_letter: str | None) -> bool:
-        """Sauvegarde ou met à jour la lettre de motivation d'une offre."""
+    def update_cover_letter(
+        self,
+        job_id: str,
+        cover_letter: str | None,
+        version: int = 2,
+    ) -> bool:
+        """Sauvegarde ou met à jour la lettre de motivation d'une offre (version 2 par défaut)."""
         with self.SessionLocal() as session:
             record = session.get(Job, job_id)
             if record is None:
                 return False
-            record.cover_letter = (cover_letter or "").strip() or None
+            cleaned = (cover_letter or "").strip() or None
+            record.cover_letter = cleaned
+            record.cover_letter_version = int(version) if cleaned else None
             session.commit()
             return True
 
