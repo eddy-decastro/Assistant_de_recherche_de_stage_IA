@@ -601,6 +601,7 @@ llm:
   base_url: https://api.deepseek.com
   model: deepseek-chat
   cover_letter_model: gemini-3-flash-preview
+  cover_letter_temperature: 0.4
   temperature: 0.0
   timeout_seconds: 60
   tier: free

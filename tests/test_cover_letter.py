@@ -400,3 +400,32 @@ def test_get_letter_facts_fallback_to_example(tmp_path: Path, caplog: pytest.Log
     assert "interdits" in facts
     assert any("absent" in rec.message for rec in caplog.records)
 
+
+def test_select_experiences_for_job() -> None:
+    from src.matching.cover_letter import select_experiences_for_job
+
+    assert select_experiences_for_job({"title": "Stage ML", "description": "Étude de la robustesse des réseaux"})[0] == "UPC"
+    assert select_experiences_for_job({"title": "Stage ML", "description": "Quantification d'incertitude"})[0] == "MedStay"
+    assert select_experiences_for_job({"title": "Stage ML", "description": "Segmentation sur scanner CT 3D"})[0] == "PanTS"
+    assert select_experiences_for_job({"title": "Stage RAG & agents LLM", "description": "NLP"})[0] == "Stage Copilot ou CinéFilm"
+    assert select_experiences_for_job({"title": "Simulation numérique et physique", "description": "EDP"})[0] == "formation en maths du M2"
+
+
+def test_no_thesis_instruction_when_offer_explicitly_excludes_thesis() -> None:
+    gen = CoverLetterGenerator(api_key="fake-key", deepseek_api_key="")
+    job = {
+        "title": "Stage R&D Machine Learning",
+        "company": "CEA",
+        "location": "Grenoble",
+        "description": "Stage de 6 mois. Possibilité de poursuite en thèse : Non.",
+        "signals": {"suite_explicite": {"present": True, "quote": "Possibilité de poursuite en thèse : Non"}},
+    }
+    user_prompt = gen._build_user_prompt(job, "CV test")
+    assert "PERSPECTIVE DE SUITE / THÈSE" not in user_prompt
+    assert "Ne parle PAS de thèse ni de CIFRE" in user_prompt
+
+    fallback_letter = generate_algorithmic_cover_letter(job)
+    assert "thèse" not in fallback_letter.lower()
+    assert "cifre" not in fallback_letter.lower()
+
+

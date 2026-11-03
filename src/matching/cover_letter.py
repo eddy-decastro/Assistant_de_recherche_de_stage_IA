@@ -74,12 +74,117 @@ PARCOURS SCOLAIRE EXACT À RESPECTER :
 - 3e année (actuelle) : élève de l'IMT Mines Alès en double diplôme Master 2 Mathématiques en Action (MAEA) à Mines Saint-Étienne (co-accrédité Mines Saint-Étienne, Centrale Lyon et ENS Lyon).
 - NE JAMAIS mentionner le baccalauréat ni le lycée avant la prépa.
 
+STRUCTURE ET CONTENU :
+Longueur : 450 à 550 mots (cible 500), une page A4.
+
+Plan (invisible, pas de titres dans la lettre) :
+1. Objet + accroche (1 à 2 phrases) : intitulé exact du poste, PFE de 6 mois. Une phrase qui relie mon profil au sujet de l'offre.
+2. Moi (150 à 180 mots) : qui je suis (ingénieur IA + master de maths appliquées) et ce qui me motive (savoir quand un modèle se trompe). Une ou deux expériences racontées simplement, choisies selon l'offre (selon la consigne explicite fournie), avec au plus deux chiffres en tout. Une qualité humaine prouvée par l'engagement (scouts, association ou tutorat).
+3. Vous (100 à 130 mots) : ce qui m'attire dans ce sujet et cette équipe, en citant 2 éléments réels de l'offre (problème traité, application, méthode, perspective de publication, etc.). Interdiction de parler de l'entreprise au-delà de ce que dit l'offre, et interdiction d'inventer des publications, des produits ou des valeurs.
+4. Nous (120 à 150 mots) : ce que je ferais concrètement pendant le stage, ce que je veux y apprendre, pourquoi j'ai envie de travailler dans cette équipe et de contribuer à son projet. Parler de thèse ou de CIFRE seulement si l'offre mentionne une poursuite en thèse (signal suite_explicite). Si l'offre dit « Possibilité de poursuite en thèse : Non », ne pas en parler.
+5. Conclusion (2 à 3 phrases) : disponibilité, proposition d'entretien, formule de politesse sobre (« Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées. »), signature.
+
+RÈGLES D'ÉCRITURE :
+- Pas trop technique : au plus 3 termes techniques par paragraphe, chacun compréhensible par un recruteur RH. Exemple : écrire « j'ai cherché les failles d'un détecteur de fraude bancaire » et non « attaque BPDA face à PGD/FGSM ». Le détail technique reste dans le CV joint.
+- Le parcours scolaire tient en une phrase (le CV est joint). Ne pas citer le baccalauréat.
+- L'honnêteté sur l'UPC est un argument : la défense ne faisait pas mieux qu'un modèle simple, et je l'ai démontré.
+- Phrases de moins de 25 mots. Aucun cliché : « parcours d'excellence », « triple formation », « vif intérêt et enthousiasme certain », « passionné », « acteur de référence ».
+- Reprendre 2 ou 3 mots-clés de l'offre (utile pour les logiciels de tri).
+- Si l'offre impose une contrainte que je ne remplis pas (date de début avant avril 2027, durée différente, lieu), la lettre le dit simplement dans la conclusion au lieu de l'ignorer.
+- Langue : celle de l'offre (français si l'offre est en français, anglais si l'offre est en anglais).
+- Zéro crochet ni placeholder.
+
+EXEMPLE DE TON (ne pas recopier, ne pas réutiliser ses phrases) :
+Objet : Candidature au stage « Évaluation de Graph Neural Networks pour capteurs radar », Grenoble (stage de fin d'études de 6 mois)
+Madame, Monsieur,
+Élève-ingénieur en intelligence artificielle à l'IMT Mines Alès, je suis cette année en double diplôme dans le master de mathématiques appliquées MAEA à Mines Saint-Étienne. Votre sujet réunit deux choses qui me motivent : les graphes et l'évaluation rigoureuse des modèles.
+Ce qui m'intéresse le plus en machine learning, c'est de savoir quand un modèle se trompe, et de le mesurer honnêtement. Lors de mon stage de recherche à l'UPC de Barcelone, j'ai cherché les failles d'un détecteur de fraude bancaire : une attaque adaptée le trompait dans 48 % des cas. J'ai ensuite conçu une défense qui représente le fonctionnement interne du réseau sous forme de graphes, puis je l'ai évaluée avec un protocole statistique fixé à l'avance. Conclusion : elle ne faisait pas significativement mieux qu'un modèle plus simple. Ce stage m'a appris à ne pas me contenter d'un bon chiffre et à vérifier qu'un gain est réel. Dans un projet sur environ 70 000 patients, j'ai aussi construit des prévisions accompagnées d'une marge d'erreur fiable, qui contient la vraie valeur dans 90 % des cas comme visé, puis je les ai mises en service. Ma formation en mathématiques me permet de comprendre ces méthodes au lieu de les appliquer en boîte noire. Enfin, encadrer une trentaine d'adolescents chez les scouts et présider une association m'ont appris à m'organiser et à travailler avec des personnes très différentes.
+Votre sujet m'attire parce qu'il part d'une vraie difficulté : les données radar sont éparses, bruitées et peu résolues, là où les méthodes classiques peinent. Le radar a pourtant des atouts que la caméra n'a pas : il fonctionne dans l'obscurité et par mauvais temps, pour un coût modeste. Les applications que vous citez, de la surveillance de l'habitacle à la détection de chutes, touchent directement la sécurité et la santé des personnes. J'apprécie aussi que le stage s'appuie sur des méthodes développées au sein de votre laboratoire et qu'il puisse déboucher sur une publication.
+Pendant ces six mois, je souhaite contribuer à la mise en œuvre et à l'amélioration de vos méthodes de traitement des données radar. Je pourrais en particulier bâtir un protocole d'évaluation solide : comparer les GNN à des références plus simples, mesurer la stabilité des résultats et repérer les situations où le modèle échoue. J'ai envie d'apprendre au sein d'une équipe pluridisciplinaire qui travaille sur des capteurs réels, et de progresser sur les réseaux de neurones sur graphes. Je prendrai le temps d'étudier les trois publications citées dans votre offre avant notre échange.
+Votre offre indique un début au 1er février 2027. Mon calendrier de double diplôme me rend disponible à partir de début avril 2027, pour six mois. Si ce décalage reste compatible avec votre projet, je serais heureux d'en discuter lors d'un entretien.
+Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+Eddy DE CASTRO
+
 SIGNATURE COMPLÈTE :
 {signature_block}
 """
 
 
 SYSTEM_PROMPT = build_system_prompt()
+
+
+def select_experiences_for_job(job: dict[str, Any] | str) -> tuple[str, str]:
+    """Choisit les 2 expériences principales à mettre en avant selon les mots-clés de l'offre.
+
+    Règle :
+    - incertitude, fiabilité, prévision, santé → ("MedStay", "UPC")
+    - robustesse, sécurité, attaque, fraude, évaluation, graphes → ("UPC", "MedStay")
+    - imagerie médicale, scanner, 3D → ("PanTS", "MedStay")
+    - LLM, NLP, agents, RAG → ("Stage Copilot ou CinéFilm", "UPC")
+    - physique, simulation, modèles numériques → ("formation en maths du M2", "MedStay")
+    - par défaut → ("UPC", "MedStay")
+    """
+    if isinstance(job, str):
+        title_lower = job.lower()
+        desc_lower = job.lower()
+    else:
+        title_lower = str(job.get("title") or "").lower()
+        desc_lower = str(job.get("description") or "").lower()
+
+    categories: list[tuple[tuple[str, str], tuple[str, ...]]] = [
+        (
+            ("PanTS", "MedStay"),
+            ("imagerie médicale", "medical imaging", "scanner", "ct scan", "3d", "radiologie", "irm", "mri"),
+        ),
+        (
+            ("MedStay", "UPC"),
+            ("incertitude", "uncertainty", "fiabilité", "prévision", "forecasting", "santé", "clinique", "hôpital", "patient"),
+        ),
+        (
+            ("UPC", "MedStay"),
+            ("robustesse", "robustness", "sécurité", "attaque", "adversar", "fraude", "évaluation", "evaluation", "graphe", "graph", "gnn"),
+        ),
+        (
+            ("Stage Copilot ou CinéFilm", "UPC"),
+            ("llm", "nlp", "agent", "rag", "langage naturel", "language model", "recherche sémantique"),
+        ),
+        (
+            ("formation en maths du M2", "MedStay"),
+            ("physique", "physics", "simulation", "modèles numériques", "modèle numérique", "edp", "pde", "calcul scientifique"),
+        ),
+    ]
+
+    best_pair: tuple[str, str] = ("UPC", "MedStay")
+    best_score = 0
+
+    for pair, keywords in categories:
+        score = 0
+        for kw in keywords:
+            pattern = rf"\b{re.escape(kw)}"
+            if re.search(pattern, title_lower):
+                score += 3
+            if re.search(pattern, desc_lower):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_pair = pair
+
+    return best_pair
+
+
+def detect_start_date_mismatch(job: dict[str, Any]) -> str | None:
+    """Détecte si l'offre mentionne une date de début antérieure à avril 2027."""
+    text = f"{job.get('title') or ''} {job.get('description') or ''}"
+    patterns = [
+        r"\b(?:1er\s+|0?1\s+|début\s+)?(?:janvier|février|fevrier|mars|january|february|march)\s+2027\b",
+        r"\b0?[1-9]/0?[1-3]/2027\b",
+        r"\bdébut\s+(?:janvier|février|fevrier|mars)\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            return m.group(0).strip()
+    return None
 
 
 def is_english_text(text: str) -> bool:
@@ -278,7 +383,7 @@ class CoverLetterGenerator:
         self.config = config or load_config()
         llm_cfg = self.config.get("llm", {})
         self.model = str(llm_cfg.get("cover_letter_model") or llm_cfg.get("model", DEFAULT_MODEL))
-        self.temperature = float(llm_cfg.get("cover_letter_temperature", llm_cfg.get("temperature", 0.2)))
+        self.temperature = float(llm_cfg.get("cover_letter_temperature", 0.4))
         self.candidate = get_candidate_info(self.config)
         self.facts = get_letter_facts()
         self.system_prompt = build_system_prompt(self.candidate)
@@ -344,7 +449,12 @@ class CoverLetterGenerator:
         signals = signals or {}
 
         structure_type = str(job.get("structure_type") or "").upper()
-        tone_instructions = []
+        tone_instructions: list[str] = []
+
+        exp1, exp2 = select_experiences_for_job(job)
+        tone_instructions.append(
+            f"- CHOIX DES EXPÉRIENCES POUR LA PARTIE MOI : Raconte en priorité {exp1}, puis {exp2} (avec au plus deux chiffres en tout)."
+        )
 
         if structure_type == "LABO_PUBLIC":
             tone_instructions.append(
@@ -363,11 +473,22 @@ class CoverLetterGenerator:
         explicit_no_thesis = (
             "possibilité de poursuite en thèse : non" in full_lower
             or "poursuite en thèse : non" in full_lower
+            or "phd continuation: no" in full_lower
         )
         suite_sig = signals.get("suite_explicite") or {}
-        if not explicit_no_thesis and isinstance(suite_sig, dict) and suite_sig.get("present"):
+        if explicit_no_thesis:
+            tone_instructions.append(
+                "- INTERDICTION DE MENTIONNER UNE THÈSE : L'offre indique qu'il n'y a pas de poursuite en thèse. Ne parle PAS de thèse ni de CIFRE."
+            )
+        elif isinstance(suite_sig, dict) and suite_sig.get("present"):
             tone_instructions.append(
                 "- PERSPECTIVE DE SUITE / THÈSE (Signal explicite dans l'offre) : L'offre mentionne une perspective de continuité ou de thèse."
+            )
+
+        start_mismatch = detect_start_date_mismatch(job)
+        if start_mismatch:
+            tone_instructions.append(
+                f"- CONTRAINTE DE DATE DE DÉBUT : L'offre indique un début ({start_mismatch}). Mentionne simplement dans la conclusion que ton calendrier de double diplôme te rend disponible à partir de début avril 2027 pour six mois."
             )
 
         if tone_instructions:
