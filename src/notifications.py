@@ -2,7 +2,9 @@
 
 Fonctionnalités :
 - Envoi d'un digest synthétique des meilleures offres via Webhook (Discord / Slack / Telegram)
-- Archivage automatique des offres obsolètes ou expirées (404 / offres fermées)
+- Archivage des offres fermées (détection par ``scrapers.liveness`` : 404, redirection,
+  « n'accepte plus de candidatures »…) ; l'archivage par âge reste disponible mais
+  désactivé par défaut
 - Pré-génération asynchrone des lettres de motivation pour les offres à très haut score
 """
 from __future__ import annotations
@@ -15,7 +17,13 @@ from typing import Any
 import requests
 
 from src.config import load_config
-from src.constants import STATUS_EXCLUDED, STATUS_IGNORED, STATUS_NEW, STATUS_REJECTED
+from src.constants import (
+    CLOSED_OFFER_REASON,
+    STATUS_EXCLUDED,
+    STATUS_IGNORED,
+    STATUS_NEW,
+    STATUS_REJECTED,
+)
 from src.matching.cover_letter import CoverLetterGenerator
 from src.storage.database import Database
 
@@ -27,15 +35,6 @@ __all__ = [
     "pregenerate_top_cover_letters",
     "send_pipeline_digest",
 ]
-
-EXPIRED_MARKERS = (
-    "les candidatures ne sont plus acceptées",
-    "no longer accepting applications",
-    "cette offre n'est plus disponible",
-    "offre expirée",
-    "job is no longer available",
-)
-
 
 def _effective_score(job: dict[str, Any]) -> float:
     """Retourne le score prioritaire de l'offre (rerank_score puis final_score)."""
@@ -195,17 +194,29 @@ def send_pipeline_digest(
 def archive_expired_offers(
     db: Database,
     config: dict[str, Any] | None = None,
-    max_checks: int = 20,
+    max_checks: int | None = None,
+    checker: Any = None,
 ) -> int:
-    """Vérifie la disponibilité des offres 'NOUVEAU' anciennes et archive celles expirées (404/fermées).
+    """Archive les offres « NOUVEAU » dont la page prouve qu'elles sont fermées.
 
-    Args:
-        db: Instance de connexion à la base de données.
-        config: Configuration globale (charge config.yaml si None).
-        max_checks: Nombre maximal d'URLs à sonder lors de cette passe.
+    Détection par ``scrapers.liveness`` (HTTP 404/410, redirection vers la liste
+    des offres, texte « Les candidatures ne sont plus acceptées », « Ce job n'est
+    plus disponible »…). Seul un verdict **fermé** archive : erreur réseau, 429,
+    page anti-robot ou connexion requise ⇒ rien n'est conclu, l'offre reste.
+
+    Une offre archivée passe en IGNORÉ avec ``rejection_reason = "offre_fermee"``
+    et la note « [Auto] Fermée : <motif> ». Seules les offres encore NOUVEAU au
+    moment de l'écriture sont touchées : un statut saisi par l'utilisateur n'est
+    jamais écrasé.
+
+    Réglages (``automations``) : ``check_expired_offers_enabled``,
+    ``expired_offers_age_days`` (âge minimal avant contrôle),
+    ``expired_offers_max_checks`` (sondes réseau par run ; les verdicts
+    « ouvert » récents sont servis par le cache et ne comptent pas),
+    ``expired_offers_recheck_days`` (validité du cache « ouvert »).
 
     Returns:
-        Nombre d'offres passées en REJETÉ avec la mention d'expiration.
+        Nombre d'offres archivées comme fermées.
     """
     cfg = config or load_config()
     auto_cfg = cfg.get("automations") or {}
@@ -213,52 +224,64 @@ def archive_expired_offers(
     if not auto_cfg.get("check_expired_offers_enabled", False):
         return 0
 
-    age_days = int(auto_cfg.get("expired_offers_age_days", 14))
+    age_days = int(auto_cfg.get("expired_offers_age_days", 7))
+    budget = int(max_checks if max_checks is not None else auto_cfg.get("expired_offers_max_checks", 40))
 
     try:
         jobs = db.get_jobs(statuses=STATUS_NEW)
     except TypeError:
         jobs = db.get_jobs(status=STATUS_NEW)
 
-    candidates: list[dict[str, Any]] = []
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
     for job in jobs:
         dt = _parse_datetime(job.get("created_at")) or _parse_datetime(job.get("published_at"))
         if dt and _is_older_than(dt, age_days):
-            candidates.append(job)
-        if len(candidates) >= max_checks:
-            break
+            candidates.append((dt.replace(tzinfo=None), job))
+    # Les plus anciennes d'abord : ce sont les plus susceptibles d'être fermées.
+    candidates.sort(key=lambda item: item[0])
+
+    own_checker = checker is None
+    if own_checker:
+        from scrapers.cache import DiskCache
+        from scrapers.liveness import LivenessChecker
+
+        checker = LivenessChecker(
+            cache=DiskCache(),
+            recheck_days=float(auto_cfg.get("expired_offers_recheck_days", 3)),
+        )
 
     archived_count = 0
-    for job in candidates:
-        url = (job.get("url") or "").strip()
-        if not url or not (url.startswith("http://") or url.startswith("https://")):
-            continue
-
-        try:
-            resp = requests.get(
-                url,
-                timeout=8,
-                allow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-        except Exception as exc:
-            logger.warning("Erreur vérification URL de l'offre %s (%s) : %s", job.get("id"), url, exc)
-            continue
-
-        is_expired = resp.status_code in (404, 410)
-        if not is_expired and resp.text:
-            body_lower = resp.text.lower()
-            if any(marker in body_lower for marker in EXPIRED_MARKERS):
-                is_expired = True
-
-        if is_expired:
-            db.update_status(job["id"], STATUS_REJECTED)
-            existing_notes = (job.get("user_notes") or "").strip()
-            auto_note = "[Auto] Offre expirée sur la plateforme"
+    unknown = 0
+    try:
+        for _, job in candidates:
+            if checker.network_checks >= budget:
+                break
+            url = (job.get("url") or "").strip()
+            verdict = checker.check(url, job.get("source"))
+            if verdict.status == "inconnu":
+                unknown += 1
+            if not verdict.is_closed:
+                continue
+            current = db.get_job(job["id"]) or {}
+            if current.get("status") != STATUS_NEW:
+                continue  # statut changé entre-temps par l'utilisateur : on n'y touche pas
+            db.update_status(job["id"], STATUS_IGNORED, rejection_reason=CLOSED_OFFER_REASON)
+            existing_notes = (current.get("user_notes") or "").strip()
+            auto_note = f"[Auto] Fermée : {verdict.reason}"
             new_notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
             db.update_user_notes(job["id"], new_notes)
             archived_count += 1
+            logger.info("Offre fermée archivée : %s (%s) — %s", job.get("id"), url, verdict.reason)
+    finally:
+        if own_checker:
+            checker.close()
 
+    logger.info(
+        "Détection d'offres fermées : %d archivée(s), %d non concluante(s), %d sonde(s) réseau.",
+        archived_count,
+        unknown,
+        checker.network_checks,
+    )
     return archived_count
 
 
@@ -267,6 +290,10 @@ def archive_old_offers(
     config: dict[str, Any] | None = None,
 ) -> int:
     """Passe en IGNORÉ (archivé) les offres 'NOUVEAU' plus vieilles que ``auto_archive_age_days``.
+
+    DÉSACTIVÉ par défaut (``auto_archive_enabled: false``) depuis le 04/11/2026 :
+    l'âge archivait des offres encore ouvertes (981 offres, dont 92 notées ≥ 80).
+    La détection d'offre fermée (``archive_expired_offers``) la remplace.
 
     L'âge se mesure à la date de publication si elle est connue, sinon à la date
     de collecte. Les offres POSTULÉ, ENTRETIEN, IGNORÉ, REJETÉ et EXCLU ne sont

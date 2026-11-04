@@ -705,11 +705,20 @@ automations:
   pregenerate_letters_enabled: false
   pregenerate_letters_top_n: 3
   pregenerate_letters_min_score: 85
-  # Vérifier automatiquement si les offres "Nouveau" anciennes (> N jours) sont expirées (404 / fermées)
-  check_expired_offers_enabled: false
-  expired_offers_age_days: 14
-  # Archiver (statut IGNORÉ) les offres "Nouveau" plus vieilles que N jours, sans appel réseau
-  auto_archive_enabled: true
+  # Détection « offre fermée » (scrapers/liveness.py) : les offres « Nouveau » de
+  # plus de N jours sont sondées (404/410, redirection vers la liste, texte « Les
+  # candidatures ne sont plus acceptées », « Ce job n'est plus disponible »…).
+  # Seules les offres prouvées fermées passent en IGNORÉ (raison « offre_fermee »,
+  # note « [Auto] Fermée : <motif> ») ; erreur réseau, 429 ou anti-robot = rien conclu.
+  check_expired_offers_enabled: true
+  expired_offers_age_days: 7
+  # Sondes réseau par run (les offres vérifiées ouvertes il y a moins de
+  # expired_offers_recheck_days jours sont servies par le cache, gratuitement).
+  expired_offers_max_checks: 40
+  expired_offers_recheck_days: 3
+  # Ancien archivage par âge (IGNORÉ au-delà de N jours, sans appel réseau) :
+  # désactivé le 04/11/2026, il archivait des offres encore ouvertes.
+  auto_archive_enabled: false
   auto_archive_age_days: 21
   # Envoyer un résumé de fin de pipeline par Webhook (Discord / Slack / Telegram)
   notifications_enabled: false

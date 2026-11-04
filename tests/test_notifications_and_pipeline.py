@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.constants import STATUS_EXCLUDED, STATUS_NEW, STATUS_REJECTED
+from src.constants import STATUS_EXCLUDED, STATUS_NEW
 from src.notifications import (
     archive_expired_offers,
     pregenerate_top_cover_letters,
@@ -145,7 +144,12 @@ def test_send_pipeline_digest_slack_and_telegram(monkeypatch: pytest.MonkeyPatch
 
 
 def test_archive_expired_offers(tmp_path: Path) -> None:
-    """Vérifie l'archivage automatique en STATUS_REJECTED avec note quand le lien retourne 404 ou est fermé."""
+    """S4 : seules les offres prouvées fermées passent en IGNORÉ (« offre_fermee »), avec note."""
+    import httpx
+
+    from scrapers.liveness import LivenessChecker
+    from src.constants import CLOSED_OFFER_REASON, STATUS_IGNORED
+
     db = Database(tmp_path / "test.db")
     config = {
         "automations": {
@@ -157,82 +161,80 @@ def test_archive_expired_offers(tmp_path: Path) -> None:
     old_date = datetime.now() - timedelta(days=15)
     recent_date = datetime.now() - timedelta(days=2)
 
-    # Offre 1 : ancienne (15 jours), lien 404 -> archivée
-    db.upsert_job({
-        "id": "job_old_404",
-        "title": "Stage ML Ancien",
-        "company": "Startup A",
-        "url": "https://example.com/job/old404",
-        "status": STATUS_NEW,
-        "created_at": old_date,
-        "user_notes": "Note existante",
-    })
+    for job_id, url, created, notes in [
+        ("job_old_404", "https://example.com/job/old404", old_date, "Note existante"),
+        ("job_old_closed", "https://example.com/job/closed", old_date, None),
+        ("job_old_active", "https://example.com/job/active", old_date, None),
+        ("job_old_429", "https://limited.example.org/job/429", old_date, None),
+        ("job_old_timeout", "https://slow.example.net/job/timeout", old_date, None),
+        ("job_recent", "https://example.com/job/recent", recent_date, None),
+    ]:
+        db.upsert_job({
+            "id": job_id, "title": "Stage ML", "company": "Startup", "url": url,
+            "status": STATUS_NEW, "created_at": created, "user_notes": notes,
+        })
 
-    # Offre 2 : ancienne (15 jours), lien 200 avec mention d'expiration -> archivée
-    db.upsert_job({
-        "id": "job_old_closed",
-        "title": "Stage R&D Expiré",
-        "company": "Startup B",
-        "url": "https://example.com/job/closed",
-        "status": STATUS_NEW,
-        "created_at": old_date,
-    })
-
-    # Offre 3 : ancienne (15 jours), lien 200 actif -> conservée
-    db.upsert_job({
-        "id": "job_old_active",
-        "title": "Stage Toujours Ouvert",
-        "company": "Startup C",
-        "url": "https://example.com/job/active",
-        "status": STATUS_NEW,
-        "created_at": old_date,
-    })
-
-    # Offre 4 : récente (2 jours) -> ignorée du contrôle
-    db.upsert_job({
-        "id": "job_recent",
-        "title": "Stage Tout Neuf",
-        "company": "Startup D",
-        "url": "https://example.com/job/recent",
-        "status": STATUS_NEW,
-        "created_at": recent_date,
-    })
-
-    def mock_get(url: str, **kwargs: Any) -> MagicMock:
-        resp = MagicMock()
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
         if "old404" in url:
-            resp.status_code = 404
-            resp.text = "404 Not Found"
-        elif "closed" in url:
-            resp.status_code = 200
-            resp.text = "<html><body>Cette offre n'est plus disponible pour le moment</body></html>"
-        else:
-            resp.status_code = 200
-            resp.text = "<html><body>Postulez maintenant ! Description complète du poste...</body></html>"
-        return resp
+            return httpx.Response(404, text="404 Not Found")
+        if "closed" in url:
+            return httpx.Response(200, text="<html><body>Cette offre n'est plus disponible pour le moment</body></html>")
+        if "429" in url:
+            return httpx.Response(429)
+        if "timeout" in url:
+            raise httpx.ReadTimeout("trop long")
+        if "recent" in url:  # pragma: no cover — une offre récente n'est pas sondée
+            raise AssertionError("offre récente sondée")
+        return httpx.Response(200, text="<html><body>Postulez maintenant ! Description complète du poste...</body></html>")
 
-    with patch("requests.get", side_effect=mock_get):
-        count = archive_expired_offers(db, config=config, max_checks=10)
-        assert count == 2
+    checker = LivenessChecker(
+        httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+        min_interval=0,
+        sleep=lambda _s: None,
+    )
+    with patch("requests.get") as legacy_get:
+        count = archive_expired_offers(db, config=config, max_checks=10, checker=checker)
+        legacy_get.assert_not_called()
+    assert count == 2
 
     job1 = db.get_job("job_old_404")
-    assert job1 is not None
-    assert job1["status"] == STATUS_REJECTED
-    assert "[Auto] Offre expirée sur la plateforme" in (job1["user_notes"] or "")
+    assert job1["status"] == STATUS_IGNORED
+    assert job1["rejection_reason"] == CLOSED_OFFER_REASON
+    assert "[Auto] Fermée : HTTP 404" in (job1["user_notes"] or "")
     assert "Note existante" in (job1["user_notes"] or "")
 
     job2 = db.get_job("job_old_closed")
-    assert job2 is not None
-    assert job2["status"] == STATUS_REJECTED
-    assert "[Auto] Offre expirée sur la plateforme" in (job2["user_notes"] or "")
+    assert job2["status"] == STATUS_IGNORED
+    assert "[Auto] Fermée : la page affiche « cette offre n'est plus disponible »" in (job2["user_notes"] or "")
 
-    job3 = db.get_job("job_old_active")
-    assert job3 is not None
-    assert job3["status"] == STATUS_NEW
+    # Ouverte, 429 (limite de débit) ou délai dépassé : rien n'est conclu.
+    for job_id in ("job_old_active", "job_old_429", "job_old_timeout", "job_recent"):
+        assert db.get_job(job_id)["status"] == STATUS_NEW, job_id
 
-    job4 = db.get_job("job_recent")
-    assert job4 is not None
-    assert job4["status"] == STATUS_NEW
+
+def test_archive_expired_offers_never_overrides_user_status(tmp_path: Path) -> None:
+    """Un statut saisi pendant la vérification (ex. POSTULÉ) n'est jamais écrasé."""
+    from scrapers.liveness import LivenessVerdict
+    from src.constants import STATUS_APPLIED
+
+    db = Database(tmp_path / "test.db")
+    db.upsert_job({
+        "id": "job_x", "title": "Stage ML", "company": "X", "url": "https://example.com/job/x",
+        "status": STATUS_NEW, "created_at": datetime.now() - timedelta(days=30),
+    })
+
+    class _Checker:
+        network_checks = 0
+
+        def check(self, url: str, source: str | None = None) -> LivenessVerdict:
+            self.network_checks += 1
+            db.update_status("job_x", STATUS_APPLIED)  # Eddy postule pendant la sonde
+            return LivenessVerdict("ferme", "HTTP 404 (offre supprimée)", 404)
+
+    config = {"automations": {"check_expired_offers_enabled": True, "expired_offers_age_days": 7}}
+    assert archive_expired_offers(db, config=config, checker=_Checker()) == 0
+    assert db.get_job("job_x")["status"] == STATUS_APPLIED
 
 
 def test_archive_old_offers(tmp_path: Path) -> None:
