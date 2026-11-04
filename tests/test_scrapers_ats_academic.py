@@ -178,53 +178,51 @@ def test_direct_ats_scraper_filtering() -> None:
 # Mocks HTTP pour AcademicRDScraper
 # --------------------------------------------------------------------------- #
 def test_academic_rd_scraper_feeds() -> None:
-    """Vérifie le parsing RSS / HTML et filtrage pour Inria, CNRS et CEA."""
+    """Parsing de la liste Inria (+ fiches) et du flux RSS CEA, filtre stage et métier."""
     scraper = AcademicRDScraper(
         ScraperConfig(passes=PassConfig.only("freshness", window_days=None))
     )
 
-    inria_rss = """<?xml version="1.0" encoding="utf-8"?>
-    <rss version="2.0">
-      <channel>
-        <title>Offres Inria</title>
-        <item>
-          <title>Stage M2 - Apprentissage par renforcement pour la robotique autonome</title>
-          <link>https://jobs.inria.fr/public/classic/fr/offres/2026-001</link>
-          <guid>inria-2026-001</guid>
-          <description>Sujet de stage de fin d'études : modélisation et deep reinforcement learning avec PyTorch.</description>
-          <pubDate>Thu, 10 Sep 2026 09:00:00 +0200</pubDate>
-        </item>
-        <item>
-          <title>Poste CDI - Gestionnaire comptable et financier</title>
-          <link>https://jobs.inria.fr/public/classic/fr/offres/2026-002</link>
-          <guid>inria-2026-002</guid>
-          <description>Gestion des budgets de l'institut.</description>
-          <pubDate>Fri, 11 Sep 2026 10:00:00 +0200</pubDate>
-        </item>
-      </channel>
-    </rss>
-    """
+    inria_listing = """<html><body>
+    <div class="job-card"><h2><a href="/public/classic/fr/offres/2026-001">
+      Stage M2 - Apprentissage par renforcement pour la robotique autonome</a></h2>
+      <ul><li><b>Référence de l'offre</b>: 2026-001</li><li><b>Ville</b> : Grenoble</li></ul></div>
+    <div class="job-card"><h2><a href="/public/classic/fr/offres/2026-002">
+      Gestionnaire comptable et financier</a></h2>
+      <ul><li><b>Référence de l'offre</b>: 2026-002</li><li><b>Ville</b> : Rocquencourt</li></ul></div>
+    </body></html>"""
+    inria_detail = """<html><body><main><h1>Stage M2</h1>
+      Type de contrat : Stage
+      Sujet de stage de fin d'études : deep reinforcement learning avec PyTorch.</main></body></html>"""
 
-    cnrs_rss = """<?xml version="1.0" encoding="utf-8"?>
-    <rss version="2.0">
-      <channel>
-        <title>Emploi CNRS</title>
-        <item>
-          <title>Stage de recherche PFE - Modélisation par réseaux de neurones profonds pour le climat</title>
-          <link>https://emploi.cnrs.fr/Offres/2026-CNRS-01.aspx</link>
-          <guid>cnrs-2026-01</guid>
-          <description>Stage Master 2 / PFE Ingénieur en Intelligence Artificielle et modélisation physique.</description>
-          <pubDate>Mon, 14 Sep 2026 14:00:00 +0200</pubDate>
-        </item>
-      </channel>
-    </rss>
-    """
+    cea_rss = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>CEA</title>
+      <item>
+        <link>https://www.emploi.cea.fr/Pages/Offre/detailoffre.aspx?idOffre=1&amp;offerReference=2026-42479</link>
+        <category>Mathématiques, information scientifique, logiciel</category>
+        <category>Stage</category>
+        <category>  Saclay</category>
+        <title>2026-42479 - Stage - Réseaux de neurones profonds pour la simulation H/F</title>
+        <description>Stage Master 2 en intelligence artificielle et deep learning.</description>
+        <pubDate>Mon, 14 Sep 2026 14:00:00 +0200</pubDate>
+      </item>
+      <item>
+        <link>https://www.emploi.cea.fr/Pages/Offre/detailoffre.aspx?idOffre=2&amp;offerReference=2026-1</link>
+        <category>Gestion</category>
+        <category>CDI</category>
+        <category>  Saclay</category>
+        <title>2026-1 - Contrôleur de gestion H/F</title>
+        <description>Poste en CDI.</description>
+      </item>
+    </channel></rss>"""
 
     def mock_get(url: str, **kwargs: Any) -> _MockResponse:
-        if "inria" in url:
-            return _MockResponse("", status_code=200, text=inria_rss)
-        if "cnrs" in url:
-            return _MockResponse("", status_code=200, text=cnrs_rss)
+        if url.endswith("/offres"):
+            return _MockResponse("", status_code=200, text=inria_listing)
+        if "inria.fr" in url:
+            return _MockResponse("", status_code=200, text=inria_detail)
+        if "emploi.cea.fr" in url:
+            return _MockResponse("", status_code=200, text=cea_rss)
         return _MockResponse("", status_code=404)
 
     scraper.client.get = MagicMock(side_effect=mock_get)  # type: ignore[assignment]
@@ -232,9 +230,14 @@ def test_academic_rd_scraper_feeds() -> None:
     result = scraper.run()
     titles = [j.title for j in result.jobs]
     assert any("Apprentissage par renforcement" in t for t in titles)
-    assert any("Modélisation par réseaux de neurones" in t for t in titles)
-    # L'offre de gestionnaire comptable doit être éliminée par le filtre métier
+    assert any("Réseaux de neurones profonds" in t for t in titles)
     assert not any("Gestionnaire comptable" in t for t in titles)
+    assert not any("Contrôleur de gestion" in t for t in titles)
+    cea = next(j for j in result.jobs if j.company == "CEA")
+    assert cea.id_externe == "cea_2026-42479"
+    assert cea.location == "Saclay, France"
+    statuses = {r.query: r.board_status for r in result.query_reports}
+    assert statuses == {"inria": "ok", "cea": "ok"}
 
     for job in result.jobs:
         assert job.source == "academic"

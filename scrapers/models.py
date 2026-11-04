@@ -19,8 +19,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-# Identifiant de source normalisé (wttj | linkedin | jobteaser | ats | academic).
-Source = Literal["wttj", "linkedin", "jobteaser", "ats", "academic"]
+# Identifiant de source normalisé (wttj | linkedin | jobteaser | ats | academic | workday).
+Source = Literal["wttj", "linkedin", "jobteaser", "ats", "academic", "workday"]
 
 _logger = logging.getLogger("scrapers.models")
 
@@ -241,6 +241,63 @@ SATURATION_RATIO: float = 0.8
 def is_incomplete_stop(reason: str | None) -> bool:
     """Le motif d'arrêt signale-t-il une perte de flux (et non un vivier épuisé) ?"""
     return str(reason or "") in INCOMPLETE_STOP_REASONS
+
+
+# --- État d'un board des sources multi-boards (ATS, Workday, labos) ----------
+# Recopié dans ``PassReport.board_status`` et en tête de ``stop_detail``
+# (« [http_404] HTTP 404 ; … ») : c'est la seule trace persistée, lue par
+# ``scrapers.health`` pour dire QUEL board est en panne et POURQUOI.
+BOARD_OK = "ok"
+BOARD_EMPTY = "vide"
+BOARD_TIMEOUT = "timeout"
+BOARD_NETWORK = "network_error"
+BOARD_PARSE = "parse_error"
+BOARD_AUTH = "auth_missing"
+BOARD_RATE_LIMIT = "http_429"
+BOARD_ERROR = "error"
+BOARD_SKIPPED = "non_lance"
+
+#: États qui signalent un board à corriger (config morte, site cassé, blocage).
+BOARD_FAILURE_PREFIXES: tuple[str, ...] = (
+    "http_",
+    BOARD_TIMEOUT,
+    BOARD_NETWORK,
+    BOARD_PARSE,
+    BOARD_AUTH,
+    BOARD_ERROR,
+)
+
+#: Libellés lisibles des états de board (logs, alertes, UI).
+BOARD_STATUS_LABELS: dict[str, str] = {
+    BOARD_OK: "OK",
+    BOARD_EMPTY: "Vide (aucune offre publiée : identifiant à vérifier)",
+    BOARD_TIMEOUT: "Délai dépassé",
+    BOARD_NETWORK: "Erreur réseau",
+    BOARD_PARSE: "Réponse illisible (format modifié ?)",
+    BOARD_AUTH: "Authentification absente",
+    BOARD_RATE_LIMIT: "Limite de débit (429)",
+    BOARD_ERROR: "Erreur inattendue",
+    BOARD_SKIPPED: "Non interrogé",
+}
+
+
+def is_board_failure(status: str | None) -> bool:
+    """L'état décrit-il une panne (et non un board sain, vide ou non lancé) ?"""
+    code = str(status or "")
+    return any(
+        code == prefix or (prefix.endswith("_") and code.startswith(prefix))
+        for prefix in BOARD_FAILURE_PREFIXES
+    )
+
+
+def board_status_label(status: str | None) -> str:
+    """Libellé d'un état de board (``http_404`` → « Erreur HTTP 404 »)."""
+    code = str(status or "")
+    if code in BOARD_STATUS_LABELS:
+        return BOARD_STATUS_LABELS[code]
+    if code.startswith("http_"):
+        return f"Erreur HTTP {code[5:]}"
+    return code or "Inconnu"
 
 
 # --- Décisions de la mémoire de collecte (table ``seen_jobs``) ----------------
@@ -533,6 +590,11 @@ class PassReport(BaseModel):
     newest_published_at: datetime | None = None
     oldest_published_at: datetime | None = None
     error: str | None = None
+    #: État du board pour les sources multi-boards (ATS, Workday, labos) : ``ok``,
+    #: ``vide``, ``http_<code>``, ``timeout``, ``network_error``, ``parse_error``,
+    #: ``non_lance``… Non persisté tel quel : il est aussi recopié en tête de
+    #: ``stop_detail`` (« [http_404] … »), lu par ``scrapers.health``.
+    board_status: str = ""
 
 
 class TelemetryConfig(BaseModel):
@@ -580,6 +642,18 @@ class ScraperConfig(BaseModel):
     )
     parallel_sources: bool = True
     ats_boards: dict[str, list[str]] = Field(default_factory=dict)
+    #: Boards Workday (``scrapers.workday``) : liste de ``{name, url}`` où ``url``
+    #: est la page carrières publique (``https://<tenant>.<wdN>.myworkdayjobs.com/<site>``).
+    workday_boards: list[dict[str, Any]] = Field(default_factory=list)
+    #: Flux publics des labos (``scrapers.academic_rd``) : ``inria``, ``cea``.
+    academic_feeds: list[str] = Field(default_factory=lambda: ["inria", "cea"])
+    #: Pays des bureaux WTTJ (code ISO, ou liste ; vide = tous pays). La variable
+    #: d'environnement ``WTTJ_COUNTRY`` reste prioritaire pour un run ponctuel.
+    wttj_country: str | list[str] | None = "FR"
+    #: LinkedIn invité ignore ``f_JT=I`` (mesuré le 04/11/2026 : 10/10 CDI sur
+    #: « Data Scientist ») : on ajoute « (stage OR intern…) » aux requêtes qui ne
+    #: mentionnent pas déjà le stage.
+    linkedin_internship_keywords: bool = True
     excluded_companies: list[str] = Field(default_factory=list)
     max_offers_per_source: int = 120
     # DÉPRÉCIÉ — quota « à plat » d'une collecte mono-passe. S'il est renseigné

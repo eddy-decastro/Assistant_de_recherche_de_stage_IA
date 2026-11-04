@@ -45,7 +45,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scrapers.base import describe_rejection  # noqa: E402
 from scrapers.cache import DiskCache  # noqa: E402
-from scrapers.health import SourceAlert, detect_degraded_sources  # noqa: E402
+from scrapers.health import (  # noqa: E402
+    BoardAlert,
+    SourceAlert,
+    detect_board_failures,
+    detect_degraded_sources,
+)
 from scrapers.known import NullKnownIndex  # noqa: E402
 from scrapers.manager import ScraperManager  # noqa: E402
 from scrapers.models import (  # noqa: E402
@@ -817,6 +822,31 @@ def _report_degraded(alerts: Sequence[SourceAlert]) -> None:
             pass
 
 
+def _report_board_failures(alerts: Sequence[BoardAlert]) -> None:
+    """Boards en panne ou vides (ATS, Workday, labos) : visibles, jamais bloquants.
+
+    Une panne est une erreur (log + annotation GitHub Actions) ; un board vide est
+    un simple avertissement (identifiant probablement obsolète). Le run continue.
+    """
+    for alert in alerts:
+        if alert.is_failure:
+            logger.error(" ALERTE %s", alert.message())
+            if os.environ.get("GITHUB_ACTIONS"):
+                print(f"::warning title=Board de scraping en panne::{alert.message()}")
+        else:
+            logger.warning(" AVERTISSEMENT %s", alert.message())
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    failures = [alert for alert in alerts if alert.is_failure]
+    if failures and summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("### Boards de scraping en panne (collecte poursuivie)\n")
+                for alert in failures:
+                    fh.write(f"- {alert.message()}\n")
+        except OSError:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Point d'entrée. Retourne le nombre de sources dégradées détectées (0 = sain)."""
     args = parse_args(argv)
@@ -1005,6 +1035,9 @@ def main(argv: list[str] | None = None) -> int:
             result.query_reports, db.get_source_card_history(exclude_run_id=run_id)
         )
         _report_degraded(degraded)
+    # Boards en panne (slug mort, API cassée…) : indépendant de l'historique, donc
+    # signalé dès le premier run, sans bloquer le reste du pipeline.
+    _report_board_failures(detect_board_failures(result.query_reports))
     # La consultation de la télémétrie est indépendante du run courant : elle doit
     # fonctionner aussi avec ``--no-collect`` (aucun run ouvert).
     if args.top_telemetry:

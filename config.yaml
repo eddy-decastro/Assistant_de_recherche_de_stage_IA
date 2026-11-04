@@ -1,12 +1,18 @@
 scrapers:
   # JobTeaser désactivé (30/09/2026) : accès au compte école perdu et scraping
   # contraire aux conditions d'utilisation. Réactiver en ajoutant « - jobteaser ».
+  # Une source ou un board en panne ne bloque rien : la cause (http_404, timeout,
+  # parse_error, vide…) est consignée dans la télémétrie et signalée en fin de run.
   enabled_sources:
   - linkedin
   - wttj
-  # Pas de « Stage » dans les requêtes : chaque source filtre déjà le contrat côté
-  # serveur (LinkedIn f_JT=I, WTTJ contract_type:internship, JobTeaser
-  # contract=internship). Le mot écartait les annonces en anglais (« ML Intern »).
+  - ats
+  - academic
+  # Pas de « Stage » dans les requêtes : WTTJ (contract_type:internship) et
+  # JobTeaser (contract=internship) filtrent le contrat côté serveur. LinkedIn
+  # invité ignore f_JT=I (mesuré le 04/11/2026 : 0/20 stage sur « Data Scientist ») :
+  # le scraper ajoute lui-même « (stage OR stagiaire OR internship OR intern) »
+  # aux requêtes qui ne parlent pas déjà de stage (linkedin_internship_keywords).
   # Ordre = priorité : l'objectif de nouvelles offres par source peut être atteint
   # avant les dernières requêtes.
   target_queries:
@@ -36,25 +42,57 @@ scrapers:
   # pendant la collecte pour filtrer (et scorer) sur le texte complet.
   enrich_descriptions: true
   max_detail_fetches_per_source: 200
+  # Boards ATS publics, un slug par entreprise. Tous vérifiés par sonde le
+  # 04/11/2026 (python tools/probe_sources.py --source ats). Un slug mort n'arrête
+  # rien mais apparaît en « http_404 » ou « vide » dans le résumé du run.
+  # Retirés (morts) : lever mistral/owkin/qonto/shift-technology/backmarket,
+  # greenhouse huggingface/alan/criteo, ashby bioptimus, smartrecruiters sanofi.
   ats_boards:
     lever:
-      - mistral
-      - owkin
-      - qonto
-      - shift-technology
-      - backmarket
+      - contentsquare
+      - pigment
+      - alice-bob
+      - swile
+      - ekimetrics
     greenhouse:
       - datadog
-      - huggingface
       - dataiku
-      - alan
-      - criteo
+      - bioptimus8
+      - algolia
+      - mirakl
+      - shifttechnology
+      - helsing
     ashby:
+      - mistral.ai
       - dust
-      - bioptimus
+      - owkin
+      - alan
+      - qonto
+      - photoroom
+      - nabla
+      - hcompany
+      - doctolib
+      - backmarket
+      - ledger
+      - sonio
+      - lifen
     smartrecruiters:
-      - sanofi
-      - ubisoft
+      - Ubisoft2
+    workable:
+      - huggingface
+  # Flux publics des labos : Inria (page de liste + fiches) et CEA (RSS
+  # emploi.cea.fr). CNRS retiré : le RSS redirige vers une 404 et le portail ne
+  # publie pas de stages.
+  academic_feeds:
+    - inria
+    - cea
+  # WTTJ : pays des bureaux (filtre Algolia offices.country_code). « FR » écarte
+  # les ~30 % de stages hors France de l'index ; liste possible ([FR, BE]) ;
+  # vide (« "" ») = tous pays. La variable d'environnement WTTJ_COUNTRY prime.
+  wttj_country: FR
+  # LinkedIn : ajoute « (stage OR stagiaire OR internship OR intern) » aux
+  # requêtes qui ne mentionnent pas déjà le stage (f_JT=I ignoré en invité).
+  linkedin_internship_keywords: true
   passes:
     freshness:
       enabled: true
