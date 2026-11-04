@@ -139,10 +139,17 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("Aucune offre sans description : étape 2 (backfill) ignorée.")
 
     print("\n" + "=" * 60)
-    print(" 🧠 ÉTAPE 3 : RERANKING LLM")
+    print(" 🧠 ÉTAPE 3 : NOTATION LLM (v4)")
     print("=" * 60)
-    # Évaluation des nouvelles offres (uniquement si des offres sont non notées)
-    if db.get_unranked_jobs(limit=1):
+    # Évaluation des nouvelles offres (uniquement si des offres sont non notées).
+    # La v4 est la note principale ; la v3 ne tourne que si scoring_v3.rerank_enabled.
+    from src.matching.live_scorer import scoring_modes
+
+    use_v4, use_v3 = scoring_modes(load_config())
+    pending = (use_v4 and db.get_unranked_v4_jobs(limit=1, statuses=(STATUS_NEW,))) or (
+        use_v3 and db.get_unranked_jobs(limit=1)
+    )
+    if pending:
         run_scrapers_main(["--no-collect", "--trigger-rerank", "--top-rerank", "1000"])
     else:
         logger.info("Toutes les offres éligibles sont déjà notées par le juge LLM : étape 3 ignorée.")

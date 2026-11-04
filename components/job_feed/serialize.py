@@ -9,6 +9,7 @@ import re
 from typing import Any, Sequence
 
 from src.constants import (
+    STATUS_IGNORED,
     FLAG_LABELS,
     FLAG_TONES,
     HARD_CAP_LABELS,
@@ -30,6 +31,8 @@ from src.constants import (
     V4_TAG_TONES,
     VERDICT_LABELS,
     coerce_sub_score,
+    ignore_reason_label,
+    normalize_v4_tag,
     source_label,
 )
 from utils.data import (
@@ -37,8 +40,12 @@ from utils.data import (
     VERDICT_TONES,
     contract_label,
     detected_technologies,
+    display_score,
     effective_score,
+    exclusion_info,
     group_jobs_by_source,
+    has_v4_score,
+    is_contract_to_verify,
     is_reranked,
     job_age_days,
     relative_date,
@@ -58,6 +65,37 @@ SIGNAL_DEFS = (
 )
 
 _SUBSCORE_TONES = {5: "positive", 4: "accent", 3: "mute", 2: "warn"}
+
+# Bloc « Questions clés » que l'ancien juge v3 collait à la fin de ``reasoning`` :
+# les questions ont leur propre champ (questions_entretien).
+_QUESTIONS_BLOCK_RE = re.compile(
+    r"\s*(?:💡\s*)?Questions clés pour l'entretien\s*:(?P<body>.*)\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# États de la note affichée (champ ``score_state``).
+SCORE_STATE_V4 = "v4"
+SCORE_STATE_UNSCORED = "non_notee_v4"
+SCORE_STATE_EXCLUDED = "exclue"
+SCORE_STATE_LABELS = {
+    SCORE_STATE_V4: "Note v4",
+    SCORE_STATE_UNSCORED: "Non notée v4",
+    SCORE_STATE_EXCLUDED: "Exclue",
+}
+
+
+def split_reasoning(value: Any) -> tuple[str, list[str]]:
+    """Sépare le raisonnement v3 du bloc « Questions clés pour l'entretien » collé à la fin."""
+    text = str(value or "")
+    match = _QUESTIONS_BLOCK_RE.search(text)
+    if not match:
+        return text, []
+    questions = [
+        line.strip().lstrip("•-*").strip()
+        for line in match.group("body").splitlines()
+        if line.strip().lstrip("•-*").strip()
+    ]
+    return text[: match.start()].rstrip(), questions
 
 
 def _one_line(value: Any) -> str:
@@ -196,7 +234,8 @@ def _signals(job: dict[str, Any]) -> list[dict[str, str]]:
     return items
 
 
-def _v4_axes(job: dict[str, Any]) -> list[dict[str, Any]]:
+def _v4_axes(job: dict[str, Any], use_raw_stars: bool = False) -> list[dict[str, Any]]:
+    """Axes v4. ``use_raw_stars`` : offre exclue -> étoiles brutes du LLM (pas les 0 effectifs)."""
     raw = job.get("v4_stars")
     if isinstance(raw, str):
         try:
@@ -212,9 +251,14 @@ def _v4_axes(job: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(axis, dict):
             continue
         try:
-            stars = max(0, min(5, int(axis.get("stars", 0))))
+            effective = max(0, min(5, int(axis.get("stars", 0))))
         except Exception:
-            stars = 0
+            effective = 0
+        try:
+            raw_stars = max(0, min(5, int(axis.get("raw_stars", effective))))
+        except Exception:
+            raw_stars = effective
+        stars = raw_stars if use_raw_stars else effective
         reason = _one_line(axis.get("reason"))
         quote = _one_line(axis.get("quote"))
         unknown = bool(axis.get("unknown", False))
@@ -224,6 +268,8 @@ def _v4_axes(job: dict[str, Any]) -> list[dict[str, Any]]:
                 "key": key,
                 "label": V4_AXIS_LABELS.get(key, key),
                 "stars": stars,
+                "raw_stars": raw_stars,
+                "effective_stars": effective,
                 "reason": reason,
                 "quote": quote,
                 "unknown": unknown,
@@ -246,7 +292,7 @@ def _v4_tags(job: dict[str, Any]) -> list[dict[str, str]]:
     items = []
     seen = set()
     for tag in raw:
-        key = str(tag or "").strip().lower()
+        key = normalize_v4_tag(tag)
         if not key or key in seen:
             continue
         seen.add(key)
@@ -303,7 +349,10 @@ def serialize_job(
     else:
         company_note_str = ""
 
+    reasoning_text, questions_from_reasoning = split_reasoning(job.get("reasoning"))
     questions_entretien = _texts(job.get("questions_entretien"), limit=5)
+    if not questions_entretien:
+        questions_entretien = questions_from_reasoning[:5]
     user_notes_str = str(job.get("user_notes") or "").strip()
 
     v4_class = str(job.get("v4_class") or "").strip().upper()
@@ -321,6 +370,28 @@ def serialize_job(
     v4_summary = _one_line(v4_raw_obj.get("summary")) if isinstance(v4_raw_obj, dict) else ""
     v4_class_reason = _one_line(v4_raw_obj.get("class_reason")) if isinstance(v4_raw_obj, dict) else ""
     v4_adj_reason = _one_line(v4_raw_obj.get("adjustment_reason")) if isinstance(v4_raw_obj, dict) else ""
+    raw_dict = v4_raw_obj if isinstance(v4_raw_obj, dict) else {}
+
+    # Note unique affichée (N1/N2) : la v4, sinon « non notée v4 » ; une offre
+    # exclue n'a pas de note affichée mais garde ses étoiles brutes.
+    v4_graded = has_v4_score(job)
+    excluded, exclusion_reason = exclusion_info(job)
+    shown = display_score(job)
+    if excluded:
+        score_state = SCORE_STATE_EXCLUDED
+    elif v4_graded:
+        score_state = SCORE_STATE_V4
+    else:
+        score_state = SCORE_STATE_UNSCORED
+    if shown is not None:
+        display_label = f"{v4_class} · {int(round(shown))}" if v4_class else str(int(round(shown)))
+        display_align_label, display_align_tone = score_alignment(shown)
+    else:
+        display_label = SCORE_STATE_LABELS[score_state]
+        display_align_label, display_align_tone = SCORE_STATE_LABELS[score_state], (
+            "alert" if excluded else "mute"
+        )
+    ignore_code = str(job.get("rejection_reason") or "").strip()
 
     return {
         "id": str(job.get("id")),
@@ -350,7 +421,7 @@ def serialize_job(
         "technologies": detected_technologies(job, kw_seq),
         "strengths": _texts(job.get("match_reasons")),
         "red_flags": _texts(job.get("red_flags")),
-        "reasoning": _multiline(job.get("reasoning")) if reranked else "",
+        "reasoning": _multiline(reasoning_text) if reranked else "",
         "description": _limited(_multiline(job.get("description"))),
         "rejection_reason": (job.get("rejection_reason") or "").strip(),
         "url": _http_url(job.get("url")),
@@ -365,12 +436,34 @@ def serialize_job(
         "v4_class_score": int(round(float(v4_cls_raw))) if v4_cls_raw is not None else None,
         "v4_center": float(v4_ctr_raw) if v4_ctr_raw is not None else None,
         "v4_adjustment": int(v4_adj_raw) if v4_adj_raw is not None else None,
-        "v4_axes": _v4_axes(job),
+        "v4_axes": _v4_axes(job, use_raw_stars=excluded),
+        "v4_axes_raw": bool(excluded and v4_graded),
         "v4_tags": _v4_tags(job),
         "v4_flags": _texts(job.get("v4_flags")),
         "v4_summary": v4_summary,
         "v4_class_reason": v4_class_reason,
         "v4_adj_reason": v4_adj_reason,
+        # --- Note unique affichée (le front n'affiche plus que celle-ci) ---
+        "display_score": int(round(shown)) if shown is not None else None,
+        "display_class": v4_class if v4_graded else "",
+        "display_class_label": V4_CLASS_LABELS.get(v4_class, v4_class) if v4_graded and v4_class else "",
+        "display_class_tone": V4_CLASS_TONES.get(v4_class, "mute") if v4_graded and v4_class else "mute",
+        "display_label": display_label,
+        "display_align_label": display_align_label,
+        "display_align_tone": display_align_tone,
+        "score_state": score_state,
+        "score_state_label": SCORE_STATE_LABELS[score_state],
+        "v4_graded": v4_graded,
+        # --- Exclusion (onglet à part) et contrat ---
+        "excluded": excluded,
+        "exclusion_reason": exclusion_reason,
+        "contract_to_verify": is_contract_to_verify(job),
+        "contract_type_v4": str(raw_dict.get("contract_type") or "") if v4_graded else "",
+        "contract_quote": _one_line(raw_dict.get("contract_quote")) if v4_graded else "",
+        # --- Décision d'Eddy (raison d'ignorer en un clic) ---
+        "ignore_reason": ignore_code if status == STATUS_IGNORED else "",
+        "ignore_reason_label": ignore_reason_label(ignore_code) if status == STATUS_IGNORED else "",
+        "ignore_comment": str(job.get("rejection_comment") or "").strip(),
     }
 
 

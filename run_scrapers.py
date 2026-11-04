@@ -19,7 +19,8 @@ Enchaînement :
   6. avec ``--trigger-scoring``, l'étape 1 du ranking (Bi-Encoder
      ``all-MiniLM-L6-v2``) est calculée sur les **seules nouvelles offres** ;
      avec ``--rescore-all``, elle est recalculée sur **toutes** les offres en base ;
-  7. avec ``--trigger-rerank``, l'étape 2 (juge LLM DeepSeek) évalue le Top-N des
+  7. avec ``--trigger-rerank``, l'étape 2 (juge LLM v4 : classe A-E + note affichée,
+     ancien juge v3 seulement si ``scoring_v3.rerank_enabled``) évalue le Top-N des
      offres non encore analysées (``ranking.top_n_rerank``, surchargeable par
      ``--top-rerank``). Sans clé ``DEEPSEEK_API_KEY``, l'étape est ignorée proprement.
 
@@ -322,6 +323,35 @@ def _score_jobs(db: Database, jobs: list[dict[str, Any]], scorer: Any) -> int:
     return len(jobs)
 
 
+def _backfill_candidate_descriptions(
+    db: Database,
+    config: ScraperConfig | dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> None:
+    """Récupère les descriptions manquantes des candidats avant l'appel au juge LLM."""
+    missing = [c for c in candidates if not (c.get("description") or "").strip()]
+    if not missing:
+        return
+    logger.info(" Enrichissement préalable : récupération des descriptions de %d offre(s)...", len(missing))
+    try:
+        from backfill_descriptions import DescriptionBackfill
+        backfiller = DescriptionBackfill(dict(config) if isinstance(config, ScraperConfig) else config, db)
+        for c in missing:
+            source = str(c.get("source") or "")
+            scraper = backfiller.scrapers.get(source)
+            if scraper and hasattr(scraper, "fetch_description"):
+                target = str(c.get("id_externe") or c.get("url") or "")
+                try:
+                    desc = scraper.fetch_description(target, cache=backfiller.cache)
+                    if desc:
+                        db.update_description(c["id"], desc)
+                        c["description"] = desc
+                except Exception as exc:
+                    logger.debug("Échec enrichissement pour %s : %s", c["id"], exc)
+    except Exception as exc:
+        logger.warning("Erreur lors de l'enrichissement préalable : %s", exc)
+
+
 def _rerank_top(
     db: Database,
     config: ScraperConfig | dict[str, Any],
@@ -330,7 +360,141 @@ def _rerank_top(
     backfill_missing: bool = False,
     candidates: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Étape 2 : évalue les offres candidates avec le juge LLM Gemini (Grille v3).
+    """Étape 2 : notation LLM des offres. La v4 est la note principale.
+
+    ``scoring_v4.enabled`` -> juge v4 (``_grade_v4_top``) ; l'ancien juge v3 ne tourne
+    que si la v4 est coupée ou si ``scoring_v3.rerank_enabled`` vaut true.
+    Retourne le nombre d'offres notées (0 sans clé API : jamais bloquant).
+    """
+    from src.matching.live_scorer import scoring_modes
+
+    cfg_dict = config if isinstance(config, dict) else dict(config)
+    use_v4, use_v3 = scoring_modes(cfg_dict)
+    total = 0
+    if use_v4:
+        total += _grade_v4_top(
+            db, config, top_n, concurrency=concurrency, backfill_missing=backfill_missing
+        )
+    if use_v3:
+        total += _rerank_top_v3(
+            db,
+            config,
+            top_n,
+            concurrency=concurrency,
+            backfill_missing=backfill_missing,
+            candidates=candidates,
+        )
+    return total
+
+
+def _grade_v4_top(
+    db: Database,
+    config: ScraperConfig | dict[str, Any],
+    top_n: int | None,
+    concurrency: int | None = None,
+    backfill_missing: bool = False,
+    candidates: list[dict[str, Any]] | None = None,
+) -> int:
+    """Notation v4 (classe A-E + note affichée) des nouvelles offres non notées v4.
+
+    Les échecs API ne sont pas persistés (l'offre reste à noter au prochain run).
+    """
+    from src.matching.scoring_v4 import LLMJudgeV4
+
+    cfg_dict = config if isinstance(config, dict) else dict(config)
+    judge = LLMJudgeV4(cfg_dict, db=db)
+    if not judge.available:
+        logger.warning(
+            "Notation v4 ignorée : aucune clé GEMINI_API_KEY / GROQ_API_KEY / DEEPSEEK_API_KEY (.env)."
+        )
+        return 0
+
+    limit = top_n or int(cfg_dict.get("ranking", {}).get("top_n_rerank", 20))
+    if candidates is None:
+        candidates = db.get_unranked_v4_jobs(limit=limit, statuses=(STATUS_NEW,))
+    if not candidates:
+        logger.info("Notation v4 : aucune nouvelle offre à noter.")
+        return 0
+    if backfill_missing:
+        _backfill_candidate_descriptions(db, config, candidates)
+    if judge.feedback_block:
+        logger.info(" Notation v4 : décisions d'Eddy injectées dans le prompt (%d car.)", len(judge.feedback_block))
+
+    llm_cfg = cfg_dict.get("llm", {}) or {}
+    workers = max(1, concurrency or int(llm_cfg.get("concurrency", 1)))
+    evaluated = 0
+    consecutive_errs = 0
+
+    def _handle(index: int, job: dict[str, Any], result: dict[str, Any]) -> bool:
+        """Persiste un résultat ; False s'il faut interrompre (quota épuisé)."""
+        nonlocal evaluated, consecutive_errs
+        if result.get("api_error") or result.get("v4_display_score") is None:
+            err_msg = str(result.get("error_reason") or "Erreur API v4")
+            logger.warning(
+                "  %d/%d [ERR] Échec v4 pour %s : %s",
+                index, len(candidates), (job.get("title") or "")[:40], err_msg[:200],
+            )
+            consecutive_errs += 1
+            lowered = err_msg.lower()
+            if consecutive_errs >= 3 and ("quota" in lowered or "429" in lowered):
+                logger.error(
+                    "🛑 Interruption de la notation v4 : quota épuisé (3 échecs consécutifs). "
+                    "Les offres restantes seront notées au prochain run."
+                )
+                return False
+            return True
+        consecutive_errs = 0
+        db.update_v4(job["id"], result)
+        evaluated += 1
+        logger.info(
+            "  %d/%d [v4 %s %3d] %s%s",
+            index,
+            len(candidates),
+            result.get("v4_class") or "?",
+            int(round(float(result["v4_display_score"]))),
+            (job.get("title") or "")[:50],
+            " [contrat à vérifier]" if result.get("contract_to_verify") else "",
+        )
+        return True
+
+    if workers > 1 and len(candidates) > 1:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(judge.judge, j): j for j in candidates}
+            for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+                job = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # un échec isolé ne bloque jamais le pipeline
+                    result = {"api_error": True, "error_reason": str(exc)}
+                if not _handle(index, job, result):
+                    for pending in futures:
+                        pending.cancel()
+                    break
+    else:
+        for index, job in enumerate(candidates, start=1):
+            try:
+                result = judge.judge(job)
+            except Exception as exc:
+                result = {"api_error": True, "error_reason": str(exc)}
+            if not _handle(index, job, result):
+                break
+
+    logger.info("Notation v4 : %d offre(s) notée(s) avec succès.", evaluated)
+    return evaluated
+
+
+def _rerank_top_v3(
+    db: Database,
+    config: ScraperConfig | dict[str, Any],
+    top_n: int | None,
+    concurrency: int | None = None,
+    backfill_missing: bool = False,
+    candidates: list[dict[str, Any]] | None = None,
+) -> int:
+    """Ancienne grille v3 (juge LLMJudge). Gardée derrière ``scoring_v3.rerank_enabled`` :
+    elle ne pilote plus ni le tri ni l'affichage.
 
     Retourne le nombre d'offres analysées (0 si la clé API est absente : l'étape
     reste optionnelle et ne bloque jamais le pipeline).
@@ -358,26 +522,7 @@ def _rerank_top(
         return 0
 
     if backfill_missing:
-        missing = [c for c in candidates if not (c.get("description") or "").strip()]
-        if missing:
-            logger.info(" Enrichissement préalable : récupération des descriptions de %d offre(s)...", len(missing))
-            try:
-                from backfill_descriptions import DescriptionBackfill
-                backfiller = DescriptionBackfill(dict(config) if isinstance(config, ScraperConfig) else config, db)
-                for c in missing:
-                    source = str(c.get("source") or "")
-                    scraper = backfiller.scrapers.get(source)
-                    if scraper and hasattr(scraper, "fetch_description"):
-                        target = str(c.get("id_externe") or c.get("url") or "")
-                        try:
-                            desc = scraper.fetch_description(target, cache=backfiller.cache)
-                            if desc:
-                                db.update_description(c["id"], desc)
-                                c["description"] = desc
-                        except Exception as exc:
-                            logger.debug("Échec enrichissement pour %s : %s", c["id"], exc)
-            except Exception as exc:
-                logger.warning("Erreur lors de l'enrichissement préalable : %s", exc)
+        _backfill_candidate_descriptions(db, config, candidates)
 
     cv_text = get_cv_text(config)
 
@@ -711,7 +856,7 @@ def main(argv: list[str] | None = None) -> int:
         if not v1_jobs:
             logger.info("Aucune offre v1 à réévaluer.")
         else:
-            regraded = _rerank_top(
+            regraded = _rerank_top_v3(
                 db,
                 config,
                 top_n=limit,
@@ -943,9 +1088,14 @@ def main(argv: list[str] | None = None) -> int:
         ranked = db.get_jobs(limit=5)
         if ranked:
             logger.info("")
-            logger.info(" Top 5 en base (score effectif) :")
+            logger.info(" Top 5 en base (note v4, sinon ancien score) :")
             for rank, job in enumerate(ranked, start=1):
-                score = job["rerank_score"] if job["rerank_score"] is not None else job["final_score"]
+                if job.get("v4_display_score") is not None:
+                    score = job["v4_display_score"]
+                elif job["rerank_score"] is not None:
+                    score = job["rerank_score"]
+                else:
+                    score = job["final_score"]
                 logger.info(
                     "   %d. [%5.1f] %-45s %s",
                     rank,

@@ -373,6 +373,7 @@ def test_pipeline_conditional_steps(tmp_path: Path) -> None:
         # Cas 1 : aucune offre sans description, aucune offre non notée, aucune v1
         mock_db.get_jobs_missing_description.return_value = []
         mock_db.get_unranked_jobs.return_value = []
+        mock_db.get_unranked_v4_jobs.return_value = []  # notation v4 (note principale)
         mock_db.get_v1_jobs.return_value = []
         mock_db.get_jobs.return_value = []
 
@@ -388,6 +389,7 @@ def test_pipeline_conditional_steps(tmp_path: Path) -> None:
         mock_backfill.reset_mock()
         mock_db.get_jobs_missing_description.return_value = [{"id": "1"}]
         mock_db.get_unranked_jobs.return_value = [{"id": "2"}]
+        mock_db.get_unranked_v4_jobs.return_value = [{"id": "2"}]
         mock_db.get_v1_jobs.return_value = [{"id": "3"}]
 
         pipeline_main(["--no-sync"])

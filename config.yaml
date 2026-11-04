@@ -233,6 +233,9 @@ scrapers:
   - cnrs
   - gaussian splatting
 scoring_v3:
+  # Ancien juge v3 : ne pilote plus ni le tri ni l'affichage (la v4 est la note
+  # principale). true = le relancer aussi sur les nouvelles offres (2e appel LLM).
+  rerank_enabled: false
   min_duration_months: 4
   exclusion_contract_keywords:
   - cdi
@@ -270,7 +273,14 @@ scoring_v3:
     mixed: 50
 
 scoring_v4:
-  enabled: false
+  # Note principale (classe A-E + note affichée), notée au fil de l'eau par le pipeline.
+  enabled: true
+  # Boucle de retour : décisions récentes d'Eddy (postulé / ignoré + raison)
+  # injectées dans le prompt comme calibration.
+  feedback:
+    enabled: true
+    max_examples: 12
+    max_chars: 1500
   axis_weights:
     apprendre: 1.1
     technique: 1.0

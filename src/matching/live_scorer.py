@@ -2,6 +2,10 @@
 
 Ce module permet d'évaluer les offres au fur et à mesure de leur collecte
 par les scrapers, sans attendre la fin du scraping complet.
+
+La note principale est la v4 (``scoring_v4.enabled``, juge ``LLMJudgeV4``).
+L'ancien juge v3 ne tourne plus que si la v4 est désactivée ou si
+``scoring_v3.rerank_enabled`` le réactive explicitement.
 """
 from __future__ import annotations
 
@@ -18,6 +22,23 @@ from src.matching.llm_judge import LLMJudge
 from src.storage.database import Database, make_job_id
 
 logger = logging.getLogger("src.matching.live_scorer")
+
+
+def scoring_modes(config: dict[str, Any] | None) -> tuple[bool, bool]:
+    """(v4 actif ?, v3 actif ?) selon la config.
+
+    v4 : ``scoring_v4.enabled``. v3 : seulement si la v4 est coupée, ou si
+    ``scoring_v3.rerank_enabled`` vaut true (ancienne grille, hors tri et affichage).
+    """
+    cfg = config or {}
+    use_v4 = bool((cfg.get("scoring_v4") or {}).get("enabled", False))
+    use_v3 = (not use_v4) or bool((cfg.get("scoring_v3") or {}).get("rerank_enabled", False))
+    return use_v4, use_v3
+
+
+def _is_quota_error(message: str) -> bool:
+    lowered = (message or "").lower()
+    return "quota" in lowered or "429" in lowered
 
 
 class LiveRerankWorker:
@@ -38,8 +59,14 @@ class LiveRerankWorker:
         self.concurrency = max(1, concurrency)
         self.backfill_missing = backfill_missing
 
-        self.judge = LLMJudge(config)
-        self.cv_text = get_cv_text(config)
+        self.use_v4, self.use_v3 = scoring_modes(config)
+        self.judge_v4: Any | None = None
+        if self.use_v4:
+            from src.matching.scoring_v4 import LLMJudgeV4
+
+            self.judge_v4 = LLMJudgeV4(config, db=db)
+        self.judge = LLMJudge(config) if self.use_v3 else None
+        self.cv_text = get_cv_text(config) if self.use_v3 else ""
 
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._enqueued_keys: set[str] = set()
@@ -50,8 +77,10 @@ class LiveRerankWorker:
 
     @property
     def available(self) -> bool:
-        """Indique si le juge LLM est opérationnel (clé API configurée)."""
-        return bool(self.judge.available)
+        """Indique si au moins un juge LLM actif est opérationnel (clé API configurée)."""
+        v4_ok = bool(self.judge_v4 is not None and self.judge_v4.available)
+        v3_ok = bool(self.judge is not None and self.judge.available)
+        return v4_ok or v3_ok
 
     @property
     def evaluated_count(self) -> int:
@@ -62,7 +91,12 @@ class LiveRerankWorker:
     def start(self) -> None:
         """Démarre le ou les threads d'évaluation en arrière-plan."""
         if not self.available:
-            logger.warning("Notation live ignorée : %s absente (.env).", self.judge.api_key_env)
+            key_hint = (
+                getattr(self.judge, "api_key_env", "")
+                if self.judge is not None
+                else "GEMINI_API_KEY / GROQ_API_KEY / DEEPSEEK_API_KEY"
+            )
+            logger.warning("Notation live ignorée : %s absente (.env).", key_hint)
             return
         self._stop_event.clear()
         for i in range(self.concurrency):
@@ -74,7 +108,8 @@ class LiveRerankWorker:
             t.start()
             self._threads.append(t)
         logger.info(
-            "🚀 Notation en direct activée : évaluation au fil de l'eau par Gemini (Top-%d max)",
+            "🚀 Notation en direct activée (%s) : évaluation au fil de l'eau (Top-%d max)",
+            "v4" if self.use_v4 else "v3",
             self.max_jobs,
         )
 
@@ -95,7 +130,7 @@ class LiveRerankWorker:
                 ):
                     continue
                 # Vérifier si l'offre a déjà été notée
-                if job.get("rerank_score") is not None:
+                if self._already_scored(job):
                     continue
                 self._enqueued_keys.add(job_id)
 
@@ -104,6 +139,32 @@ class LiveRerankWorker:
             self.queue.put(job_copy)
             added += 1
         return added
+
+    def _already_scored(self, job: dict[str, Any] | None) -> bool:
+        """Vrai si l'offre porte déjà la note de chaque grille active."""
+        if not job:
+            return False
+        v4_done = (not self.use_v4) or job.get("v4_display_score") is not None
+        v3_done = (not self.use_v3) or job.get("rerank_score") is not None
+        return v4_done and v3_done
+
+    def _score_v4(self, job: dict[str, Any], existing: dict[str, Any] | None) -> tuple[bool, str]:
+        """Note v4 d'une offre et persistance. Retourne (succès, message d'erreur)."""
+        if self.judge_v4 is None or (existing and existing.get("v4_display_score") is not None):
+            return True, ""
+        result = self.judge_v4.judge(job)
+        if result.get("api_error") or result.get("v4_display_score") is None:
+            return False, str(result.get("error_reason") or "Erreur API v4")
+        self.db.update_v4(job["id"], result)
+        logger.info(
+            "  [Live v4] %s %3d %s (%s)%s",
+            result.get("v4_class") or "?",
+            int(round(float(result["v4_display_score"]))),
+            (job.get("title") or "")[:45],
+            (job.get("company") or "")[:20],
+            " [contrat à vérifier]" if result.get("contract_to_verify") else "",
+        )
+        return True, ""
 
     def _worker_loop(self) -> None:
         """Boucle d'exécution d'un thread consommateur."""
@@ -118,8 +179,27 @@ class LiveRerankWorker:
                 job_id = job["id"]
                 # Vérifier si l'offre a déjà une note en base (ex: évaluée par un autre thread)
                 existing = self.db.get_job_by_id(job_id)
-                if existing and existing.get("rerank_score") is not None:
+                if self._already_scored(existing):
                     continue
+
+                if self.use_v4:
+                    ok, err_msg = self._score_v4(job, existing)
+                    if not ok:
+                        logger.warning(
+                            "[Live v4] Échec pour %s : %s", (job.get("title") or "")[:40], err_msg
+                        )
+                        consecutive_errors += 1
+                        if consecutive_errors >= 3 and _is_quota_error(err_msg):
+                            logger.error(
+                                "🛑 [Live v4] Quota atteint (3 échecs consécutifs). Suspension de la notation live."
+                            )
+                            break
+                        continue
+                    consecutive_errors = 0
+                    if not self.use_v3 or (existing and existing.get("rerank_score") is not None):
+                        with self._lock:
+                            self._evaluated_count += 1
+                        continue
 
                 # Évaluation avec Gemini LLM
                 result = self.judge.judge(job, cv_text=self.cv_text)
@@ -131,7 +211,7 @@ class LiveRerankWorker:
                         err_msg,
                     )
                     consecutive_errors += 1
-                    if consecutive_errors >= 3 and ("quota" in err_msg.lower() or "429" in err_msg):
+                    if consecutive_errors >= 3 and _is_quota_error(err_msg):
                         logger.error(
                             "🛑 [Live LLM] Quota Gemini atteint (3 échecs consécutifs). Suspension de la notation live."
                         )

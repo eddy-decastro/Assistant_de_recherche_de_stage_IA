@@ -69,6 +69,8 @@ from src.constants import (
     V4_CLASSES,
     V4_CLASS_LABELS,
     V4_CLASS_TONES,
+    V4_FLAG_CONTRACT_TO_CHECK,
+    V4_FLAG_EXCLUDED_PREFIX,
     V4_TAGS,
     V4_TAG_LABELS,
     V4_TAG_TONES,
@@ -82,6 +84,7 @@ from src.constants import (
     coerce_sub_score,
     first_number,
     is_incomplete_stop,
+    normalize_v4_tag,
     pass_label,
     run_label,
     seen_decision_label,
@@ -196,7 +199,13 @@ __all__ = [
     "bump_data_version",
     "contract_label",
     "detected_technologies",
+    "display_score",
     "effective_score",
+    "exclusion_info",
+    "has_v4_score",
+    "is_contract_to_verify",
+    "main_score",
+    "SORT_MAIN_SCORE",
     "filter_jobs",
     "get_database",
     "group_jobs_by_source",
@@ -325,6 +334,78 @@ def effective_score(job: dict[str, Any]) -> float:
 def is_reranked(job: dict[str, Any]) -> bool:
     """Indique si l'offre a été évaluée par le juge LLM (étape 2)."""
     return job.get("rerank_score") is not None
+
+
+# --------------------------------------------------------------------------- #
+# Note principale : la note v4 (classe A-E + v4_display_score)
+# --------------------------------------------------------------------------- #
+# Valeurs de ``Filters.sort_by`` triant sur la note principale (v4). « v3 » et
+# « v4 » sont gardés comme alias : l'ancien tri par défaut devient la note v4.
+SORT_MAIN_SCORE = "score"
+_MAIN_SORT_KEYS = frozenset({"", SORT_MAIN_SCORE, "v3", "v4"})
+# Ancien ordre v3 (score de rerank) conservé pour comparaison explicite.
+SORT_V3_LEGACY = "v3_legacy"
+
+
+def _v4_flags(job: dict[str, Any]) -> list[str]:
+    raw = job.get("v4_flags")
+    if raw is None:
+        raw = job.get("v4_flags_json")
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except Exception:
+            raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(f) for f in raw if f]
+
+
+def has_v4_score(job: dict[str, Any]) -> bool:
+    """Vrai si l'offre porte une note v4 (même exclue)."""
+    return job.get("v4_display_score") is not None
+
+
+def exclusion_info(job: dict[str, Any]) -> tuple[bool, str]:
+    """(exclue ?, motif). La v4 décide si elle a noté l'offre, sinon l'ancienne grille v3."""
+    if has_v4_score(job):
+        for flag in _v4_flags(job):
+            if flag.startswith(V4_FLAG_EXCLUDED_PREFIX):
+                return True, flag[len(V4_FLAG_EXCLUDED_PREFIX):].strip()
+        return False, ""
+    excluded = (
+        job.get("status") == STATUS_EXCLUDED
+        or job.get("verdict") == "EXCLU"
+        or bool(job.get("exclusion_reason"))
+    )
+    return excluded, (str(job.get("exclusion_reason") or "").strip() if excluded else "")
+
+
+def is_contract_to_verify(job: dict[str, Any]) -> bool:
+    """Vrai si la v4 a vu un contrat ALTERNANCE / CDI_CDD sans citation vérifiable."""
+    return V4_FLAG_CONTRACT_TO_CHECK in _v4_flags(job)
+
+
+def display_score(job: dict[str, Any]) -> float | None:
+    """Note affichée (v4_display_score) ; ``None`` si l'offre n'est pas notée v4 ou exclue."""
+    if not has_v4_score(job) or exclusion_info(job)[0]:
+        return None
+    return float(job["v4_display_score"])
+
+
+def main_score(job: dict[str, Any]) -> float:
+    """Note utilisée par les filtres de seuil : v4 si présente, sinon repli sur l'ancien score."""
+    if has_v4_score(job):
+        return float(job.get("v4_display_score") or 0.0)
+    return effective_score(job)
+
+
+def _main_sort_key(job: dict[str, Any]) -> tuple[bool, float, float]:
+    """Tri « Meilleur score » : notées v4 d'abord (par note affichée), puis non notées v4."""
+    shown = display_score(job)
+    return (shown is not None, shown if shown is not None else -1.0, effective_score(job))
 
 
 def score_alignment(score: float) -> tuple[str, str]:
@@ -467,7 +548,11 @@ class Filters:
     v4_classes: tuple[str, ...] = ()
     v4_tags: tuple[str, ...] = ()
     exclude_v4_tags: tuple[str, ...] = ()
-    sort_by: str = "v3"
+    # « score » (défaut, alias « v3 »/« v4 ») = note v4 affichée ; « v4_class » ;
+    # « v3_legacy » = ancien ordre v3. Les non notées v4 passent après.
+    sort_by: str = SORT_MAIN_SCORE
+    # Onglet « Exclues » : ne garder QUE les offres exclues (prime sur hide_excluded).
+    only_excluded: bool = False
 
     def is_default(self) -> bool:
         """Vrai si aucun critère restrictif n'est appliqué.
@@ -489,7 +574,8 @@ class Filters:
             or getattr(self, "v4_classes", ())
             or getattr(self, "v4_tags", ())
             or getattr(self, "exclude_v4_tags", ())
-            or getattr(self, "sort_by", "v3") != "v3"
+            or str(getattr(self, "sort_by", SORT_MAIN_SCORE) or "") not in _MAIN_SORT_KEYS
+            or getattr(self, "only_excluded", False)
             or not getattr(self, "hide_excluded", True)
             or not getattr(self, "hide_defense_ethics", True)
             or (self.statuses and len(self.statuses) != len(STATUS_ORDER))
@@ -518,9 +604,12 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
 
     # v4 filters
     v4_classes = {str(c).upper() for c in getattr(filters, "v4_classes", ()) if c}
-    v4_tags_filter = {str(t).lower() for t in getattr(filters, "v4_tags", ()) if t}
-    exclude_v4_tags_filter = {str(t).lower() for t in getattr(filters, "exclude_v4_tags", ()) if t}
-    sort_by = str(getattr(filters, "sort_by", "v3") or "v3")
+    v4_tags_filter = {normalize_v4_tag(t) for t in getattr(filters, "v4_tags", ()) if t}
+    exclude_v4_tags_filter = {
+        normalize_v4_tag(t) for t in getattr(filters, "exclude_v4_tags", ()) if t
+    }
+    sort_by = str(getattr(filters, "sort_by", SORT_MAIN_SCORE) or SORT_MAIN_SCORE)
+    only_excluded = bool(getattr(filters, "only_excluded", False))
 
     # Pré-calcul pour les vérifications de sous-chaînes (>= 3 chars)
     excluded_comps_sub = [c for c in excluded_comps if len(c) >= 3]
@@ -528,13 +617,12 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
     
     selected: list[dict[str, Any]] = []
     for job in jobs:
-        # V3 : Filtre « Masquer les EXCLU »
-        is_exclu = (
-            job.get("status") == STATUS_EXCLUDED
-            or job.get("verdict") == "EXCLU"
-            or bool(job.get("exclusion_reason"))
-        )
-        if hide_excluded and is_exclu:
+        # Exclusions : la v4 décide si elle a noté l'offre, sinon l'ancienne grille v3.
+        is_exclu = exclusion_info(job)[0]
+        if only_excluded:
+            if not is_exclu:
+                continue
+        elif hide_excluded and is_exclu:
             continue
 
         # V3 : Filtre « Masquer DÉFENSE et ETHIQUE_A_EXAMINER »
@@ -569,7 +657,7 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
 
         # V4 : Filtre par étiquettes v4 (inclusion / exclusion)
         if v4_tags_filter or exclude_v4_tags_filter:
-            j_tags = {str(t).lower() for t in (job.get("v4_tags") or [])}
+            j_tags = {normalize_v4_tag(t) for t in (job.get("v4_tags") or [])}
             if v4_tags_filter and not j_tags.intersection(v4_tags_filter):
                 continue
             if exclude_v4_tags_filter and j_tags.intersection(exclude_v4_tags_filter):
@@ -587,7 +675,7 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
             continue
         if selected_comps and not (comp_lower in selected_comps or any(sc in comp_lower for sc in selected_comps_sub)):
             continue
-        if filters.min_score and effective_score(job) < filters.min_score:
+        if filters.min_score and main_score(job) < filters.min_score:
             continue
         if statuses and job.get("status") not in statuses:
             continue
@@ -613,15 +701,8 @@ def filter_jobs(jobs: list[dict[str, Any]], filters: Filters) -> list[dict[str, 
             ),
             reverse=True,
         )
-    elif sort_by == "v4":
-        selected.sort(
-            key=lambda j: (
-                j.get("v4_display_score") is not None,
-                float(j.get("v4_display_score") or 0.0),
-                effective_score(j),
-            ),
-            reverse=True,
-        )
+    elif sort_by in _MAIN_SORT_KEYS:
+        selected.sort(key=_main_sort_key, reverse=True)
 
     return selected[: filters.limit] if filters.limit else selected
 

@@ -79,6 +79,59 @@ def test_live_rerank_worker_enqueue_and_process(tmp_path: Path) -> None:
     assert job_in_db["verdict"] == "EXCELLENT"
 
 
+def test_scoring_modes_v4_main_v3_behind_flag() -> None:
+    """N1 : la v4 est la note principale ; la v3 ne tourne que derrière son flag."""
+    from src.matching.live_scorer import scoring_modes
+
+    assert scoring_modes({}) == (False, True)
+    assert scoring_modes({"scoring_v4": {"enabled": True}}) == (True, False)
+    assert scoring_modes(
+        {"scoring_v4": {"enabled": True}, "scoring_v3": {"rerank_enabled": True}}
+    ) == (True, True)
+
+
+def test_live_worker_v4_mode_persists_v4_only(tmp_path: Path) -> None:
+    """N1 : en mode v4, le worker note avec LLMJudgeV4 (simulé) et n'écrit pas de note v3."""
+    db = Database(str(tmp_path / "test_live_v4.db"))
+    config = {
+        "llm": {"provider": "google", "tier": "free", "concurrency": 1},
+        "scoring": {"cv_path": "data/cv_eddy.txt"},
+        "ranking": {"top_n_rerank": 5},
+        "scoring_v4": {"enabled": True, "feedback": {"enabled": False}},
+    }
+    worker = LiveRerankWorker(db, config, max_jobs=5, concurrency=1)
+    assert worker.judge is None  # juge v3 non instancié
+
+    mock_v4 = MagicMock()
+    mock_v4.available = True
+    mock_v4.judge.return_value = {
+        "v4_status": "OK",
+        "v4_class": "B",
+        "v4_display_score": 84.0,
+        "v4_class_score": 87.0,
+        "v4_flags_json": "[]",
+        "excluded": False,
+        "api_error": False,
+    }
+    worker.judge_v4 = mock_v4
+
+    job_id = make_job_id("Stage LLM", "Mistral AI", "https://mistral.ai/v4")
+    job = {"id": job_id, "title": "Stage LLM", "company": "Mistral AI", "url": "https://mistral.ai/v4"}
+    db.upsert_job(dict(job))
+    worker.start()
+    assert worker.enqueue([job]) == 1
+    assert worker.wait_completion(timeout=5.0) == 1
+
+    saved = db.get_job_by_id(job_id)
+    assert saved is not None
+    assert saved["v4_display_score"] == 84.0
+    assert saved["v4_class"] == "B"
+    assert saved["rerank_score"] is None
+    # Déjà notée v4 : plus remise en file
+    assert worker._already_scored(saved) is True
+    db.engine.dispose()
+
+
 def test_create_batch_callback(tmp_path: Path) -> None:
     """Vérifie que create_batch_callback ingère et transmet au worker."""
     db_file = tmp_path / "test_callback.db"
