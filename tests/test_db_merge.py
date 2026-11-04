@@ -125,6 +125,20 @@ def test_sans_base_union_des_copies(tmp_path: Path) -> None:
     assert rows["z"][0] == "Stage Z"
 
 
+def test_colonne_ajoutee_depuis_la_base_est_fusionnee(tmp_path: Path) -> None:
+    """Une colonne créée par migration après la dernière synchro (absente de la
+    base de référence) n'est pas ignorée : le commentaire saisi dans l'app passe."""
+    local, remote, base = three_copies(tmp_path)
+    for path in (local, remote):
+        execute(path, "ALTER TABLE jobs ADD COLUMN rejection_comment TEXT")
+    execute(remote, "UPDATE jobs SET rejection_comment = 'ESN' WHERE id = 'a'")
+    merge_remote_changes(local, remote, base, prefer_remote=USER_COLUMNS)
+    conn = sqlite3.connect(local)
+    value = conn.execute("SELECT rejection_comment FROM jobs WHERE id = 'a'").fetchone()[0]
+    conn.close()
+    assert value == "ESN"
+
+
 # --------------------------------------------------------------------------- #
 # Téléversement : faux bucket R2 en mémoire, avec ETag et If-Match
 # --------------------------------------------------------------------------- #

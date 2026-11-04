@@ -36,6 +36,8 @@ USER_COLUMNS: dict[str, tuple[str, ...]] = {
         "user_v4_comment",
         "user_v4_at",
     ),
+    # File Claude in Chrome : le compte rendu saisi depuis /file prime.
+    "apply_queue": ("state", "report", "updated_at"),
 }
 
 
@@ -123,8 +125,14 @@ def merge_remote_changes(
                 columns = [c for c in local_cols if c in remote_cols]
                 if base is not None and table in base_tables:
                     base_cols, _ = _columns(base, table)
-                    columns = [c for c in columns if c in base_cols]
-                    b_rows = _rows(base, table, columns, pk)
+                    # Colonne ajoutée depuis la dernière synchro (migration) : elle
+                    # reste fusionnée, avec une valeur de base NULL, sinon une saisie
+                    # faite dans l'app sur cette colonne serait perdue.
+                    present = [c for c in columns if c in base_cols]
+                    missing = [c for c in columns if c not in base_cols]
+                    b_rows = _rows(base, table, present, pk)
+                    for row in b_rows.values():
+                        row.update(dict.fromkeys(missing))
                 else:
                     b_rows = {}
                 l_rows = _rows(local, table, columns, pk)
