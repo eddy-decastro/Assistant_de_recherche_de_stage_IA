@@ -170,6 +170,7 @@ kbd {
   cursor: pointer;
 }
 .view:hover { color: var(--ink); }
+a.view { text-decoration: none; }
 .view.active { color: var(--ink); background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--primary); }
 .view-n { font-variant-numeric: tabular-nums; font-weight: 500; color: var(--muted); }
 
@@ -196,6 +197,12 @@ kbd {
   cursor: pointer;
 }
 .chip.active { border-color: var(--primary); background: var(--primary-soft); }
+/* Filtre de classe : la lettre, puis ce qu'elle veut dire en plus petit, puis le compte. */
+.chip { display: inline-flex; align-items: center; gap: 6px; }
+.chip b { font-size: 12.5px; }
+.chip-label { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.chip.active .chip-label { color: var(--ink); }
+.chip-n { color: var(--muted); font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 .busy {
   display: flex;
@@ -232,7 +239,7 @@ kbd {
   background: var(--surface);
 }
 
-.segments { display: flex; gap: 4px; padding: 10px 12px 8px; overflow-x: auto; }
+.segments { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px 8px; }
 .segment {
   display: inline-flex;
   align-items: center;
@@ -272,7 +279,7 @@ kbd {
 .rows { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .row {
   display: grid;
-  grid-template-columns: auto 34px minmax(0, 1fr) auto;
+  grid-template-columns: auto 58px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
@@ -302,6 +309,51 @@ kbd {
 }
 .row-meta > span { overflow: hidden; text-overflow: ellipsis; }
 .row-company { color: var(--ink); }
+.row.member { padding-left: 30px; background: var(--surface-2); }
+.row.member.selected { background: var(--primary-soft); }
+.row-why { overflow: hidden; color: var(--t-alert); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.row-flags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.row-more { padding: 14px; color: var(--muted); font-size: 12.5px; text-align: center; list-style: none; }
+.group-toggle {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 550;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.group-toggle:hover { text-decoration: underline; }
+.date-est { font-style: italic; }
+
+/* Note unique : pastille compacte « B 82 » (liste, cartes). */
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  min-width: 52px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--tone, var(--line-strong)) 45%, transparent);
+  border-radius: 4px;
+  color: var(--tone, var(--muted));
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 22px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pill b { font-size: 12px; font-weight: 700; opacity: 0.85; }
+.pill-none { border-style: dashed; border-color: var(--line-strong); color: var(--muted); font-size: 11px; font-weight: 500; }
+.small-tag { height: 19px; padding: 0 6px; font-size: 11px; }
 
 .tag {
   display: inline-flex;
@@ -318,6 +370,12 @@ kbd {
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .shortcuts { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+.link-quiet { padding: 0; border: 0; background: none; color: inherit; font-size: inherit; cursor: pointer; }
+.link-quiet:hover { color: var(--ink); }
+.help-keys { display: grid; gap: 8px; margin: 0; }
+.help-keys > div { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: baseline; }
+.help-keys dt { white-space: nowrap; }
+.help-keys dd { margin: 0; }
 
 .empty { display: grid; justify-items: start; gap: 12px; padding: 32px 24px; color: var(--muted); }
 
@@ -346,6 +404,10 @@ kbd {
 .ruler-track { position: relative; height: 8px; margin-bottom: 14px; border-radius: 2px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
 .ruler-fill { height: 100%; border-radius: 2px; background: var(--tone); }
 .ruler-tick { position: absolute; top: -3px; width: 1px; height: 14px; background: var(--ink); opacity: 0.5; }
+.ruler-class { margin-right: 6px; color: var(--tone); font-size: 26px; vertical-align: 0.35em; }
+.ruler-sub { display: block; color: var(--muted); font-weight: 500; font-size: 12px; }
+.ruler-off { padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius); }
+.ruler-state { color: var(--muted); font-size: 18px; font-weight: 700; }
 .ruler-tick-label { position: absolute; top: 15px; left: -7px; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 
 .actions {
@@ -360,6 +422,13 @@ kbd {
 .actions-main, .actions-status { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .note { margin-top: 16px; padding: 10px 14px; border-left: 3px solid var(--t-accent); background: var(--surface); }
+.note-alert { border-left-color: var(--t-alert); }
+.note-alert strong { color: var(--t-alert); }
+.note-warn { border-left-color: var(--t-warn); }
+.note-warn strong { color: var(--t-warn); }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.source { display: inline-flex; align-items: center; gap: 5px; }
+.source-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 
 .block { margin-top: 26px; }
 .block > h2 { margin-bottom: 10px; font-size: 13px; font-weight: 700; }
@@ -388,6 +457,59 @@ kbd {
 .axis-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 550; }
 .axis p { font-size: 12.5px; }
 .stars { color: var(--tone); letter-spacing: 1px; }
+.axes-raw-note { margin-top: 8px; }
+.axes-raw .axis { opacity: 0.7; }
+.legacy summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 13px; }
+.legacy[open] summary { margin-bottom: 10px; }
+
+/* Raison d'ignorer (choix rapide) */
+.reasons { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.reason {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+}
+.reason:hover { border-color: var(--ink); }
+.reason.active { border-color: var(--primary); background: var(--primary-soft); }
+.reason-comment { margin: 14px 0 8px; }
+.reason-comment .field { width: 100%; }
+
+/* Ma note (correction d'Eddy) */
+.grade-compare { margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.grade-classes { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.grade-class {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  line-height: 30px;
+}
+.grade-class span { color: var(--muted); font-size: 11.5px; }
+.grade-class.active { border-color: var(--primary); background: var(--primary-soft); }
+.grade-class.active span { color: var(--ink); }
+.grade-fields { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; }
+.grade-fields .field { width: 100%; }
+.field[aria-invalid="true"] { border-color: var(--t-alert); }
+
+/* Compte rendu de candidature (file Claude) */
+.app-report { display: grid; gap: 4px; }
+.app-report-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.app-report-text { font-size: 13px; }
+.app-report.compact { margin-top: 6px; }
+.app-report.compact .app-report-text { color: var(--muted); font-size: 12px; }
 
 .notes { width: 100%; }
 .row-end { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 8px; }
@@ -494,6 +616,8 @@ kbd {
   .show-detail .detail-pane { display: block; }
   .back { display: inline-flex; }
   .shortcuts { display: none; }
+  .chip-label { display: none; }
+  .grade-fields { grid-template-columns: 1fr; }
   .board-wrap { padding: 14px 16px; }
   .modal { padding: 18px 16px; }
 }

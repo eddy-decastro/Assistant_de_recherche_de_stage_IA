@@ -3,6 +3,8 @@
 import React from "react";
 import { daysSince } from "@/lib/format";
 import { REFUSAL_REASON, STATUS, type JobItem } from "@/lib/types";
+import { ApplicationReportLine } from "./ApplicationReportLine";
+import { ScorePill } from "./ScoreRuler";
 
 // Une colonne = un statut. « Refusé » ne garde que les refus d'entreprise : la corbeille n'apparaît pas ici.
 export const BOARD_COLUMNS = [
@@ -53,7 +55,7 @@ export function Board({ jobs, archivedTotal, onMore, onMove, onLetter }: BoardPr
                   <article key={job.id} className="card">
                     <div className="card-top">
                       <strong className="card-company">{job.company}</strong>
-                      <span className={`card-score tone-${job.align_tone}`}>{job.score}</span>
+                      <ScorePill job={job} />
                     </div>
                     <p className="card-title">{job.title}</p>
                     {(col.key === "applied" || col.key === "interview") && days !== null && (
@@ -61,6 +63,7 @@ export function Board({ jobs, archivedTotal, onMore, onMove, onLetter }: BoardPr
                         {followUp ? `À relancer : postulé il y a ${days} jours` : `Postulé il y a ${days} j`}
                       </p>
                     )}
+                    {job.application_report && <ApplicationReportLine report={job.application_report} compact />}
                     {job.user_notes && <p className="card-notes">{job.user_notes}</p>}
                     <div className="card-actions">
                       {job.url && (
