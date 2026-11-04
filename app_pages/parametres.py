@@ -649,6 +649,12 @@ with tab_auto:
             key="source_toggle_ats",
             help="Collecte directe via les API/carrières de 40+ scale-ups IA (Mistral, Poolside, Alan, etc.).",
         )
+        toggle_workday = st.toggle(
+            "Grands groupes (Workday)",
+            value=("workday" in enabled_sources),
+            key="source_toggle_workday",
+            help="Stages en France des sites carrières Workday (Thales, Airbus, Renault, Sanofi, Air Liquide…).",
+        )
         toggle_jobteaser = st.toggle(
             "JobTeaser",
             value=("jobteaser" in enabled_sources),
@@ -663,7 +669,7 @@ with tab_auto:
             help="Offres d'écosystème tech & startups via l'API Algolia WTTJ.",
         )
         toggle_academic = st.toggle(
-            "R&D Publique & CIFRE (Inria, CNRS, CEA)",
+            "R&D publique (Inria, CEA)",
             value=("academic" in enabled_sources),
             key="source_toggle_academic",
             help="Flux de stages et thèses R&D publique et laboratoires académiques.",
@@ -774,6 +780,8 @@ with tab_auto:
             new_enabled_sources.append("wttj")
         if toggle_ats:
             new_enabled_sources.append("ats")
+        if toggle_workday:
+            new_enabled_sources.append("workday")
         if toggle_academic:
             new_enabled_sources.append("academic")
         if toggle_jobteaser:

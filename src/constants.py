@@ -256,6 +256,22 @@ V4_CLASS_LABELS: dict[str, str] = {
     "E": "Hors cible",
 }
 
+# Libellés courts (pastilles, menus de correction de note) : même sens que
+# ``V4_CLASS_LABELS``, en version compacte.
+V4_CLASS_SHORT_LABELS: dict[str, str] = {
+    "A": "Recherche",
+    "B": "IA / R&D entreprise",
+    "C": "Domaine voisin",
+    "D": "ESN / Conseil",
+    "E": "Hors cible",
+}
+
+# Correction de note par Eddy (N6) : classe A..E et/ou note 0-100 qu'il aurait
+# mises, avec son « car … ». Colonnes utilisateur ``jobs.user_v4_*``.
+USER_GRADE_SCORE_MIN = 0
+USER_GRADE_SCORE_MAX = 100
+USER_GRADE_COMMENT_MAX_LENGTH = 500
+
 V4_CLASS_TONES: dict[str, str] = {
     "A": "positive",
     "B": "positive",
@@ -451,7 +467,8 @@ SOURCE_LABELS: dict[str, str] = {
     "wttj": "Welcome to the Jungle",
     "welcome_to_the_jungle": "Welcome to the Jungle",
     "ats": "Scale-ups (ATS Direct)",
-    "academic": "R&D Publique & CIFRE",
+    "workday": "Grands groupes (Workday)",
+    "academic": "R&D publique (Inria, CEA)",
     "jobteaser": "JobTeaser",
     "manual": "Ajout manuel",
     "manuel": "Saisie manuelle",
@@ -464,6 +481,7 @@ SOURCE_COLORS: dict[str, str] = {
     "wttj": "#FFCD00",
     "welcome_to_the_jungle": "#FFCD00",
     "ats": "#059669",
+    "workday": "#0EA5E9",
     "academic": "#7C3AED",
     "jobteaser": "#FF5A5F",
     "manual": "#64748B",
@@ -474,7 +492,7 @@ SOURCE_COLORS: dict[str, str] = {
 SOURCE_FALLBACK_COLOR = "#475569"
 
 # Ordre d'affichage préféré des plateformes ; les sources inconnues suivent.
-SOURCE_ORDER: tuple[str, ...] = ("linkedin", "wttj", "ats", "academic", "jobteaser")
+SOURCE_ORDER: tuple[str, ...] = ("linkedin", "wttj", "ats", "workday", "academic", "jobteaser")
 
 # Candidatures enregistrées hors scraping (formulaire du Kanban, import des mails).
 SOURCE_MANUAL = "manuel"

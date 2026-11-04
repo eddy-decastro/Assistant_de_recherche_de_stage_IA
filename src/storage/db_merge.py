@@ -20,10 +20,22 @@ from typing import Any
 
 logger = logging.getLogger("src.storage.db_merge")
 
-# Colonnes écrites par l'utilisateur depuis l'app (kanban, candidatures). En cas de
-# conflit, le pipeline doit laisser gagner la version distante (celle de l'app).
+# Colonnes écrites par l'utilisateur depuis l'app (kanban, candidatures, raison
+# d'ignorer, correction de note). En cas de conflit, le pipeline doit laisser
+# gagner la version distante (celle de l'app).
 USER_COLUMNS: dict[str, tuple[str, ...]] = {
-    "jobs": ("status", "rejection_reason", "applied_at", "cover_letter", "user_notes"),
+    "jobs": (
+        "status",
+        "rejection_reason",
+        "rejection_comment",
+        "applied_at",
+        "cover_letter",
+        "user_notes",
+        "user_v4_class",
+        "user_v4_score",
+        "user_v4_comment",
+        "user_v4_at",
+    ),
 }
 
 

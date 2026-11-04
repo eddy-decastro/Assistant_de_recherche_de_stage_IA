@@ -403,3 +403,48 @@ def test_merge_preserves_cover_letter_and_user_notes(tmp_path: Path) -> None:
     # Local job-2 : 'Lettre distante' et 'Note distante' intégrées (local inchangé/NULL)
     assert rows["job-2"]["cover_letter"] == "Lettre distante"
     assert rows["job-2"]["user_notes"] == "Note distante"
+
+
+def test_conflit_raison_ignorer_et_correction_de_note_l_app_gagne(tmp_path: Path) -> None:
+    """rejection_comment et user_v4_* sont des colonnes utilisateur : en conflit, l'app (distant) gagne."""
+    schema = """
+    CREATE TABLE jobs (id TEXT PRIMARY KEY, title TEXT, status TEXT, rejection_reason TEXT,
+                       rejection_comment TEXT, user_v4_class TEXT, user_v4_score REAL,
+                       user_v4_comment TEXT, user_v4_at TEXT, v4_display_score REAL);
+    """
+    base = tmp_path / "base.db"
+    conn = sqlite3.connect(base)
+    conn.executescript(schema)
+    conn.execute(
+        "INSERT INTO jobs VALUES ('a', 'Stage A', 'NOUVEAU', NULL, NULL, NULL, NULL, NULL, NULL, 60.0)"
+    )
+    conn.commit()
+    conn.close()
+    local, remote = tmp_path / "local.db", tmp_path / "remote.db"
+    shutil.copyfile(base, local)
+    shutil.copyfile(base, remote)
+
+    # Le pipeline (local) a écrit d'autres valeurs sur les mêmes colonnes et renoté l'offre.
+    execute(
+        local,
+        "UPDATE jobs SET rejection_comment = 'pipeline', user_v4_class = 'D', user_v4_score = 10, "
+        "user_v4_comment = 'pipeline', user_v4_at = '2026-11-01', v4_display_score = 75 WHERE id = 'a'",
+    )
+    # Eddy (app, distant) a ignoré avec un commentaire et corrigé la note.
+    execute(
+        remote,
+        "UPDATE jobs SET status = 'IGNORÉ', rejection_reason = 'lieu', rejection_comment = 'trop loin', "
+        "user_v4_class = 'B', user_v4_score = 70, user_v4_comment = 'car R&D réelle', "
+        "user_v4_at = '2026-11-04' WHERE id = 'a'",
+    )
+    merge_remote_changes(local, remote, base, prefer_remote=USER_COLUMNS)
+
+    conn = sqlite3.connect(local)
+    row = conn.execute(
+        "SELECT status, rejection_reason, rejection_comment, user_v4_class, user_v4_score, "
+        "user_v4_comment, user_v4_at, v4_display_score FROM jobs WHERE id = 'a'"
+    ).fetchone()
+    conn.close()
+    assert row == ("IGNORÉ", "lieu", "trop loin", "B", 70.0, "car R&D réelle", "2026-11-04", 75.0)
+    for col in ("rejection_comment", "user_v4_class", "user_v4_score", "user_v4_comment", "user_v4_at"):
+        assert col in USER_COLUMNS["jobs"]
