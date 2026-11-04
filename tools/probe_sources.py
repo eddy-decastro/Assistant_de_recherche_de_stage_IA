@@ -13,9 +13,18 @@ Observations visées :
   page ``/fr/job-offers`` (extraits des liens HTML et des query strings), avec
   les cookies lus depuis ``.env``.
 
+* **Boards** (``ats``, ``academic``, ``workday``) : chaque board configuré dans
+  ``config.yaml`` est interrogé sans filtre métier ; son état (``ok``, ``vide``,
+  ``http_404``, ``timeout``, ``parse_error``…) et son volume sont affichés. C'est
+  la sonde à relancer quand un board apparaît « en panne » dans le résumé du run ;
+* **Vivacité** (``--url``) : verdict ouvert / fermé / inconnu d'une offre.
+
 Usage:
     python tools/probe_sources.py --source linkedin --query "Stage Machine Learning"
     python tools/probe_sources.py --source jobteaser
+    python tools/probe_sources.py --source ats
+    python tools/probe_sources.py --source workday
+    python tools/probe_sources.py --url "https://www.welcometothejungle.com/fr/companies/x/jobs/y"
     python tools/probe_sources.py --source all
 """
 
@@ -185,10 +194,48 @@ def probe_linkedin_pagination(query: str, pages: int = 2) -> None:
     )
 
 
+def probe_boards(source: str) -> None:
+    """État de chaque board d'une source multi-boards (sans filtre métier ni base)."""
+    import logging
+
+    from scrapers.manager import SCRAPER_REGISTRY
+    from scrapers.models import PassConfig, ScraperConfig, board_status_label
+    from src.config import load_config
+
+    logging.basicConfig(level=logging.WARNING)
+    config = ScraperConfig.from_config(load_config())
+    config = config.model_copy(update={"passes": PassConfig.only("relevance"), "http_max_retries": 1})
+    print(f"\n=== Boards {source} ===")
+    scraper = SCRAPER_REGISTRY[source](config)  # type: ignore[index]
+    try:
+        result = scraper.collect(validate_jobs=False)
+    finally:
+        scraper.close()
+    for report in result.query_reports:
+        status = report.board_status or "?"
+        print(
+            f"{report.query[:34]:34s} {status:13s} {board_status_label(status)[:28]:28s} "
+            f"cartes={report.cards_seen:4d} http={report.http_requests:3d}  {report.stop_detail[:90]}"
+        )
+    print(f"{len(result.jobs)} offre(s) brute(s) en France (avant filtre métier).")
+
+
+def probe_liveness(url: str) -> None:
+    """Verdict de vivacité d'une offre (aucun cache, aucune écriture)."""
+    from scrapers.liveness import LivenessChecker
+
+    with LivenessChecker() as checker:
+        verdict = checker.check(url)
+    print(f"\n{url}\n  -> {verdict.status} : {verdict.reason} (HTTP {verdict.http_status})")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Analyse les arguments de la sonde."""
     parser = argparse.ArgumentParser(description="Sonde lecture seule tri/pagination des sources.")
-    parser.add_argument("--source", choices=("linkedin", "jobteaser", "all"), default="all")
+    parser.add_argument(
+        "--source", choices=("linkedin", "jobteaser", "ats", "academic", "workday", "all"), default="all"
+    )
+    parser.add_argument("--url", default="", help="Vérifie si une offre est encore ouverte (vivacité).")
     parser.add_argument("--query", default="Stage Machine Learning", help="Requête cible testée.")
     return parser.parse_args(argv)
 
@@ -201,6 +248,13 @@ def main(argv: list[str] | None = None) -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     args = parse_args(argv)
+    if args.url:
+        probe_liveness(args.url)
+        return
+    if args.source in ("ats", "academic", "workday"):
+        probe_boards(args.source)
+        print("\nSonde terminée : aucune écriture en base.")
+        return
     if args.source in ("linkedin", "all"):
         probe_linkedin(args.query)
         probe_linkedin_pagination(args.query)
