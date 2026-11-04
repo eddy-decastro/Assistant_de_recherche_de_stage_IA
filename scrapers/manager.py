@@ -37,6 +37,7 @@ from .models import (
     Source,
     canonical_url,
 )
+from .workday import WorkdayScraper
 from .wttj import WelcomeToTheJungleScraper
 
 logger = logging.getLogger("scrapers.manager")
@@ -114,6 +115,7 @@ SCRAPER_REGISTRY: dict[Source, type[BaseScraper]] = {
     "jobteaser": JobTeaserScraper,
     "ats": DirectATSScraper,
     "academic": AcademicRDScraper,
+    "workday": WorkdayScraper,
 }
 
 #: Priorité des décisions lorsqu'une même offre est croisée plusieurs fois dans le

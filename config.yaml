@@ -8,6 +8,7 @@ scrapers:
   - wttj
   - ats
   - academic
+  - workday
   # Pas de « Stage » dans les requêtes : WTTJ (contract_type:internship) et
   # JobTeaser (contract=internship) filtrent le contrat côté serveur. LinkedIn
   # invité ignore f_JT=I (mesuré le 04/11/2026 : 0/20 stage sur « Data Scientist ») :
@@ -86,6 +87,32 @@ scrapers:
   academic_feeds:
     - inria
     - cea
+  # Grands groupes sur Workday (API JSON publique, filtre stage + France par
+  # facettes). Vérifiés par sonde le 04/11/2026. Pas sur Workday : Safran,
+  # Schneider Electric (iCIMS), Stellantis, EDF, TotalEnergies.
+  workday_boards:
+    - name: Thales
+      url: https://thales.wd3.myworkdayjobs.com/Careers
+    - name: Airbus
+      url: https://ag.wd3.myworkdayjobs.com/Airbus
+    - name: Sanofi
+      url: https://sanofi.wd3.myworkdayjobs.com/SanofiCareers
+    - name: Renault Group
+      url: https://alliancewd.wd3.myworkdayjobs.com/renault-group-careers
+    - name: Valeo
+      url: https://valeo.wd3.myworkdayjobs.com/valeo_jobs
+    - name: Michelin
+      url: https://michelinhr.wd3.myworkdayjobs.com/Michelin
+    - name: Air Liquide
+      url: https://airliquidehr.wd3.myworkdayjobs.com/AirLiquideExternalCareer
+    - name: Criteo
+      url: https://criteo.wd3.myworkdayjobs.com/Criteo_Career_Site
+    - name: Ipsen
+      url: https://ipsen.wd103.myworkdayjobs.com/Ipsen_Careers
+    - name: Philips
+      url: https://philips.wd3.myworkdayjobs.com/jobs-and-careers
+    - name: NXP
+      url: https://nxp.wd3.myworkdayjobs.com/careers
   # WTTJ : pays des bureaux (filtre Algolia offices.country_code). « FR » écarte
   # les ~30 % de stages hors France de l'index ; liste possible ([FR, BE]) ;
   # vide (« "" ») = tous pays. La variable d'environnement WTTJ_COUNTRY prime.
