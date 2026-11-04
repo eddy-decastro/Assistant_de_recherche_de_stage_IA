@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -148,7 +149,12 @@ def test_api_claude_pack_and_cover_letter(tmp_path: Path) -> None:
     db.update_cover_letter("job_recent", "Madame, Monsieur, Lettre test Mistral.")
     client = TestClient(create_app(db))
 
-    r_pack = client.post("/api/claude-pack", json={"ids": ["job_recent"], "auto_submit": False})
+    # Aucun appel LLM réel : la motivation courte retombe sur sa version déterministe.
+    with patch(
+        "src.matching.cover_letter.CoverLetterGenerator._generate_short_llm_once",
+        return_value=None,
+    ):
+        r_pack = client.post("/api/claude-pack", json={"ids": ["job_recent"], "auto_submit": False})
     assert r_pack.status_code == 200
     pack = r_pack.json()
     assert pack["count"] == 1
