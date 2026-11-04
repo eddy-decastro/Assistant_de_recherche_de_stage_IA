@@ -15,7 +15,7 @@ App Streamlit + SQLite de suivi de candidatures : scrapers, scoring des offres p
 - Pipeline : `python run_scrapers.py`, `python run_pipeline.py`.
 
 ## Conventions
-- Une branche et une PR par tâche. Jamais de commit direct sur `main`.
+- Commit direct sur `main` par défaut. Branche + PR seulement pour un changement risqué (suppression massive, refonte, secret). Avant toute suppression de fichier : vérifier qu'il n'est plus utilisé.
 - Messages de commit en français, préfixe conventionnel (`feat`, `fix`...).
 - Après modification d'un widget Streamlit : vérifier les clés de widget (erreur `StreamlitWidgetAlreadyInstantiatedError` déjà rencontrée).
 - Fichiers locaux sensibles (`data/candidate.local.yaml`, CV) : ne jamais les committer ni les afficher dans les réponses.
