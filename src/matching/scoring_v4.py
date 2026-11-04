@@ -20,12 +20,22 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.candidate import LOCAL_CANDIDATE_PATH
 from src.config import PROJECT_ROOT, load_config
 from src.constants import (
+    AUTO_IGNORE_REASONS,
     CONTRACT_TYPES,
+    REFUSAL_REASON,
+    STATUS_APPLIED,
+    STATUS_IGNORED,
+    STATUS_INTERVIEW,
+    STATUS_REJECTED,
     V4_AXIS_KEYS,
     V4_AXIS_WEIGHTS,
     V4_CLASS_OFFSETS,
     V4_CLASSES,
+    V4_FLAG_CONTRACT_TO_CHECK,
+    V4_FLAG_EXCLUDED_PREFIX,
     V4_TAGS,
+    ignore_reason_label,
+    normalize_v4_tag,
 )
 from src.eligibility import experience_reason, not_internship_reason
 from src.env import load_env_file
@@ -91,6 +101,8 @@ class V4JudgeOutput(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     contract_type: str = Field(default="STAGE")
+    # Citation exacte de l'offre justifiant contract_type (absente des anciennes notes).
+    contract_quote: str = Field(default="")
     duration_months: int | None = Field(default=None)
     is_cesure: bool = Field(default=False)
     offer_class: str = Field(alias="class")
@@ -135,6 +147,7 @@ def get_response_schema_v4() -> dict[str, Any]:
                 "type": "STRING",
                 "enum": list(CONTRACT_TYPES),
             },
+            "contract_quote": {"type": "STRING"},
             "duration_months": {"type": "INTEGER", "nullable": True},
             "is_cesure": {"type": "BOOLEAN"},
             "class": {
@@ -165,6 +178,8 @@ def get_response_schema_v4() -> dict[str, Any]:
             "summary": {"type": "STRING"},
         },
         "required": [
+            "contract_type",
+            "contract_quote",
             "class",
             "class_reason",
             "class_doubt",
@@ -206,8 +221,12 @@ def _load_candidate_logistics_context() -> str:
         return ""
 
 
-def get_system_prompt_v4() -> str:
-    """Charge data/prompt_v4.txt et y injecte les paramètres logistiques locaux s'ils existent."""
+def get_system_prompt_v4(feedback_block: str | None = None) -> str:
+    """Charge data/prompt_v4.txt et y injecte les paramètres logistiques locaux s'ils existent.
+
+    ``feedback_block`` (voir ``build_feedback_block``) est ajouté en fin de prompt :
+    les décisions récentes d'Eddy servent de calibration, pas de règles.
+    """
     prompt_path = PROJECT_ROOT / "data" / "prompt_v4.txt"
     base = (
         prompt_path.read_text(encoding="utf-8")
@@ -217,7 +236,136 @@ def get_system_prompt_v4() -> str:
     logistics_ctx = _load_candidate_logistics_context()
     if logistics_ctx:
         base += f"\n\nPRÉCISIONS LOGISTIQUES DU PROFIL LOCAL : {logistics_ctx}\n"
+    if feedback_block and feedback_block.strip():
+        base += f"\n\n{feedback_block.strip()}\n"
     return base
+
+
+# --------------------------------------------------------------------------- #
+# 1 bis. Boucle de retour : décisions d'Eddy injectées dans le prompt (N3)
+# --------------------------------------------------------------------------- #
+FEEDBACK_HEADER = (
+    "DÉCISIONS RÉCENTES D'EDDY (préférences de calibration, PAS des règles absolues : "
+    "la grille ci-dessus reste prioritaire ; sers-t'en pour trancher les cas limites, "
+    "ne recopie jamais ces notes)"
+)
+DEFAULT_FEEDBACK_MAX_EXAMPLES = 12
+DEFAULT_FEEDBACK_MAX_CHARS = 1500
+
+
+def is_applied_decision(job: dict[str, Any]) -> bool:
+    """Vrai si Eddy a postulé à l'offre (POSTULÉ, ENTRETIEN, ou REJETÉ après candidature)."""
+    status = job.get("status")
+    if status in (STATUS_APPLIED, STATUS_INTERVIEW):
+        return True
+    if status == STATUS_REJECTED:
+        return bool(job.get("applied_at")) or job.get("rejection_reason") == REFUSAL_REASON
+    return False
+
+
+def is_manual_ignore(job: dict[str, Any]) -> bool:
+    """Vrai si l'offre a été ignorée à la main (hors archivage automatique et offre fermée)."""
+    if job.get("status") != STATUS_IGNORED:
+        return False
+    if str(job.get("rejection_reason") or "") in AUTO_IGNORE_REASONS:
+        return False
+    return "[auto] archivée" not in str(job.get("user_notes") or "").casefold()
+
+
+def _short(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _recency_key(job: dict[str, Any]) -> str:
+    stamp = job.get("applied_at") or job.get("v4_graded_at") or job.get("created_at") or ""
+    return str(stamp)
+
+
+def _feedback_line(job: dict[str, Any], applied: bool) -> str:
+    title = _short(job.get("title"), 70) or "Offre sans titre"
+    company = _short(job.get("company"), 40) or "entreprise inconnue"
+    cls = str(job.get("v4_class") or "").strip().upper()
+    score = job.get("v4_display_score")
+    if cls and score is not None:
+        note = f"classe v4 {cls}, {int(round(float(score)))}/100"
+    elif cls:
+        note = f"classe v4 {cls}"
+    else:
+        note = "non notée v4"
+    if applied:
+        decision = "POSTULÉ"
+    else:
+        reason = ignore_reason_label(job.get("rejection_reason")) or "sans raison"
+        decision = f"IGNORÉ ({reason})"
+        comment = _short(job.get("rejection_comment"), 100)
+        if comment:
+            decision += f" « {comment} »"
+    return f"- {decision} : {title} — {company} [{note}]"
+
+
+def build_feedback_block(
+    jobs: list[dict[str, Any]],
+    max_examples: int = DEFAULT_FEEDBACK_MAX_EXAMPLES,
+    max_chars: int = DEFAULT_FEEDBACK_MAX_CHARS,
+) -> str:
+    """Construit le bloc « DÉCISIONS RÉCENTES D'EDDY » (déterministe, équilibré, borné).
+
+    - Positifs : offres postulées (``is_applied_decision``) ; négatifs : ignorées à la
+      main (``is_manual_ignore``), en priorité celles qui portent une raison.
+    - Moitié / moitié (le reste est complété par l'autre camp s'il manque d'exemples),
+      les plus récentes d'abord, tri stable par identifiant à date égale.
+    - Les lignes sont alternées puis retirées par la fin jusqu'à tenir dans ``max_chars``.
+    Retourne ``""`` s'il n'y a aucun exemple.
+    """
+    max_examples = max(0, int(max_examples))
+    if max_examples == 0:
+        return ""
+    positives = sorted(
+        (j for j in jobs if is_applied_decision(j)),
+        key=lambda j: (_recency_key(j), str(j.get("id") or "")),
+        reverse=True,
+    )
+    negatives = sorted(
+        (j for j in jobs if is_manual_ignore(j)),
+        key=lambda j: (
+            bool(j.get("rejection_reason")),
+            _recency_key(j),
+            str(j.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    half = max_examples // 2
+    n_pos = min(len(positives), max(half, max_examples - len(negatives)))
+    n_neg = min(len(negatives), max_examples - n_pos)
+    picked_pos = positives[:n_pos]
+    picked_neg = negatives[:n_neg]
+
+    lines: list[str] = []
+    for i in range(max(len(picked_pos), len(picked_neg))):
+        if i < len(picked_pos):
+            lines.append(_feedback_line(picked_pos[i], applied=True))
+        if i < len(picked_neg):
+            lines.append(_feedback_line(picked_neg[i], applied=False))
+    if not lines:
+        return ""
+
+    def _render(selected: list[str]) -> str:
+        return FEEDBACK_HEADER + " :\n" + "\n".join(selected)
+
+    while lines and len(_render(lines)) > max_chars:
+        lines.pop()
+    return _render(lines) if lines else ""
+
+
+def feedback_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Paramètres de la boucle de retour (``scoring_v4.feedback``), avec valeurs par défaut."""
+    fb = ((config or {}).get("scoring_v4") or {}).get("feedback") or {}
+    return {
+        "enabled": bool(fb.get("enabled", True)),
+        "max_examples": int(fb.get("max_examples", DEFAULT_FEEDBACK_MAX_EXAMPLES)),
+        "max_chars": int(fb.get("max_chars", DEFAULT_FEEDBACK_MAX_CHARS)),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -291,9 +439,16 @@ def compute_final_score_v4(
     title_excluded, title_reason = is_title_excluded_contract(job.get("title", ""), exclusion_kws)
     exclusion_reason: str | None = None
 
+    contract_quote = str(judge_out.contract_quote or "").strip()
+    contract_incompatible = judge_out.contract_type in ("ALTERNANCE", "CDI_CDD")
+    contract_proven = contract_incompatible and verify_citation(contract_quote, doc_text)
+    # Contrat incompatible annoncé sans citation vérifiable : pas d'exclusion,
+    # l'offre est notée normalement et signalée « contrat à vérifier ».
+    contract_to_check = contract_incompatible and not contract_proven
+
     if title_excluded:
         exclusion_reason = title_reason
-    elif judge_out.contract_type in ("ALTERNANCE", "CDI_CDD"):
+    elif contract_proven:
         exclusion_reason = f"Type de contrat incompatible ({judge_out.contract_type})"
     else:
         elig_reason = (
@@ -326,7 +481,7 @@ def compute_final_score_v4(
             class_score=0.0,
             display_score=0.0,
             tags=[],
-            flags=[f"[EXCLU] {exclusion_reason}"],
+            flags=[f"{V4_FLAG_EXCLUDED_PREFIX} {exclusion_reason}"],
             summary=judge_out.summary,
             excluded=True,
             exclusion_reason=exclusion_reason,
@@ -334,30 +489,23 @@ def compute_final_score_v4(
 
     # 2. Vérification des étoiles hautes >= 4 (Section 3)
     effective_stars: dict[str, int] = {}
-    flags: list[str] = []
+    flags: list[str] = [V4_FLAG_CONTRACT_TO_CHECK] if contract_to_check else []
 
     for axis in V4_AXIS_KEYS:
         ax_data = axes_dict[axis]
         raw_stars = max(0, min(5, int(ax_data.get("stars", 0))))
         quote = str(ax_data.get("quote") or "").strip()
+        # L'ancienne citation factice « reputation » (prompt d'avant N4) ne prouve rien :
+        # elle compte comme une citation absente ; la réputation passe par reputation_points.
+        if quote.casefold() in ("reputation", "réputation"):
+            quote = ""
 
         if raw_stars >= high_star_threshold:
-            is_reputation_quote = (
-                axis == "debouche" and quote.casefold() in ("reputation", "réputation")
-            )
-            if is_reputation_quote:
-                # Exception Débouché : 4 étoiles maximum sans citation
-                if raw_stars > 4:
-                    effective_stars[axis] = 4
-                    flags.append(f"[CITATION_NON_VERIFIEE:{axis}]")
-                else:
-                    effective_stars[axis] = raw_stars
+            if verify_citation(quote, doc_text):
+                effective_stars[axis] = raw_stars
             else:
-                if verify_citation(quote, doc_text):
-                    effective_stars[axis] = raw_stars
-                else:
-                    effective_stars[axis] = max(0, raw_stars - 1)
-                    flags.append(f"[CITATION_NON_VERIFIEE:{axis}]")
+                effective_stars[axis] = max(0, raw_stars - 1)
+                flags.append(f"[CITATION_NON_VERIFIEE:{axis}]")
         else:
             effective_stars[axis] = raw_stars
 
@@ -393,7 +541,7 @@ def compute_final_score_v4(
     # 7. Étiquettes normalisées (Section 7)
     valid_tags: list[str] = []
     for t in judge_out.tags:
-        t_clean = str(t or "").strip().lower()
+        t_clean = normalize_v4_tag(t)
         if t_clean in V4_TAGS and t_clean not in valid_tags:
             valid_tags.append(t_clean)
     if judge_out.class_doubt and "class_doubt" not in valid_tags:
@@ -443,6 +591,8 @@ class LLMJudgeV4:
         deepseek_api_key: str | None = None,
         client: genai.Client | None = None,
         rate_limiter: GeminiRateLimiter | None = None,
+        db: Any | None = None,
+        feedback_block: str | None = None,
     ) -> None:
         self.config = config or load_config()
         v4_cfg = self.config.get("scoring_v4") or {}
@@ -469,6 +619,29 @@ class LLMJudgeV4:
             if deepseek_api_key is not None
             else _resolve_provider_key("deepseek")
         )
+
+        # Boucle de retour (N3) : calculée une fois par juge, à partir de la base
+        # passée en paramètre (jamais lue implicitement) ou d'un bloc fourni.
+        if feedback_block is not None:
+            self.feedback_block = feedback_block
+        else:
+            self.feedback_block = ""
+            settings = feedback_settings(self.config)
+            if db is not None and settings["enabled"]:
+                try:
+                    self.feedback_block = build_feedback_block(
+                        db.get_feedback_jobs(),
+                        max_examples=settings["max_examples"],
+                        max_chars=settings["max_chars"],
+                    )
+                except Exception as exc:  # la notation ne dépend jamais de ce bloc
+                    logger.warning("Bloc de décisions d'Eddy indisponible : %s", exc)
+                    self.feedback_block = ""
+
+    @property
+    def system_prompt(self) -> str:
+        """Prompt système complet (grille + logistique locale + décisions d'Eddy)."""
+        return get_system_prompt_v4(self.feedback_block)
 
     @property
     def available(self) -> bool:
@@ -498,7 +671,7 @@ class LLMJudgeV4:
             model=self.google_model,
             contents=user_content,
             config=types.GenerateContentConfig(
-                system_instruction=get_system_prompt_v4(),
+                system_instruction=self.system_prompt,
                 temperature=self.temperature,
                 response_mime_type="application/json",
                 response_schema=get_response_schema_v4(),
@@ -510,7 +683,7 @@ class LLMJudgeV4:
         self.rate_limiter.wait_for_slot()
         base_url = PROVIDER_URLS[provider]
         system_prompt = (
-            f"{get_system_prompt_v4()}\n\n"
+            f"{self.system_prompt}\n\n"
             "Réponds uniquement par un objet JSON valide respectant strictement le format demandé."
         )
         return OpenAICompatibleProvider(
@@ -549,6 +722,7 @@ class LLMJudgeV4:
             "v4_graded_at": None,
             "excluded": False,
             "exclusion_reason": None,
+            "contract_to_verify": False,
             "api_error": True,
             "error_reason": reason,
         }
@@ -569,12 +743,15 @@ class LLMJudgeV4:
                 "v4_class_score": 0.0,
                 "v4_display_score": 0.0,
                 "v4_tags_json": "[]",
-                "v4_flags_json": json.dumps([f"[EXCLU] {title_reason}"], ensure_ascii=False),
+                "v4_flags_json": json.dumps(
+                    [f"{V4_FLAG_EXCLUDED_PREFIX} {title_reason}"], ensure_ascii=False
+                ),
                 "v4_raw_json": json.dumps({"excluded": True, "reason": title_reason}, ensure_ascii=False),
                 "v4_model": "rule:title_exclusion",
                 "v4_graded_at": now,
                 "excluded": True,
                 "exclusion_reason": title_reason,
+                "contract_to_verify": False,
                 "api_error": False,
             }
 
@@ -645,6 +822,7 @@ class LLMJudgeV4:
                         "v4_graded_at": now,
                         "excluded": breakdown.excluded,
                         "exclusion_reason": breakdown.exclusion_reason,
+                        "contract_to_verify": V4_FLAG_CONTRACT_TO_CHECK in breakdown.flags,
                         "summary": breakdown.summary,
                         "api_error": False,
                     }
@@ -654,3 +832,7 @@ class LLMJudgeV4:
                     errors.append(err_str)
 
         return self._non_note_result(" ; ".join(errors))
+
+    def evaluate_single_job_v4(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Alias historique de ``judge`` (appelé par l'API /api/jobs/grade-v4)."""
+        return self.judge(job)

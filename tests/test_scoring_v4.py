@@ -105,32 +105,114 @@ def test_v4_center_band_adjustment_and_class_offset() -> None:
     assert breakdown.flags == []
 
 
-def test_v4_unverified_quote_deducts_one_star_and_reputation_exception() -> None:
-    """Section 3 : retrait d'1 étoile si citation absente/fausse ; exception 'reputation' plafonnée à 4."""
+def test_v4_unverified_quote_deducts_one_star_no_reputation_exception() -> None:
+    """Section 3 + N4 : retrait d'1 étoile si citation absente/fausse, sur tous les axes ;
+    l'ancienne citation factice « reputation » ne vaut plus preuve."""
     job = _sample_job()
     payload = _valid_llm_payload()
     # Citation inventée sur apprendre (4 -> 3)
     payload["axes"]["apprendre"]["quote"] = "encadré par trois prix Nobel de physique quantique"
     # Citation absente sur technique (4 -> 3)
     payload["axes"]["technique"]["quote"] = ""
-    # Exception 'reputation' sur debouche à 4 étoiles -> reste à 4 sans drapeau
+    # Ancienne exception 'reputation' sur debouche à 4 étoiles -> descend à 3 comme les autres
     payload["axes"]["debouche"]["stars"] = 4
     payload["axes"]["debouche"]["quote"] = "reputation"
 
     breakdown = compute_final_score_v4(payload, job)
     assert breakdown.effective_stars["apprendre"] == 3
     assert breakdown.effective_stars["technique"] == 3
-    assert breakdown.effective_stars["debouche"] == 4
+    assert breakdown.effective_stars["debouche"] == 3
     assert "[CITATION_NON_VERIFIEE:apprendre]" in breakdown.flags
     assert "[CITATION_NON_VERIFIEE:technique]" in breakdown.flags
-    assert "[CITATION_NON_VERIFIEE:debouche]" not in breakdown.flags
+    assert "[CITATION_NON_VERIFIEE:debouche]" in breakdown.flags
 
-    # Si debouche demande 5 étoiles avec seulement 'reputation' -> plafonné à 4 étoiles + drapeau
+    # 5 étoiles avec seulement 'reputation' (ou « Réputation ») -> 4 + drapeau
     payload["axes"]["debouche"]["stars"] = 5
-    payload["axes"]["debouche"]["quote"] = "reputation"
+    payload["axes"]["debouche"]["quote"] = "Réputation"
     breakdown_5 = compute_final_score_v4(payload, job)
     assert breakdown_5.effective_stars["debouche"] == 4
     assert "[CITATION_NON_VERIFIEE:debouche]" in breakdown_5.flags
+
+
+def test_v4_reputation_quote_not_verified_even_if_word_in_offer() -> None:
+    """N4 : « reputation » ne passe pas verify_citation même si le mot figure dans l'offre."""
+    job = _sample_job()
+    job["description"] += " Notre réputation internationale est reconnue."
+    payload = _valid_llm_payload()
+    payload["axes"]["debouche"]["stars"] = 4
+    payload["axes"]["debouche"]["quote"] = "réputation"
+    breakdown = compute_final_score_v4(payload, job)
+    assert breakdown.effective_stars["debouche"] == 3
+    assert "[CITATION_NON_VERIFIEE:debouche]" in breakdown.flags
+
+
+def test_v4_contract_without_quote_is_flagged_not_excluded() -> None:
+    """N2 : CDI_CDD / ALTERNANCE sans citation vérifiable -> « contrat à vérifier », noté normalement."""
+    job = _sample_job()
+    payload = _valid_llm_payload()
+    payload["contract_type"] = "CDI_CDD"
+    payload["contract_quote"] = ""
+    breakdown = compute_final_score_v4(payload, job)
+    assert breakdown.excluded is False
+    assert "[CONTRAT_A_VERIFIER]" in breakdown.flags
+    assert breakdown.display_score == 89.5
+
+    # Citation introuvable dans l'offre -> même traitement
+    payload["contract_type"] = "ALTERNANCE"
+    payload["contract_quote"] = "contrat d'apprentissage de 24 mois"
+    breakdown_fake = compute_final_score_v4(payload, job)
+    assert breakdown_fake.excluded is False
+    assert "[CONTRAT_A_VERIFIER]" in breakdown_fake.flags
+
+
+def test_v4_contract_with_verified_quote_is_excluded_with_raw_stars() -> None:
+    """N2 : contrat incompatible prouvé par une citation exacte -> exclusion, étoiles brutes gardées."""
+    job = _sample_job()
+    job["description"] += " Poste en CDI à pourvoir rapidement."
+    payload = _valid_llm_payload()
+    payload["contract_type"] = "CDI_CDD"
+    payload["contract_quote"] = "Poste en CDI"
+    breakdown = compute_final_score_v4(payload, job)
+    assert breakdown.excluded is True
+    assert breakdown.exclusion_reason == "Type de contrat incompatible (CDI_CDD)"
+    assert breakdown.flags == ["[EXCLU] Type de contrat incompatible (CDI_CDD)"]
+    assert breakdown.axes["apprendre"]["stars"] == 4  # étoiles brutes conservées
+
+
+def test_v4_title_filter_stays_hard_exclusion() -> None:
+    """N2 : les filtres titre restent des exclusions dures, même sans citation de contrat."""
+    job = _sample_job()
+    job["title"] = "Alternance Data Scientist (F/H)"
+    payload = _valid_llm_payload()
+    payload["contract_type"] = "ALTERNANCE"
+    payload["contract_quote"] = ""
+    breakdown = compute_final_score_v4(payload, job)
+    assert breakdown.excluded is True
+    assert "[CONTRAT_A_VERIFIER]" not in breakdown.flags
+
+
+def test_v4_schema_and_prompt_require_contract_quote() -> None:
+    """N2/N4 : contract_quote dans le schéma et le prompt ; plus d'exception « reputation »."""
+    from src.matching.scoring_v4 import get_response_schema_v4, get_system_prompt_v4
+
+    schema = get_response_schema_v4()
+    assert "contract_quote" in schema["properties"]
+    assert "contract_quote" in schema["required"]
+    prompt = get_system_prompt_v4()
+    assert "contract_quote" in prompt
+    assert '"quote": "reputation"' not in prompt
+    assert "UNIQUEMENT par \"reputation_points\"" in prompt
+
+
+def test_v4_cifre_these_alias_normalized() -> None:
+    """N5 : « cifre_these » est remappé vers « these_cifre » (une seule étiquette)."""
+    from src.constants import V4_TAGS
+
+    assert "cifre_these" not in V4_TAGS
+    payload = _valid_llm_payload()
+    payload["tags"] = ["cifre_these", "these_cifre"]
+    breakdown = compute_final_score_v4(payload, _sample_job())
+    assert breakdown.tags == ["these_cifre"]
 
 
 def test_v4_weak_axis_rules() -> None:

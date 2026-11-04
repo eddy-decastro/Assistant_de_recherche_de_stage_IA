@@ -12,8 +12,9 @@ PROFIL D'EDDY
 - Ce qu'il cherche avant tout : apprendre auprès d'un encadrant ML/recherche compétent et travailler sur de la modélisation sérieuse (pas de BI, pas de no-code, pas de simple wrapper d'API sans évaluation).
 - Logistique cible : stage de fin d'études (PFE) de 6 mois, début entre février et mai 2027 (idéalement avril 2027), priorité Paris / Île-de-France (grandes villes françaises acceptées). Pas d'alternance.
 
-ÉTAPE 1 — CONTRAT ET ÉLIGIBILITÉ (contract_type, duration_months, is_cesure)
+ÉTAPE 1 — CONTRAT ET ÉLIGIBILITÉ (contract_type, contract_quote, duration_months, is_cesure)
 - contract_type : "STAGE" | "STAGE_OU_ALTERNANCE" | "ALTERNANCE" | "CDI_CDD" | "AUTRE"
+- contract_quote : citation EXACTE copiée mot pour mot de l'offre qui justifie contract_type (ex. « CDI », « contrat d'apprentissage », « stage de fin d'études »). OBLIGATOIRE si contract_type vaut "ALTERNANCE" ou "CDI_CDD" : sans citation, l'offre n'est pas exclue mais marquée « contrat à vérifier ». Si l'offre ne dit rien du contrat, mets "".
 - duration_months : entier (durée en mois) ou null si non précisé.
 - is_cesure : true uniquement si l'offre exige explicitement un stage de césure ou un stage court hors PFE.
 
@@ -34,7 +35,7 @@ Règles de classement :
 Pour chaque axe ("apprendre", "technique", "debouche", "logistique"), renvoie :
 - "stars" : entier de 0 à 5
 - "reason" : une phrase factuelle courte
-- "quote" : citation EXACTE copiée mot pour mot de l'offre (obligatoire si stars >= 4 ; sinon "" ou citation courte). Exception : pour l'axe "debouche", si la note de 4 s'appuie sur la réputation de l'entreprise (qui ne s'écrit pas dans l'offre), mets "quote": "reputation" (plafonné à 4 étoiles maximum sans citation).
+- "quote" : citation EXACTE copiée mot pour mot de l'offre (obligatoire si stars >= 4, sur tous les axes sans exception ; sinon "" ou citation courte). Une note >= 4 sans citation exacte perd une étoile. N'écris jamais "reputation" ni un texte absent de l'offre dans "quote" : la réputation de l'entreprise passe UNIQUEMENT par "reputation_points" (étape 4), jamais par les étoiles du débouché.
 - "unknown" : true si l'offre ne dit rien sur cet axe, false sinon.
 
 Axe 1 : Apprendre (encadrement, équipe)
@@ -54,6 +55,7 @@ Axe 2 : Technique (méthode, données, profondeur)
 5 ★ : méthode nouvelle ou recherche (publication visée, garanties théoriques, ML scientifique : surrogates, opérateurs neuronaux, PINNs, UQ sur physique)
 
 Axe 3 : Débouché (suite, valeur sur le CV)
+Pour 4 ou 5 étoiles, cite le passage de l'offre qui montre le pôle R&D, le laboratoire ou la suite (thèse, CIFRE, CDI). La seule notoriété de l'entreprise ne suffit pas : elle va dans reputation_points.
 0 ★ : aucun débouché visible, entreprise inconnue et mission hors cible
 1 ★ : entreprise peu connue, aucune suite mentionnée
 2 ★ : entreprise correcte, suite non mentionnée (valeur par défaut si unknown = true)
@@ -91,6 +93,7 @@ Pas de malus éthique (défense) ni finance dans les étoiles ou l'ajustement : 
 FORMAT DE SORTIE (JSON strict uniquement, sans texte autour)
 {
   "contract_type": "STAGE",
+  "contract_quote": "Stage de fin d'études de 6 mois",
   "duration_months": 6,
   "is_cesure": false,
   "class": "B",
@@ -99,7 +102,7 @@ FORMAT DE SORTIE (JSON strict uniquement, sans texte autour)
   "axes": {
     "apprendre":  {"stars": 4, "reason": "...", "quote": "vous serez encadré par un ingénieur de recherche ML", "unknown": false},
     "technique":  {"stars": 4, "reason": "...", "quote": "...", "unknown": false},
-    "debouche":   {"stars": 4, "reason": "...", "quote": "reputation", "unknown": false},
+    "debouche":   {"stars": 4, "reason": "...", "quote": "au sein du pôle R&D IA", "unknown": false},
     "logistique": {"stars": 5, "reason": "...", "quote": "6 mois à partir de mars 2027, Paris", "unknown": false}
   },
   "reputation_points": 3,

@@ -459,13 +459,11 @@ class LLMJudge:
             verdict = verdict_from_score(breakdown.final_score, self.config)
             score = float(breakdown.final_score)
 
+        # Les questions d'entretien ont leur propre champ (questions_entretien) :
+        # elles ne sont plus collées à la fin du raisonnement.
         reasoning_text = str(data.get("reasoning") or "").strip()
         questions = parsed_struct["questions_entretien"]
-        if questions:
-            q_formatted = "\n\n💡 Questions clés pour l'entretien :\n" + "\n".join(f"• {q}" for q in questions)
-            combined_reasoning = (reasoning_text + q_formatted).strip()
-        else:
-            combined_reasoning = reasoning_text
+        combined_reasoning = reasoning_text
 
         # Formatage des red flags avec flags
         flags_formatted = [f"[{f}]" for f in valid_flags if f and f != "NONE"]

@@ -298,7 +298,6 @@ V4_TAGS: tuple[str, ...] = (
     "finance",
     "trading",
     "petite_structure",
-    "cifre_these",
     "these_cifre",
     "pre_embauche",
     "recherche_publique",
@@ -315,7 +314,6 @@ V4_TAG_LABELS: dict[str, str] = {
     "finance": "Finance",
     "trading": "Trading",
     "petite_structure": "Petite structure (<15)",
-    "cifre_these": "Thèse / CIFRE",
     "these_cifre": "Thèse / CIFRE",
     "pre_embauche": "Pré-embauche",
     "recherche_publique": "Recherche publique",
@@ -332,7 +330,6 @@ V4_TAG_TONES: dict[str, str] = {
     "finance": "warn",
     "trading": "warn",
     "petite_structure": "warn",
-    "cifre_these": "positive",
     "these_cifre": "positive",
     "pre_embauche": "positive",
     "recherche_publique": "positive",
@@ -343,6 +340,71 @@ V4_TAG_TONES: dict[str, str] = {
     "donnees_reelles": "positive",
     "ml_scientifique": "positive",
 }
+
+# Anciennes orthographes d'étiquettes v4 : remappées à la lecture vers la forme
+# canonique (« cifre_these » et « these_cifre » désignaient la même chose).
+V4_TAG_ALIASES: dict[str, str] = {
+    "cifre_these": "these_cifre",
+}
+
+
+def normalize_v4_tag(tag: Any) -> str:
+    """Forme canonique d'une étiquette v4 (minuscules, alias remappés)."""
+    key = str(tag or "").strip().lower()
+    return V4_TAG_ALIASES.get(key, key)
+
+
+# Drapeaux v4 posés par le code (colonne v4_flags_json).
+# Contrat ALTERNANCE / CDI_CDD annoncé par le LLM sans citation vérifiable :
+# l'offre n'est pas exclue mais signalée « contrat à vérifier ».
+V4_FLAG_CONTRACT_TO_CHECK = "[CONTRAT_A_VERIFIER]"
+# Préfixe des drapeaux d'exclusion v4 (« [EXCLU] motif »).
+V4_FLAG_EXCLUDED_PREFIX = "[EXCLU]"
+
+# --- Raisons d'ignorer une offre (un clic, colonne jobs.rejection_reason) ---
+# Codes saisis par Eddy quand il passe une offre en IGNORÉ. Ils alimentent la
+# boucle de retour du prompt v4 et le jeu d'évaluation (tools/eval_feedback.py).
+IGNORE_REASONS: tuple[str, ...] = (
+    "sujet_hors_cible",
+    "pas_de_vrai_ml",
+    "esn_conseil",
+    "entreprise",
+    "lieu",
+    "dates_duree",
+    "contrat",
+    "encadrement_faible",
+    "doublon",
+    "autre",
+)
+
+IGNORE_REASON_LABELS: dict[str, str] = {
+    "sujet_hors_cible": "Sujet hors cible",
+    "pas_de_vrai_ml": "Pas de vrai ML",
+    "esn_conseil": "ESN / conseil",
+    "entreprise": "Entreprise",
+    "lieu": "Lieu",
+    "dates_duree": "Dates / durée",
+    "contrat": "Contrat",
+    "encadrement_faible": "Encadrement faible",
+    "doublon": "Doublon",
+    "autre": "Autre",
+}
+
+# Raisons posées automatiquement (archivage, offre fermée) : ce ne sont pas des
+# décisions d'Eddy, elles sont exclues de la boucle de retour et de l'évaluation.
+AUTO_ARCHIVE_REASON = "auto_archive"
+CLOSED_OFFER_REASON = "offre_fermee"
+AUTO_IGNORE_REASONS: frozenset[str] = frozenset({AUTO_ARCHIVE_REASON, CLOSED_OFFER_REASON})
+
+# Longueur maximale du commentaire libre accompagnant une raison d'ignorer.
+IGNORE_COMMENT_MAX_LENGTH = 500
+
+
+def ignore_reason_label(code: str | None) -> str:
+    """Libellé court d'une raison d'ignorer (repli : valeur brute)."""
+    if not code:
+        return ""
+    return IGNORE_REASON_LABELS.get(str(code), str(code))
 
 
 
