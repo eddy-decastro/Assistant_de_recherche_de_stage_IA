@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import { Schibsted_Grotesk } from "next/font/google";
 import "./globals.css";
 
+const sans = Schibsted_Grotesk({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
+
 export const metadata: Metadata = {
-  title: "Stage Copilot v4 — Recherche & Candidature IA",
-  description: "Interface React Next.js ultra-rapide pour Stage Copilot (Notation v3 & v4, Kanban et Pack Claude).",
+  title: "Stage Copilot",
+  description: "Trier les offres de stage R&D, préparer les candidatures et suivre les réponses.",
 };
 
 export default function RootLayout({
@@ -12,7 +15,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="fr">
+    <html lang="fr" className={sans.variable}>
       <body>{children}</body>
     </html>
   );
