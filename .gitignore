@@ -50,3 +50,6 @@ data/prompt_rerank_v1_backup.txt
 data/ready_to_apply/
 data/rapport_comparaison_v3_v4.md
 data/profil_lettre.yaml
+
+# --- Lots de notation hors ligne (Antigravity) ---
+data/antigravity/

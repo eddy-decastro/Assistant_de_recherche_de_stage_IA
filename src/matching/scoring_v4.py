@@ -698,6 +698,51 @@ def compute_final_score_v4(
 # --------------------------------------------------------------------------- #
 # 3. Juge LLM v4 : Gemini Flash-Lite -> secours Groq -> secours DeepSeek
 # --------------------------------------------------------------------------- #
+def v4_result_from_output(
+    validated: V4JudgeOutput,
+    raw_dict: dict[str, Any],
+    job: dict[str, Any],
+    config: dict[str, Any] | None,
+    model_label: str,
+) -> dict[str, Any]:
+    """Transforme une sortie LLM validée en colonnes v4 prêtes pour ``Database.update_v4``.
+
+    Partagé par le juge en ligne et l'ingestion des lots notés hors ligne (Antigravity).
+    """
+    breakdown = compute_final_score_v4(validated, job, config)
+    stars_payload = {
+        k: {
+            "stars": breakdown.effective_stars[k],
+            "raw_stars": breakdown.axes[k]["stars"],
+            "reason": breakdown.axes[k]["reason"],
+            "quote": breakdown.axes[k]["quote"],
+            "unknown": breakdown.axes[k]["unknown"],
+        }
+        for k in V4_AXIS_KEYS
+    }
+    raw_stored = dict(raw_dict)
+    raw_stored["class"] = validated.offer_class
+    return {
+        "v4_status": "EXCLU" if breakdown.excluded else "OK",
+        "v4_class": breakdown.final_class,
+        "v4_stars_json": json.dumps(stars_payload, ensure_ascii=False),
+        "v4_center": breakdown.center,
+        "v4_adjustment": breakdown.adjustment,
+        "v4_class_score": breakdown.class_score,
+        "v4_display_score": breakdown.display_score,
+        "v4_tags_json": json.dumps(breakdown.tags, ensure_ascii=False),
+        "v4_flags_json": json.dumps(breakdown.flags, ensure_ascii=False),
+        "v4_raw_json": json.dumps(raw_stored, ensure_ascii=False),
+        "v4_model": model_label,
+        "v4_graded_at": datetime.utcnow(),
+        "excluded": breakdown.excluded,
+        "exclusion_reason": breakdown.exclusion_reason,
+        "contract_to_verify": V4_FLAG_CONTRACT_TO_CHECK in breakdown.flags,
+        "summary": breakdown.summary,
+        "api_error": False,
+    }
+
+
 def _resolve_provider_key(provider: str) -> str:
     load_env_file()
     prov = provider.strip().casefold()
@@ -907,42 +952,9 @@ class LLMJudgeV4:
                 try:
                     raw_resp = caller()
                     validated, raw_dict = self._validate_raw(raw_resp)
-                    breakdown = compute_final_score_v4(validated, job, self.config)
-                    now = datetime.utcnow()
-
-                    stars_payload = {
-                        k: {
-                            "stars": breakdown.effective_stars[k],
-                            "raw_stars": breakdown.axes[k]["stars"],
-                            "reason": breakdown.axes[k]["reason"],
-                            "quote": breakdown.axes[k]["quote"],
-                            "unknown": breakdown.axes[k]["unknown"],
-                        }
-                        for k in V4_AXIS_KEYS
-                    }
-
-                    raw_stored = dict(raw_dict)
-                    raw_stored["class"] = validated.offer_class
-
-                    return {
-                        "v4_status": "EXCLU" if breakdown.excluded else "OK",
-                        "v4_class": breakdown.final_class,
-                        "v4_stars_json": json.dumps(stars_payload, ensure_ascii=False),
-                        "v4_center": breakdown.center,
-                        "v4_adjustment": breakdown.adjustment,
-                        "v4_class_score": breakdown.class_score,
-                        "v4_display_score": breakdown.display_score,
-                        "v4_tags_json": json.dumps(breakdown.tags, ensure_ascii=False),
-                        "v4_flags_json": json.dumps(breakdown.flags, ensure_ascii=False),
-                        "v4_raw_json": json.dumps(raw_stored, ensure_ascii=False),
-                        "v4_model": f"{prov_name}:{model_name}",
-                        "v4_graded_at": now,
-                        "excluded": breakdown.excluded,
-                        "exclusion_reason": breakdown.exclusion_reason,
-                        "contract_to_verify": V4_FLAG_CONTRACT_TO_CHECK in breakdown.flags,
-                        "summary": breakdown.summary,
-                        "api_error": False,
-                    }
+                    return v4_result_from_output(
+                        validated, raw_dict, job, self.config, f"{prov_name}:{model_name}"
+                    )
                 except (ValidationError, json.JSONDecodeError, ValueError, Exception) as exc:
                     err_str = f"{prov_name}({model_name}) essai {attempt}: {exc}"
                     logger.warning("Juge v4 échec — %s", err_str)
