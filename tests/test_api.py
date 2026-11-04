@@ -1,4 +1,4 @@
-"""Tests unitaires de l'API FastAPI (Flux v3/v4, Bulk actions, Archivage >14j et Pack Claude)."""
+"""Tests unitaires de l'API FastAPI (flux, actions groupées, offres fermées et Pack Claude)."""
 from __future__ import annotations
 
 import sys
@@ -13,7 +13,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.main import create_app  # noqa: E402
-from src.constants import STATUS_APPLIED, STATUS_IGNORED, STATUS_NEW, STATUS_REJECTED  # noqa: E402
+from scrapers.liveness import LivenessVerdict  # noqa: E402
+from src.constants import (  # noqa: E402
+    CLOSED_OFFER_REASON,
+    STATUS_APPLIED,
+    STATUS_IGNORED,
+    STATUS_NEW,
+    STATUS_REJECTED,
+)
 from src.storage.database import Database  # noqa: E402
 
 
@@ -96,17 +103,31 @@ def test_api_stats_and_list_jobs(tmp_path: Path) -> None:
 
 def test_api_bulk_status_and_quick_archive_old(tmp_path: Path) -> None:
     db = _seed_db(tmp_path)
-    client = TestClient(create_app(db))
+    checked: list[str] = []
 
-    # Quick archive des offres > 14 jours
+    class FakeChecker:
+        """Sonde « offre fermée » simulée : aucune requête réseau."""
+
+        network_checks = 0
+
+        def check(self, url: str, source: str | None = None) -> LivenessVerdict:
+            checked.append(url)
+            self.network_checks += 1
+            return LivenessVerdict(status="ferme", reason="HTTP 404", http_status=404)
+
+    client = TestClient(create_app(db, liveness_checker=FakeChecker()))
+
+    # Quick archive : seules les offres > 14 jours sont sondées, et archivées si fermées.
     r_arch = client.post("/api/jobs/quick-archive-old", json={"days": 14, "action": "archive"})
     assert r_arch.status_code == 200
     assert r_arch.json()["updated"] == 1
     assert r_arch.json()["ids"] == ["job_old"]
+    assert checked == ["https://safran.com/jobs/2"]
 
     jobs_by_id = {j["id"]: j for j in db.get_jobs()}
     assert jobs_by_id["job_old"]["status"] == STATUS_IGNORED
-    assert jobs_by_id["job_old"]["rejection_reason"] == "quick_archive_14d"
+    assert jobs_by_id["job_old"]["rejection_reason"] == CLOSED_OFFER_REASON
+    assert jobs_by_id["job_recent"]["status"] == STATUS_NEW
 
     # Bulk status vers corbeille (REJETÉ) ou postulé
     r_bulk = client.post(
