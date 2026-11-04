@@ -2,8 +2,9 @@
 
 Prépare pour une ou plusieurs offres sélectionnées :
 1. Les lettres de motivation sur mesure (texte + PDF dans data/ready_to_apply/)
-2. Les réponses pré-formatées aux questions de formulaires ATS (Workday, Lever, Greenhouse, WTTJ...)
-3. Un prompt clé-en-main pour « Claude in Chrome » et un dossier structuré pour « Projet Claude ».
+2. Les réponses types aux questions de formulaires (Workday, Lever, Greenhouse, WTTJ...)
+3. La file d'attente ``/file`` (``src.matching.apply_queue``) et un prompt court et
+   stable pour « Claude in Chrome », plus un export JSON pour « Projet Claude ».
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from typing import Any
 
 from src.candidate import get_candidate_info, get_cv_path, get_cv_text
 from src.config import PROJECT_ROOT, load_config
+from src.matching.apply_queue import QUEUE_URL, detect_apply_method, enqueue_bundles
 from src.matching.cover_letter import CoverLetterGenerator
 from src.matching.pdf_exporter import generate_cover_letter_pdf
 
@@ -32,6 +34,52 @@ def _split_name(full_name: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], ""
     return parts[0], " ".join(parts[1:])
+
+
+def get_cv_pdf_path(config: dict[str, Any] | None = None) -> str:
+    """Chemin absolu du CV PDF à joindre à la main, ou "" s'il est introuvable.
+
+    Cherche ``candidate.cv_pdf_path`` puis ``scoring.cv_pdf_path`` dans la config,
+    sinon le premier ``data/*.pdf`` dont le nom contient « cv ».
+    """
+    cfg = config or load_config()
+    configured = (cfg.get("candidate") or {}).get("cv_pdf_path") or (cfg.get("scoring") or {}).get("cv_pdf_path")
+    if configured:
+        path = Path(str(configured))
+        path = path if path.is_absolute() else PROJECT_ROOT / path
+        return str(path.resolve()) if path.exists() else ""
+    data_dir = PROJECT_ROOT / "data"
+    if data_dir.is_dir():
+        for pdf in sorted(data_dir.glob("*.pdf")):
+            if "cv" in pdf.name.lower():
+                return str(pdf.resolve())
+    return ""
+
+
+def build_candidate_form_data(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """Infos candidat prêtes à saisir dans les formulaires (aucun appel LLM)."""
+    cfg = config or load_config()
+    candidate = get_candidate_info(cfg)
+    cv_path = get_cv_path(cfg)
+    first_name, last_name = _split_name(candidate.get("name", "Eddy DE CASTRO"))
+    return {
+        "first_name": first_name,
+        "last_name": last_name,
+        "full_name": candidate.get("name") or "Eddy DE CASTRO",
+        "email": candidate.get("email") or "[À compléter dans Paramètres]",
+        "phone": candidate.get("phone") or "[À compléter dans Paramètres]",
+        "city": candidate.get("location") or "Paris, France",
+        "linkedin": candidate.get("linkedin") or "",
+        "github": candidate.get("github") or "",
+        "school": "IMT Mines Alès & Mines Saint-Étienne (Double diplôme M2 Mathématiques en Action)",
+        "degree_level": "Bac+5 / Master 2 / Diplôme d'ingénieur (PFE)",
+        "internship_duration": "6 mois",
+        "start_date": "Avril 2027 (flexible février-mai 2027)",
+        "contract_type": "Stage de fin d'études (PFE) conventionné — Pas d'alternance",
+        "work_authorization": "Oui (citoyen UE / autorisé à travailler en France sans sponsorship)",
+        "cv_path": str(cv_path.resolve()) if cv_path.exists() else "data/cv_eddy.txt",
+        "cv_pdf_path": get_cv_pdf_path(cfg),
+    }
 
 
 def build_short_pitch(job: dict[str, Any], candidate: dict[str, str]) -> str:
@@ -133,7 +181,42 @@ def prepare_job_application_bundle(
         "cover_letter_pdf_path": pdf_path_str,
         "pdf_path": pdf_path_str,
         "cv_file_path": str(cv_path.resolve()) if cv_path.exists() else "",
+        # C2 : PDF à joindre à la main par Eddy (Claude in Chrome ne téléverse rien).
+        "cv_pdf_path": get_cv_pdf_path(cfg),
+        "pitch_300": build_short_pitch(job, candidate),
+        # C3 : méthode de candidature détectée depuis l'URL et la source.
+        "apply_method": detect_apply_method(job),
     }
+
+
+def build_queue_prompt(*, queue_url: str = QUEUE_URL, auto_submit: bool = False) -> str:
+    """Prompt court et stable pour Claude in Chrome : il dépile la file ``/file``."""
+    submit_rule = (
+        "Si rien d'obligatoire ne manque, vérifie chaque champ puis clique Envoyer ; sinon ne soumets pas."
+        if auto_submit
+        else "Ne clique jamais sur le bouton final Envoyer / Submit : laisse l'onglet prêt, je validerai moi-même."
+    )
+    lines = [
+        "Tu postules à mes stages pour moi, une offre à la fois, depuis ma file d'attente.",
+        "",
+        f"1. Ouvre {queue_url} et prends l'offre courante (la première de la file).",
+        "2. La page donne tout : URL, méthode de candidature, mes infos, accroche courte, "
+        "lettre en texte, réponses types et consignes de l'offre. N'invente rien d'autre.",
+        "3. Ouvre l'URL de l'offre dans un nouvel onglet et remplis le formulaire.",
+        "4. Règles strictes :",
+        "   - Ne crée jamais de compte et ne saisis jamais de mot de passe. Si un compte est requis, "
+        "reviens sur la file, écris « Échec : compte requis. » et clique « Échec ».",
+        "   - Tu ne peux pas joindre de PDF : colle la lettre en texte et remplis tout le reste. "
+        "Si un CV est obligatoire et non joint, ne soumets pas, laisse l'onglet ouvert et "
+        "écris « CV à joindre » dans le compte rendu.",
+        f"   - {submit_rule}",
+        "5. Reviens sur la file et écris le compte rendu en mode caveman : 2 phrases maximum, "
+        "300 caractères maximum. Exemple : « Moi remplir formulaire Thales. CV pas mis, Eddy "
+        "mettre CV puis cliquer Envoyer. »",
+        "6. Clique « Marquer postulé » si le formulaire est rempli, sinon « Échec » avec la raison.",
+        "7. Recommence à l'étape 1 jusqu'à ce que la file soit vide. Ne ferme pas les onglets de candidature.",
+    ]
+    return "\n".join(lines)
 
 
 def build_claude_pack(
@@ -146,13 +229,17 @@ def build_claude_pack(
     export_pdfs: bool = True,
     save_pdfs: bool | None = None,
     auto_submit: bool = False,
+    enqueue: bool = True,
+    queue_url: str = QUEUE_URL,
 ) -> dict[str, Any]:
-    """Génère le Pack Claude complet (JSON + Prompt Claude in Chrome + Markdown Projet Claude)."""
+    """Génère le Pack Claude : dossiers des offres, file ``/file`` et prompt court.
+
+    Avec une vraie ``Database`` et ``enqueue=True``, les offres sont ajoutées à la file
+    d'attente (``apply_queue``) ; ``chrome_prompt`` dit alors à Claude in Chrome de la
+    dépiler. Les clés historiques (``bundles``, ``json_export``...) sont conservées.
+    """
     cfg = config or load_config()
-    candidate = get_candidate_info(cfg)
     cv_text = get_cv_text(cfg)
-    cv_path = get_cv_path(cfg)
-    first_name, last_name = _split_name(candidate.get("name", "Eddy DE CASTRO"))
     target_dir = Path(output_dir) if output_dir is not None else READY_DIR
     do_export_pdf = export_pdfs if save_pdfs is None else bool(save_pdfs)
 
@@ -167,93 +254,22 @@ def build_claude_pack(
         )
         for job in jobs
     ]
+    candidate_form_data = build_candidate_form_data(cfg)
 
-    candidate_form_data = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "full_name": candidate.get("name") or "Eddy DE CASTRO",
-        "email": candidate.get("email") or "[À compléter dans Paramètres]",
-        "phone": candidate.get("phone") or "[À compléter dans Paramètres]",
-        "city": candidate.get("location") or "Paris, France",
-        "linkedin": candidate.get("linkedin") or "",
-        "github": candidate.get("github") or "",
-        "school": "IMT Mines Alès & Mines Saint-Étienne (Double diplôme M2 Mathématiques en Action)",
-        "degree_level": "Bac+5 / Master 2 / Diplôme d'ingénieur (PFE)",
-        "internship_duration": "6 mois",
-        "start_date": "Avril 2027 (flexible février-mai 2027)",
-        "contract_type": "Stage de fin d'études (PFE) conventionné — Pas d'alternance",
-        "work_authorization": "Oui (citoyen UE / autorisé à travailler en France sans sponsorship)",
-        "cv_path": str(cv_path.resolve()) if cv_path.exists() else "data/cv_eddy.txt",
-    }
+    queue_result: dict[str, Any] = {"added": [], "requeued": [], "skipped": [], "enabled": False}
+    if enqueue and db is not None and getattr(db, "engine", None) is not None:
+        queue_result = {**enqueue_bundles(db, bundles, auto_submit=auto_submit), "enabled": True}
 
-    submit_instruction = (
-        "Soumets automatiquement le formulaire une fois tous les champs vérifiés."
-        if auto_submit
-        else "NE CLIQUE PAS sur le bouton final 'Envoyer / Submit' : laisse l'onglet prêt à valider pour que je vérifie en 5 secondes."
+    queue_prompt = build_queue_prompt(queue_url=queue_url, auto_submit=auto_submit)
+    recap = ["", "---", f"Pour info, {len(bundles)} offre(s) dans ce pack :"]
+    for b in bundles:
+        method = b.get("apply_method") or {}
+        recap.append(f"- {b['company']} : {b['title']} ({method.get('label', 'Méthode inconnue')})")
+    recap.append(
+        f"Si la page {queue_url} ne s'ouvre pas, les dossiers (lettres, PDF) sont dans {target_dir.resolve()}."
     )
+    chrome_prompt = queue_prompt + "\n" + "\n".join(recap)
 
-    chrome_lines = [
-        "# 🤖 Instructions pour Claude in Chrome — Session de Candidature Automatisée",
-        "",
-        f"Tu vas m'aider à postuler à **{len(bundles)} offre(s) de stage PFE**.",
-        "",
-        "## 1. Informations standards pour remplir les formulaires (ATS / WTTJ / LinkedIn / Lever / Greenhouse)",
-        f"- **Prénom** : `{candidate_form_data['first_name']}`",
-        f"- **Nom** : `{candidate_form_data['last_name']}`",
-        f"- **Email** : `{candidate_form_data['email']}`",
-        f"- **Téléphone** : `{candidate_form_data['phone']}`",
-        f"- **Ville / Localisation** : `{candidate_form_data['city']}`",
-        f"- **LinkedIn** : `{candidate_form_data['linkedin']}`",
-        f"- **GitHub** : `{candidate_form_data['github']}`",
-        f"- **École / Formation** : `{candidate_form_data['school']}`",
-        f"- **Niveau d'études** : `{candidate_form_data['degree_level']}`",
-        f"- **Disponibilité & Durée** : `{candidate_form_data['start_date']} ({candidate_form_data['internship_duration']})`",
-        f"- **Fichier CV local** : `{candidate_form_data['cv_path']}`",
-        "",
-        "## 2. Consignes d'exécution dans le navigateur",
-        "1. Pour chaque offre ci-dessous, ouvre l'URL de candidature.",
-        "2. Si la page est un agrégateur (LinkedIn, WTTJ) avec un bouton « Postuler sur le site de l'entreprise », clique dessus pour atteindre le formulaire final.",
-        "3. Remplis les champs d'identité, d'école, de dates et les liens LinkedIn/GitHub.",
-        "4. Pour le champ « Message au recruteur » court (< 300 car.), utilise l'**Accroche courte** fournie.",
-        "5. Pour la lettre de motivation : colle le texte de la lettre dans le champ dédié OU téléverse le PDF généré à l'emplacement indiqué.",
-        "6. Si le formulaire pose une question ouverte spécifique (ex: *Why this company?*, *Key project?*), utilise les points forts listés et mon profil pour rédiger une réponse factuelle de 3-4 phrases sans crochets.",
-        f"7. **Validation finale** : {submit_instruction}",
-        "",
-        "---",
-        "## 3. File d'attente des offres à traiter",
-        "",
-    ]
-
-    for idx, b in enumerate(bundles, start=1):
-        score_badge = (
-            f"v4: {b['v4_class']} · {b['v4_display_score']:.0f}/100"
-            if b.get("v4_display_score") is not None
-            else f"v3: {b['v3_score'] or 0:.0f}/100"
-        )
-        chrome_lines.extend(
-            [
-                f"### Offre #{idx} — {b['company']} : {b['title']} ({score_badge})",
-                f"- **URL** : {b['url']}",
-                f"- **Lieu** : {b['location'] or 'Non précisé'}",
-                f"- **PDF Lettre prêt** : `{b['cover_letter_pdf_path'] or 'Non généré'}`",
-                "- **Accroche courte (< 300 car.)** :",
-                f"  > {b['short_pitch']}",
-                "- **Technologies & Arguments clés** : "
-                + (", ".join(b["tech_stack"][:6]) if b["tech_stack"] else "Deep Learning, ML, Python")
-                + (" — " + " ; ".join(b["match_reasons"][:2]) if b["match_reasons"] else ""),
-                "",
-                "<details><summary>Lettre de motivation complète (texte à copier/coller)</summary>",
-                "",
-                "```text",
-                b["cover_letter"] or "(Lettre non générée)",
-                "```",
-                "</details>",
-                "",
-                "---",
-            ]
-        )
-
-    chrome_prompt = "\n".join(chrome_lines)
     json_str = json.dumps(
         {"candidate": candidate_form_data, "jobs": bundles},
         ensure_ascii=False,
@@ -267,7 +283,12 @@ def build_claude_pack(
         "output_dir": str(target_dir.resolve()),
         "jobs": bundles,
         "bundles": bundles,
+        "queue_prompt": queue_prompt,
+        "queue_url": queue_url,
+        "queue": queue_result,
         "chrome_prompt": chrome_prompt,
         "json_export": json_str,
         "claude_project_json": json_str,
     }
+
+
