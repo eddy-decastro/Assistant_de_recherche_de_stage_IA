@@ -125,6 +125,24 @@ def test_api_bulk_status_and_quick_archive_old(tmp_path: Path) -> None:
     assert jobs_by_id["job_old"]["status"] == STATUS_REJECTED
 
 
+def test_api_cache_suit_les_ecritures(tmp_path: Path) -> None:
+    """Le cache des offres ne doit jamais servir une donnée périmée."""
+    db = _seed_db(tmp_path)
+    client = TestClient(create_app(db))
+    assert client.get("/api/stats").json()["by_status"][STATUS_NEW] == 2
+
+    # Écriture par l'API : visible tout de suite.
+    client.post("/api/jobs/bulk-status", json={"ids": ["job_old"], "status": STATUS_IGNORED})
+    assert client.get("/api/stats").json()["by_status"][STATUS_NEW] == 1
+
+    # Écriture par un autre process (pipeline, Streamlit) sur le même fichier : visible aussi.
+    Database(str(db.db_path)).bulk_update_status(["job_recent"], STATUS_APPLIED)
+    stats = client.get("/api/stats").json()["by_status"]
+    assert STATUS_NEW not in stats and stats[STATUS_APPLIED] == 1
+    ids = [j["id"] for j in client.get("/api/jobs?hide_processed=true").json()["jobs"]]
+    assert ids == []
+
+
 def test_api_claude_pack_and_cover_letter(tmp_path: Path) -> None:
     db = _seed_db(tmp_path)
     db.update_cover_letter("job_recent", "Madame, Monsieur, Lettre test Mistral.")

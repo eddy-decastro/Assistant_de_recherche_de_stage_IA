@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from components.job_feed.serialize import serialize_job
@@ -98,6 +98,38 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
             state["db"] = Database(str(db_path))
         return state["db"]
 
+    # Cache des offres : relire 2 000+ lignes coûte ~350 ms, on ne le fait que si la base a changé.
+    cache: dict[str, Any] = {"key": None, "jobs": []}
+
+    def _db_stamp(db: Database) -> tuple[Any, ...]:
+        """Empreinte du fichier SQLite et de son WAL : change dès qu'un process (pipeline, Streamlit) écrit."""
+        path = Path(str(getattr(db, "db_path", "")))
+        stamp: list[Any] = [id(db)]
+        for file in (path, path.with_name(path.name + "-wal")):
+            try:
+                info = file.stat()
+                stamp += [info.st_mtime_ns, info.st_size]
+            except OSError:
+                stamp += [0, 0]
+        return tuple(stamp)
+
+    def all_jobs(db: Database) -> list[dict[str, Any]]:
+        key = _db_stamp(db)
+        if cache["key"] != key:
+            cache["jobs"] = db.get_jobs(limit=10000)
+            cache["key"] = key
+        # Copies superficielles : filtres et routes ne modifient jamais le cache partagé.
+        return [dict(job) for job in cache["jobs"]]
+
+    def invalidate() -> None:
+        cache["key"] = None
+
+    def get_job_or_404(db: Database, job_id: str) -> dict[str, Any]:
+        job = db.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Offre introuvable")
+        return job
+
     def _serialize_full_job(job: dict[str, Any], keywords: tuple[str, ...]) -> dict[str, Any]:
         base = serialize_job(job, keywords)
         base["cover_letter"] = str(job.get("cover_letter") or "")
@@ -113,9 +145,11 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/api/stats")
-    def get_stats(db: Database = Depends(get_db)) -> dict[str, Any]:
-        jobs = db.get_jobs(limit=10000)
+    # Les deux routes de lecture renvoient JSONResponse : sans cela FastAPI valide puis
+    # ré-encode ~1 Mo de réponse via le type de retour, soit ~1 s par appel.
+    @app.get("/api/stats", response_class=JSONResponse)
+    def get_stats(db: Database = Depends(get_db)) -> JSONResponse:
+        jobs = all_jobs(db)
         by_status: dict[str, int] = {}
         by_v4_class: dict[str, int] = {c: 0 for c in V4_CLASSES}
         by_source: dict[str, int] = {}
@@ -144,7 +178,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
             if st_code == STATUS_NEW and not is_exclu and (job_age_days(j) or 0) >= 14:
                 old_new_14d += 1
 
-        return {
+        return JSONResponse({
             "total": len(jobs),
             "by_status": by_status,
             "by_v4_class": by_v4_class,
@@ -157,9 +191,9 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
             "v4_graded": v4_graded,
             "v4_classes": [{"key": c, "label": V4_CLASS_LABELS[c]} for c in V4_CLASSES],
             "v4_tags": [{"key": t, "label": V4_TAG_LABELS.get(t, t)} for t in V4_TAGS],
-        }
+        })
 
-    @app.get("/api/jobs")
+    @app.get("/api/jobs", response_class=JSONResponse)
     def list_jobs(
         q: str = "",
         statuses: str = "",
@@ -175,10 +209,10 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         sort_by: str = "v3",
         limit: int = Query(default=250, ge=1, le=2000),
         db: Database = Depends(get_db),
-    ) -> dict[str, Any]:
+    ) -> JSONResponse:
         cfg = load_config()
         keywords = tuple(cfg.get("scoring", {}).get("excellence_keywords", ()))
-        all_jobs = db.get_jobs(limit=10000)
+        jobs = all_jobs(db)
 
         st_tuple = tuple(s.strip() for s in statuses.split(",") if s.strip())
         src_tuple = tuple(s.strip() for s in sources.split(",") if s.strip())
@@ -200,7 +234,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
             sort_by=sort_by,
             limit=None,
         )
-        filtered = filter_jobs(all_jobs, flt)
+        filtered = filter_jobs(jobs, flt)
 
         if only_older_than_days is not None:
             filtered = [
@@ -215,10 +249,10 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
 
         total_matching = len(filtered)
         sliced = filtered[:limit]
-        return {
+        return JSONResponse({
             "total": total_matching,
             "jobs": [_serialize_full_job(j, keywords) for j in sliced],
-        }
+        })
 
     @app.post("/api/jobs/{job_id}/status")
     def update_job_status(
@@ -229,6 +263,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         if payload.status not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail=f"Statut invalide : {payload.status}")
         ok = db.update_status(job_id, payload.status, rejection_reason=payload.rejection_reason)
+        invalidate()
         if not ok:
             raise HTTPException(status_code=404, detail="Offre introuvable")
         return {"ok": True, "id": job_id, "status": payload.status}
@@ -243,6 +278,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         count = db.bulk_update_status(
             payload.ids, payload.status, rejection_reason=payload.rejection_reason
         )
+        invalidate()
         return {"ok": True, "updated": count, "status": payload.status}
 
     @app.post("/api/jobs/quick-archive-old")
@@ -250,10 +286,9 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         payload: QuickArchiveOldPayload,
         db: Database = Depends(get_db),
     ) -> dict[str, Any]:
-        all_jobs = db.get_jobs(limit=10000)
         old_ids = [
             str(j["id"])
-            for j in all_jobs
+            for j in all_jobs(db)
             if j.get("status") == STATUS_NEW
             and not (
                 j.get("verdict") == "EXCLU"
@@ -264,6 +299,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         target_status = STATUS_IGNORED if payload.action == "archive" else STATUS_REJECTED
         reason = f"quick_{payload.action}_{payload.days}d"
         updated = db.bulk_update_status(old_ids, target_status, rejection_reason=reason)
+        invalidate()
         return {"ok": True, "updated": updated, "status": target_status, "ids": old_ids}
 
     @app.post("/api/jobs/{job_id}/notes")
@@ -273,6 +309,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         db: Database = Depends(get_db),
     ) -> dict[str, Any]:
         ok = db.update_user_notes(job_id, payload.user_notes)
+        invalidate()
         if not ok:
             raise HTTPException(status_code=404, detail="Offre introuvable")
         return {"ok": True, "id": job_id, "user_notes": payload.user_notes}
@@ -283,10 +320,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         payload: CoverLetterPayload,
         db: Database = Depends(get_db),
     ) -> dict[str, Any]:
-        jobs = db.get_jobs(limit=10000)
-        job = next((j for j in jobs if str(j["id"]) == job_id), None)
-        if job is None:
-            raise HTTPException(status_code=404, detail="Offre introuvable")
+        job = get_job_or_404(db, job_id)
 
         warnings: list[str] = []
         if payload.edited_text is not None and not payload.regenerate:
@@ -316,7 +350,10 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
                 source = gen.last_source
                 warnings = list(gen.last_warnings)
 
-        db.update_cover_letter(job_id, letter, version=2)
+        # Simple relecture d'une lettre déjà en base : rien à réécrire.
+        if source != "cached":
+            db.update_cover_letter(job_id, letter, version=2)
+            invalidate()
         return {
             "ok": True,
             "id": job_id,
@@ -331,10 +368,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         job_id: str,
         db: Database = Depends(get_db),
     ) -> Response:
-        jobs = db.get_jobs(limit=10000)
-        job = next((j for j in jobs if str(j["id"]) == job_id), None)
-        if job is None:
-            raise HTTPException(status_code=404, detail="Offre introuvable")
+        job = get_job_or_404(db, job_id)
         letter = str(job.get("cover_letter") or "").strip()
         if not letter:
             gen = CoverLetterGenerator()
@@ -347,6 +381,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
                     or "Échec de génération de la lettre (DeepSeek et Gemini indisponibles).",
                 )
             db.update_cover_letter(job_id, letter, version=2)
+            invalidate()
         pdf_bytes = generate_cover_letter_pdf(letter, job=job)
         company = "".join(
             c for c in str(job.get("company") or "Entreprise") if c.isalnum() or c in ("-", "_", " ")
@@ -363,9 +398,8 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         payload: ClaudePackPayload,
         db: Database = Depends(get_db),
     ) -> dict[str, Any]:
-        jobs = db.get_jobs(limit=10000)
         id_set = set(payload.ids)
-        selected = [j for j in jobs if str(j["id"]) in id_set]
+        selected = [j for j in all_jobs(db) if str(j["id"]) in id_set]
         if not selected:
             raise HTTPException(status_code=404, detail="Aucune offre trouvée pour ces identifiants")
         real_db_path = (PROJECT_ROOT / "data" / "stage_copilot.db").resolve()
@@ -381,12 +415,15 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        finally:
+            invalidate()  # le pack enregistre les lettres générées
         return pack
 
     @app.post("/api/recompute-v4")
     def recompute_v4_endpoint(db: Database = Depends(get_db)) -> dict[str, Any]:
         cfg = load_config()
         count = db.recompute_scores_v4(config=cfg)
+        invalidate()
         return {"ok": True, "recomputed": count}
 
     @app.post("/api/jobs/grade-v4")
@@ -395,9 +432,8 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
         db: Database = Depends(get_db),
     ) -> dict[str, Any]:
         cfg = load_config()
-        jobs = db.get_jobs(limit=10000)
         id_set = set(payload.ids)
-        targets = [j for j in jobs if str(j["id"]) in id_set]
+        targets = [j for j in all_jobs(db) if str(j["id"]) in id_set]
         if not targets:
             raise HTTPException(status_code=404, detail="Aucune offre trouvée")
         judge = LLMJudgeV4(config=cfg)
@@ -415,6 +451,7 @@ def create_app(db_instance: Database | None = None) -> FastAPI:
                     "v4_class_score": res.get("v4_class_score"),
                 }
             )
+        invalidate()
         return {"ok": True, "results": results}
 
     return app
