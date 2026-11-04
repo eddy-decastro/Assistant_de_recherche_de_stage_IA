@@ -317,14 +317,20 @@ def test_filter_jobs_v4_class_sorts_by_v4_class_score() -> None:
 
 
 def test_claude_pack_builder(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
     from src.matching.claude_pack import build_claude_pack
 
-    pack = build_claude_pack(
-        [{**RERANKED, "cover_letter": "Madame, Monsieur, Voici ma lettre."}],
-        db=None,
-        output_dir=tmp_path,
-        save_pdfs=True,
-    )
+    # Aucun appel LLM réel : la motivation courte est mockée.
+    with patch(
+        "src.matching.cover_letter.CoverLetterGenerator._generate_short_llm_once", return_value=None
+    ):
+        pack = build_claude_pack(
+            [{**RERANKED, "cover_letter": "Madame, Monsieur, Voici ma lettre."}],
+            db=None,
+            output_dir=tmp_path,
+            save_pdfs=True,
+        )
     assert pack["count"] == 1
     assert "Mistral AI" in pack["chrome_prompt"]
     assert "Mistral AI" in pack["claude_project_json"]
