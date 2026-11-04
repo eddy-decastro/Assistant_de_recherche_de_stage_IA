@@ -85,7 +85,7 @@ Statut de chaque point : ⏳ à faire · ✅ fait · ❌ abandonné.
 | # | Action | Statut |
 |---|---|---|
 | A1 | Commit direct sur `main` (règle du projet alignée sur la règle globale) | ✅ |
-| A2 | Supprimer les fichiers anciens et inutiles | ⏳ Pas encore traité. |
+| A2 | Supprimer les fichiers anciens et inutiles | ✅ 12 scripts ponctuels v4, `data/v4_batches/` et 3 vieux plans déplacés dans `data/backups/archive_20261104/` (rien de définitif) ; `web/package-lock.json` suivi. |
 | A3 | Garde-fous de tests : aucun appel LLM réel, aucune ouverture de la vraie base | ✅ `tests/conftest.py` vide les clés LLM, bloque les hôtes LLM et redirige toute `Database` ouverte sur `data/stage_copilot.db` ou `data/jobs.db` vers une base jetable (la page Candidatures testée ouvrait la vraie base). |
 
 ## Reste à faire
@@ -100,4 +100,3 @@ Statut de chaque point : ⏳ à faire · ✅ fait · ❌ abandonné.
    - annuler un « ignorer » laisse le commentaire en base ;
    - pas d'action « Remettre à trier » dans l'onglet Exclues.
 7. **Sources absentes** : Safran, Schneider (iCIMS), Stellantis, EDF et TotalEnergies ne sont pas sur Workday. S3 (GdR, ABG) reste hors code.
-8. **A2** : faire le ménage des fichiers anciens à la racine, en vérifiant d'abord qu'ils ne sont plus utilisés.
