@@ -36,6 +36,9 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.constants import (
+    IGNORE_COMMENT_MAX_LENGTH,
+    IGNORE_REASONS,
+    STATUS_IGNORED,
     RUN_INTERRUPTED,
     RUN_NOTE_ADHOC,
     RUN_NOTE_DEGRADED,
@@ -68,6 +71,17 @@ SQLITE_BUSY_TIMEOUT_MS = 5000
 # Statuts que le pipeline peut faire évoluer seul. Tout autre statut (POSTULÉ, ENTRETIEN,
 # IGNORÉ, REJETÉ) vient de l'utilisateur et n'est jamais écrasé par l'exclusion automatique.
 _AUTO_STATUSES = frozenset({STATUS_NEW, STATUS_EXCLUDED})
+
+
+def _sync_v4_exclusion_status(record: Any, excluded: bool) -> None:
+    """La note v4 pilote l'exclusion : NOUVEAU <-> EXCLU uniquement.
+
+    Les statuts d'Eddy (POSTULÉ, ENTRETIEN, IGNORÉ, REJETÉ) ne sont jamais touchés.
+    """
+    if excluded and record.status == STATUS_NEW:
+        record.status = STATUS_EXCLUDED
+    elif not excluded and record.status == STATUS_EXCLUDED:
+        record.status = STATUS_NEW
 
 
 def configure_sqlite_engine(engine: Engine) -> None:
@@ -194,6 +208,9 @@ class Job(Base):
     # Motif d'exclusion métier (« contrat incompatible », « orientation BI »…) :
     # renseigné par la re-validation sur texte complet, NULL sinon.
     rejection_reason = Column(String(300), nullable=True)
+    # Commentaire libre d'Eddy accompagnant la raison d'ignorer (code dans
+    # ``rejection_reason``, voir ``IGNORE_REASONS``). Colonne utilisateur.
+    rejection_comment = Column(Text, nullable=True)
     # --- Traçabilité de la collecte hybride (date + pertinence) ---
     # ``id_externe`` : identifiant métier de la plateforme (id LinkedIn, UUID
     # JobTeaser…), base de la déduplication ``(source, id_externe)`` et de la
@@ -446,6 +463,7 @@ class Database:
                 "red_flags": "TEXT",
                 "tech_stack": "TEXT",
                 "rejection_reason": "VARCHAR(300)",
+                "rejection_comment": "TEXT",
                 "sub_scores": "TEXT",
                 "hard_cap_triggered": "VARCHAR(200)",
                 "reasoning": "TEXT",
@@ -693,6 +711,62 @@ class Database:
             session.commit()
         return updated
 
+    def record_ignore(
+        self,
+        job_id: str,
+        reason_code: str,
+        comment: str | None = None,
+    ) -> bool:
+        """Passe une offre en IGNORÉ avec une raison en un clic et un commentaire libre.
+
+        ``reason_code`` doit appartenir à ``IGNORE_REASONS`` (ValueError sinon) ; il est
+        rangé dans ``rejection_reason``. ``comment`` (optionnel, tronqué à
+        ``IGNORE_COMMENT_MAX_LENGTH``) va dans ``rejection_comment`` ; ``None`` ou vide
+        l'efface. Retourne False si l'offre n'existe pas.
+        """
+        code = str(reason_code or "").strip()
+        if code not in IGNORE_REASONS:
+            raise ValueError(
+                f"Raison d'ignorer invalide : {reason_code!r} (attendu : {list(IGNORE_REASONS)})"
+            )
+        text = str(comment or "").strip()[:IGNORE_COMMENT_MAX_LENGTH] or None
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.status = STATUS_IGNORED
+            record.rejection_reason = code
+            record.rejection_comment = text
+            session.commit()
+            return True
+
+    def get_feedback_jobs(self) -> list[dict[str, Any]]:
+        """Offres décidées par Eddy (postulées ou ignorées), champs légers, pour la boucle de retour v4.
+
+        Le filtrage fin (archivage automatique, offre fermée, REJETÉ sans candidature)
+        est fait par ``is_applied_decision`` / ``is_manual_ignore`` (scoring_v4).
+        """
+        columns = (
+            Job.id,
+            Job.title,
+            Job.company,
+            Job.status,
+            Job.rejection_reason,
+            Job.rejection_comment,
+            Job.user_notes,
+            Job.applied_at,
+            Job.created_at,
+            Job.v4_class,
+            Job.v4_display_score,
+            Job.v4_graded_at,
+        )
+        with self.SessionLocal() as session:
+            stmt = select(*columns).where(
+                Job.status.in_([STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED, STATUS_IGNORED])
+            )
+            names = [c.key for c in columns]
+            return [dict(zip(names, row)) for row in session.execute(stmt).all()]
+
     def update_cover_letter(
         self,
         job_id: str,
@@ -829,8 +903,13 @@ class Database:
                 stmt = stmt.where(Job.company_tier.in_(list(tiers)))
             if sources:
                 stmt = stmt.where(Job.source.in_(list(sources)))
-            # Tri : privilégier le score de reranking LLM, sinon le score initial.
-            stmt = stmt.order_by(func.coalesce(Job.rerank_score, Job.final_score).desc())
+            # Tri : la note v4 affichée d'abord (offres non notées v4 ensuite),
+            # puis l'ancien score v3 / initial pour départager.
+            stmt = stmt.order_by(
+                Job.v4_display_score.is_(None),
+                Job.v4_display_score.desc(),
+                func.coalesce(Job.rerank_score, Job.final_score).desc(),
+            )
             if limit:
                 stmt = stmt.limit(limit)
             rows = session.execute(stmt).scalars().all()
@@ -1089,6 +1168,8 @@ class Database:
                 except ValueError:
                     graded_at = datetime.utcnow()
             record.v4_graded_at = graded_at
+            if record.v4_display_score is not None and "excluded" in v4_result:
+                _sync_v4_exclusion_status(record, bool(v4_result.get("excluded")))
             session.commit()
             return True
 
@@ -1137,26 +1218,39 @@ class Database:
                 job.v4_display_score = breakdown.display_score
                 job.v4_tags_json = json.dumps(breakdown.tags, ensure_ascii=False)
                 job.v4_flags_json = json.dumps(breakdown.flags, ensure_ascii=False)
+                _sync_v4_exclusion_status(job, breakdown.excluded)
                 updated_count += 1
 
             session.commit()
         return updated_count
 
-    def get_unranked_v4_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Offres non encore évaluées en v4, triées par fraîcheur (published_at puis created_at)."""
+    def get_unranked_v4_jobs(
+        self,
+        limit: int = 20,
+        statuses: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Offres non encore évaluées en v4 (hors REJETÉ), fiches avec description d'abord,
+        puis par fraîcheur (published_at puis created_at).
+
+        ``statuses`` restreint aux statuts donnés (le pipeline passe ``(NOUVEAU,)`` :
+        seules les nouvelles offres consomment des appels LLM).
+        """
+        has_desc = case(
+            (func.coalesce(func.trim(Job.description), "") != "", 1),
+            else_=0,
+        )
         with self.SessionLocal() as session:
-            stmt = (
-                select(Job)
-                .where(
-                    Job.v4_display_score.is_(None),
-                    Job.status != STATUS_REJECTED,
-                )
-                .order_by(
-                    func.coalesce(Job.published_at, Job.created_at).desc(),
-                    Job.created_at.desc(),
-                )
-                .limit(limit)
+            stmt = select(Job).where(
+                Job.v4_display_score.is_(None),
+                Job.status != STATUS_REJECTED,
             )
+            if statuses:
+                stmt = stmt.where(Job.status.in_(list(statuses)))
+            stmt = stmt.order_by(
+                has_desc.desc(),
+                func.coalesce(Job.published_at, Job.created_at).desc(),
+                Job.created_at.desc(),
+            ).limit(limit)
             return [row.to_dict() for row in session.execute(stmt).scalars().all()]
 
     def get_unranked_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
