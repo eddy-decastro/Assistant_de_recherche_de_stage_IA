@@ -398,7 +398,8 @@ def serialize_job(
         "title": _one_line(job.get("title")) or "Offre sans titre",
         "company": _one_line(job.get("company")) or "Entreprise inconnue",
         "location": _one_line(job.get("location")),
-        "date_label": relative_date(job.get("created_at")),
+        # Même référence que age_days : la publication, sinon la collecte (U3).
+        "date_label": relative_date(job.get("published_at") or job.get("created_at")),
         "age_days": job_age_days(job),
         "source_label": source_label(job.get("source")),
         "source_color": source_color(job.get("source")),
