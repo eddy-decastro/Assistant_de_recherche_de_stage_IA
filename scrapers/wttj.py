@@ -137,12 +137,35 @@ class WelcomeToTheJungleScraper(BaseScraper):
     # ------------------------------------------------------------------ #
     # Requête Algolia
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _filters() -> str:
-        """Filtre Algolia : contrat de stage, et pays des bureaux si configuré."""
-        country = os.getenv("WTTJ_COUNTRY", DEFAULT_COUNTRY).strip().upper()
+    def _countries(self) -> list[str]:
+        """Pays des bureaux retenus : ``WTTJ_COUNTRY`` (run ponctuel), sinon ``scrapers.wttj_country``.
+
+        Accepte un code (``FR``), une liste (``[FR, BE]``) ou une chaîne séparée
+        par des virgules ; vide = tous pays.
+        """
+        raw: Any = os.getenv("WTTJ_COUNTRY")
+        if raw is None:
+            raw = self.config.wttj_country
+        if raw is None:
+            return []
+        items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+        codes = [str(item).strip().upper() for item in items if str(item).strip()]
+        return [code for code in codes if re.fullmatch(r"[A-Z]{2}", code)]
+
+    def _filters(self) -> str:
+        """Filtre Algolia : contrat de stage, et pays des bureaux si configuré.
+
+        Vérifié le 04/11/2026 : sur « Machine Learning », 415 stages sans filtre
+        pays (33 % hors France), 333 avec ``offices.country_code:FR``, tous en France.
+        """
         filters = f"contract_type:{CONTRACT_FILTER}"
-        return f"{filters} AND offices.country_code:{country}" if country else filters
+        countries = self._countries()
+        if not countries:
+            return filters
+        if len(countries) == 1:
+            return f"{filters} AND offices.country_code:{countries[0]}"
+        joined = " OR ".join(f"offices.country_code:{code}" for code in countries)
+        return f"{filters} AND ({joined})"
 
     def preload_queries(self, queries: Sequence[str]) -> None:
         """Précharge la page 0 de plusieurs requêtes Algolia en un seul appel multi-query."""

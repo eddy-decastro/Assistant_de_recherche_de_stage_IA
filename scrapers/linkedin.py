@@ -35,6 +35,9 @@ LOCATION = "France"
 SLEEP_RANGE = (2.0, 4.0)
 #: Pause entre deux fiches détail récupérées pendant la collecte (anti-429).
 DETAIL_SLEEP_RANGE = (1.0, 2.5)
+#: Contrainte « stage » ajoutée aux requêtes (opérateurs booléens LinkedIn).
+INTERNSHIP_KEYWORDS_CLAUSE = "(stage OR stagiaire OR internship OR intern)"
+_INTERNSHIP_QUERY_RE = re.compile(r"\b(?:stage|stages|stagiaire|intern|interns|internship|pfe)\b", re.IGNORECASE)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -119,6 +122,9 @@ class LinkedInGuestScraper(BaseScraper):
     #: Les cartes invitées n'exposent pas la description : filtre en deux temps
     #: (titre, puis fiche détail ``jobPosting``).
     LIST_HAS_DESCRIPTION = False
+    #: ``f_JT=I`` ignoré en mode invité (04/11/2026 : 0/20 stage sur « Data
+    #: Scientist ») : la fiche doit mentionner le stage pour être retenue.
+    TRUST_LIST_CONTRACT = False
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         super().__init__(config)
@@ -158,7 +164,7 @@ class LinkedInGuestScraper(BaseScraper):
         if start > 0:  # respect des serveurs : pause uniquement entre deux pages
             time.sleep(random.uniform(*SLEEP_RANGE))
         params = {
-            "keywords": query,
+            "keywords": self.search_keywords(query),
             "location": LOCATION,
             "f_JT": "I",  # stage / internship
             "start": start,
@@ -179,6 +185,21 @@ class LinkedInGuestScraper(BaseScraper):
             exhausted=not card_keys,
             http_calls=1,
         )
+
+    def search_keywords(self, query: str) -> str:
+        """Mots-clés envoyés à LinkedIn : la requête, contrainte au stage si besoin.
+
+        Diagnostic S6 (04/11/2026) : en mode invité, ``f_JT=I`` est ignoré. Sur
+        « Data Scientist », 0 carte de stage sur 20 ; avec
+        « (stage OR stagiaire OR internship OR intern) », 17 sur 20. Sans cette
+        contrainte, l'objectif de 150 nouvelles offres par run était rempli de CDI
+        (917 offres LinkedIn exclues par la notation, dont 583 CDI), d'où le
+        faible volume LinkedIn dans « À trier ».
+        """
+        text = (query or "").strip()
+        if not self.config.linkedin_internship_keywords or _INTERNSHIP_QUERY_RE.search(text):
+            return text
+        return f"{text} {INTERNSHIP_KEYWORDS_CLAUSE}".strip()
 
     @staticmethod
     def _parse_cards(html_text: str) -> list[RawJob]:

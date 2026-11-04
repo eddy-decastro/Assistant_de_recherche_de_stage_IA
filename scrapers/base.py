@@ -345,6 +345,11 @@ class BaseScraper(ABC):
     LIST_HAS_DESCRIPTION: ClassVar[bool] = True
     #: Échecs consécutifs de fiche détail désactivant l'enrichissement du run.
     MAX_CONSECUTIVE_DETAIL_FAILURES: ClassVar[int] = 3
+    #: Le contrat annoncé par la liste est-il fiable ? LinkedIn invité : NON (le
+    #: filtre ``f_JT=I`` est ignoré, mesuré le 04/11/2026) — une fiche complète
+    #: sans aucune mention de stage est alors écartée dès la collecte, sans
+    #: coûter de notation LLM.
+    TRUST_LIST_CONTRACT: ClassVar[bool] = True
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         self.config = config or ScraperConfig()
@@ -483,7 +488,10 @@ class BaseScraper(ABC):
         description, calls = self._try_fetch_detail(job)
         if description:
             job = job.model_copy(update={"description": description})
-        rejection = screen_rejection(job.title, job.description, self.config)
+        rejection = ""
+        if description and not self.TRUST_LIST_CONTRACT:
+            rejection = not_internship_reason(job.title, job.description)
+        rejection = rejection or screen_rejection(job.title, job.description, self.config)
         return rejection, job, calls, bool(description)
 
     # ------------------------------------------------------------------ #
