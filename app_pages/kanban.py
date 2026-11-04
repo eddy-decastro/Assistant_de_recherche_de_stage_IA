@@ -312,9 +312,17 @@ filtered = filter_jobs(
 )
 
 jobs_by_status: dict[str, list[dict[str, Any]]] = {code: [] for code, _ in KANBAN_COLUMNS}
+trashed = 0
 for job in filtered:
     code = str(job.get("status") or STATUS_NEW)
+    # REJETÉ sans motif « refus de l'entreprise » = corbeille ou exclusion du pipeline, pas un refus.
+    if code == STATUS_REJECTED and job.get("rejection_reason") != REFUSAL_REASON:
+        trashed += 1
+        continue
     jobs_by_status[code if code in jobs_by_status else STATUS_NEW].append(job)
+
+if trashed:
+    st.caption(f"{trashed} offre(s) en corbeille ou écartée(s) par le pipeline, non affichée(s) ici.")
 
 columns = st.columns(len(KANBAN_COLUMNS), gap="small")
 for column, (status, label) in zip(columns, KANBAN_COLUMNS):

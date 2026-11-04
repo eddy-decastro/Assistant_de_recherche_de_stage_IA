@@ -13,7 +13,8 @@ _TONE_PALETTE: dict[str, dict[str, tuple[str, str, str]]] = {
     },
     "accent": {
         "dark": ("#a5b4fc", "rgba(99, 102, 241, 0.16)", "rgba(99, 102, 241, 0.36)"),
-        "light": ("#B5482A", "rgba(181, 72, 42, 0.08)", "rgba(181, 72, 42, 0.25)"),
+        # Bleu (et non la couleur primaire terracotta) : « Pertinent » ne doit pas ressembler à une alerte.
+        "light": ("#3B5B92", "rgba(59, 91, 146, 0.08)", "rgba(59, 91, 146, 0.25)"),
         "auto": ("#818cf8", "rgba(99, 102, 241, 0.16)", "rgba(99, 102, 241, 0.36)"),
     },
     "warn": {

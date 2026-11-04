@@ -243,7 +243,7 @@ function createInstance(root) {
             },
             allVisibleChecked ? 'Tout décocher' : 'Tout sélectionner',
           )
-        : null,
+        : '', // pas de null ici : replaceChildren l'afficherait en texte « null »
     )
     const segButtons = SEGMENTS.map((seg) =>
       h(
@@ -271,7 +271,7 @@ function createInstance(root) {
           h('button', { type: 'button', class: 'btn-bulk primary', onclick: () => emitClaudePack(Array.from(inst.checked)) }, 'Pack Claude'),
         )
       : null
-    segmentsEl.replaceChildren(...segButtons, bulkBar)
+    segmentsEl.replaceChildren(...[...segButtons, bulkBar].filter(Boolean))
   }
 
   function renderList(list) {
@@ -522,7 +522,8 @@ function createInstance(root) {
     }
     parts.push(h('p', { class: 'muted', style: 'margin-top:20px;font-size:12px' }, 'Raccourcis : j / k naviguer · o ouvrir · l lettre · p postulé · x archiver · ? aide'))
 
-    detailEl.replaceChildren(...parts)
+    // replaceChildren convertit null en texte « null » : on ne garde que les nœuds.
+    detailEl.replaceChildren(...parts.filter(Boolean))
     detailEl.scrollTop = sameJob ? scroll : 0
     inst.lastDetailId = job.id
   }

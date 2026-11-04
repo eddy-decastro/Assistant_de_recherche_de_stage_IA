@@ -16,7 +16,8 @@
 
 /* Tonalités */
 .tone-positive { --tone: #2f855a; }
-.tone-accent { --tone: var(--accent); }
+/* Bleu distinct de la couleur primaire (terracotta, trop proche de .tone-alert). */
+.tone-accent { --tone: #3b5b92; }
 .tone-warn { --tone: #b7791f; }
 .tone-alert { --tone: #c0392b; }
 .tone-mute { --tone: color-mix(in srgb, var(--st-text-color) 60%, transparent); }
