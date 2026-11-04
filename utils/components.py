@@ -568,12 +568,12 @@ def render_sidebar_filters(jobs: list[dict[str, Any]], sources: Sequence[str]) -
             )
             sort_by = st.radio(
                 "Ordre de tri du flux",
-                options=["v3", "v4", "v4_class"],
+                options=["score", "v4_class", "v3_legacy"],
                 index=0,
                 format_func=lambda k: {
-                    "v3": "Score v3 (par défaut)",
-                    "v4": "Note affichée v4 (général)",
+                    "score": "Meilleur score (note v4)",
                     "v4_class": "Note de classe v4 (intra-classe)",
+                    "v3_legacy": "Ancien score v3",
                 }[k],
             )
 

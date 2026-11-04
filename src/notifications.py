@@ -37,8 +37,13 @@ __all__ = [
 ]
 
 def _effective_score(job: dict[str, Any]) -> float:
-    """Retourne le score prioritaire de l'offre (rerank_score puis final_score)."""
-    score = job.get("rerank_score")
+    """Retourne le score prioritaire de l'offre (note v4, puis rerank_score, puis final_score).
+
+    Depuis N1, la note v4 est la note unique : les nouvelles offres n'ont plus de note v3.
+    """
+    score = job.get("v4_display_score")
+    if score is None:
+        score = job.get("rerank_score")
     if score is None:
         score = job.get("final_score")
     try:

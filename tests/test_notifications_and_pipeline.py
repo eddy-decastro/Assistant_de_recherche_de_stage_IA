@@ -21,6 +21,16 @@ from src.notifications import (
 from src.storage.database import Database
 
 
+def test_score_effectif_lit_d_abord_la_note_v4() -> None:
+    """N1 : la note v4 prime ; les nouvelles offres n'ont plus de note v3."""
+    from src.notifications import _effective_score
+
+    assert _effective_score({"v4_display_score": 82, "rerank_score": 40, "final_score": 30}) == 82
+    assert _effective_score({"rerank_score": 40, "final_score": 30}) == 40
+    assert _effective_score({"final_score": 30}) == 30
+    assert _effective_score({}) == 0.0
+
+
 def test_automations_disabled_return_immediately(tmp_path: Path) -> None:
     """Vérifie que les trois fonctions quittent immédiatement sans effet si leur toggle est désactivé."""
     db = Database(tmp_path / "test.db")
