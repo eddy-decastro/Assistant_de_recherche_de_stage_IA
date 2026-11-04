@@ -90,6 +90,11 @@ Valeurs autorisées uniquement parmi :
 ["defense", "finance", "trading", "petite_structure", "class_doubt", "teletravail", "anglais_requis", "these_cifre", "pre_embauche", "donnees_reelles", "ml_scientifique"]
 Pas de malus éthique (défense) ni finance dans les étoiles ou l'ajustement : utilise simplement les étiquettes "defense", "finance" ou "trading".
 
+RETOURS D'EDDY (blocs ajoutés en fin de prompt, s'ils existent)
+- « CORRECTIONS D'EDDY » : la note qu'Eddy aurait mise à certaines offres, avec sa raison. C'est le retour le plus fort. Pour une offre de la même entreprise ou du même type de mission, oriente classe, étoiles et ajustement dans le sens de la correction et applique sa raison.
+- « DÉCISIONS RÉCENTES D'EDDY » : ce qu'il a postulé ou ignoré. Calibration pour les cas limites.
+- Dans les deux cas : la grille ci-dessus reste la base, les citations restent obligatoires, et une correction ne se recopie pas sur une offre sans rapport.
+
 FORMAT DE SORTIE (JSON strict uniquement, sans texte autour)
 {
   "contract_type": "STAGE",

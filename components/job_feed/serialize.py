@@ -464,6 +464,17 @@ def serialize_job(
         "ignore_reason": ignore_code if status == STATUS_IGNORED else "",
         "ignore_reason_label": ignore_reason_label(ignore_code) if status == STATUS_IGNORED else "",
         "ignore_comment": str(job.get("rejection_comment") or "").strip(),
+        # --- Correction de note par Eddy (N6) : ce qu'il aurait mis ---
+        "user_v4_class": str(job.get("user_v4_class") or "").strip().upper(),
+        "user_v4_score": (
+            int(job["user_v4_score"]) if job.get("user_v4_score") is not None else None
+        ),
+        "user_v4_comment": str(job.get("user_v4_comment") or "").strip(),
+        "user_v4_at": (
+            job["user_v4_at"].isoformat()
+            if hasattr(job.get("user_v4_at"), "isoformat")
+            else str(job.get("user_v4_at") or "")
+        ),
     }
 
 

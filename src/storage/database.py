@@ -51,6 +51,10 @@ from src.constants import (
     STATUS_REJECTED,
     STATUS_EXCLUDED,
     TIER_ESN,
+    USER_GRADE_COMMENT_MAX_LENGTH,
+    USER_GRADE_SCORE_MAX,
+    USER_GRADE_SCORE_MIN,
+    V4_CLASSES,
     VALID_STATUSES,
     REFUSAL_REASON,
     SOURCE_MANUAL,
@@ -62,6 +66,9 @@ Base = declarative_base()
 
 # Colonnes stockant du JSON sérialisé (listes de chaînes).
 _JSON_COLUMNS = ("match_reasons", "red_flags", "tech_stack")
+# Correction de note saisie par Eddy (N6) : écrite uniquement par ``set_user_grade``,
+# jamais par un upsert du pipeline ni par un recalcul v4.
+USER_GRADE_COLUMNS: tuple[str, ...] = ("user_v4_class", "user_v4_score", "user_v4_comment", "user_v4_at")
 # --- Robustesse SQLite ------------------------------------------------------ #
 # WAL : le dashboard peut LIRE pendant qu'un scraper ÉCRIT (fin des
 # ``database is locked`` quand les deux tournent en même temps).
@@ -271,6 +278,14 @@ class Job(Base):
     v4_raw_json = Column(Text, nullable=True)
     v4_model = Column(String(100), nullable=True)
     v4_graded_at = Column(DateTime, nullable=True)
+
+    # --- Correction de note par Eddy (N6, colonnes utilisateur) ---
+    # Ce qu'Eddy aurait mis : classe A..E (NULL = pas de classe), note 0-100
+    # (NULL = pas de note), son « car … », et la date de la correction.
+    user_v4_class = Column(String(1), nullable=True)
+    user_v4_score = Column(Integer, nullable=True)
+    user_v4_comment = Column(Text, nullable=True)
+    user_v4_at = Column(DateTime, nullable=True)
 
     def to_dict(self) -> dict[str, Any]:
         data = {column.name: getattr(self, column.name) for column in self.__table__.columns}
@@ -505,6 +520,11 @@ class Database:
                 "v4_raw_json": "TEXT",
                 "v4_model": "VARCHAR(100)",
                 "v4_graded_at": "DATETIME",
+                # Correction de note par Eddy (N6)
+                "user_v4_class": "VARCHAR(1)",
+                "user_v4_score": "INTEGER",
+                "user_v4_comment": "TEXT",
+                "user_v4_at": "DATETIME",
             },
             "seen_jobs": {
                 # Empreinte du filtre métier d'un rejet (réévaluation automatique).
@@ -629,7 +649,10 @@ class Database:
                 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(Job).values(**fields)
-            update_dict = {k: v for k, v in fields.items() if k != "id"}
+            # Une offre déjà en base garde la correction de note d'Eddy (N6).
+            update_dict = {
+                k: v for k, v in fields.items() if k != "id" and k not in USER_GRADE_COLUMNS
+            }
             
             if update_dict:
                 stmt = stmt.on_conflict_do_update(
@@ -763,6 +786,90 @@ class Database:
         with self.SessionLocal() as session:
             stmt = select(*columns).where(
                 Job.status.in_([STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED, STATUS_IGNORED])
+            )
+            names = [c.key for c in columns]
+            return [dict(zip(names, row)) for row in session.execute(stmt).all()]
+
+    # --- Correction de note par Eddy (N6) --------------------------------- #
+    @staticmethod
+    def _parse_user_grade(
+        cls: Any, score: Any, comment: Any
+    ) -> tuple[str | None, int | None, str | None]:
+        """Valide une correction : (classe | None, note | None, commentaire | None).
+
+        Lève ``ValueError`` si la classe n'est pas A..E ou si la note n'est pas un
+        nombre entre 0 et 100. Les valeurs vides (``None``, ``""``) valent « rien ».
+        """
+        text_cls = str(cls or "").strip().upper()
+        if text_cls and text_cls not in V4_CLASSES:
+            raise ValueError(f"Classe invalide : {cls!r} (attendu : {', '.join(V4_CLASSES)} ou vide)")
+        parsed_score: int | None = None
+        if score is not None and not (isinstance(score, str) and not score.strip()):
+            if isinstance(score, bool):
+                raise ValueError(f"Note invalide : {score!r}")
+            try:
+                number = float(str(score).strip().replace(",", ".")) if isinstance(score, str) else float(score)
+            except (TypeError, ValueError):
+                raise ValueError(f"Note invalide : {score!r} (attendu : nombre entre 0 et 100)") from None
+            if number != number or not USER_GRADE_SCORE_MIN <= number <= USER_GRADE_SCORE_MAX:
+                raise ValueError(
+                    f"Note invalide : {score!r} (attendu : entre {USER_GRADE_SCORE_MIN} et {USER_GRADE_SCORE_MAX})"
+                )
+            parsed_score = int(round(number))
+        text = str(comment or "").strip()[:USER_GRADE_COMMENT_MAX_LENGTH] or None
+        return text_cls or None, parsed_score, text
+
+    def set_user_grade(
+        self,
+        job_id: str,
+        cls: str | None,
+        score: int | float | str | None,
+        comment: str | None = None,
+    ) -> bool:
+        """Enregistre la note qu'Eddy aurait mise (classe A..E, note 0-100, « car … »).
+
+        Tout vide (classe, note et commentaire) efface la correction. Lève
+        ``ValueError`` si la classe ou la note est invalide ; renvoie False si
+        l'offre n'existe pas. Ne touche ni au statut ni à la note v4 de l'IA.
+        """
+        parsed_cls, parsed_score, text = self._parse_user_grade(cls, score, comment)
+        empty = parsed_cls is None and parsed_score is None and text is None
+        with self.SessionLocal() as session:
+            record = session.get(Job, job_id)
+            if record is None:
+                return False
+            record.user_v4_class = parsed_cls
+            record.user_v4_score = parsed_score
+            record.user_v4_comment = text
+            record.user_v4_at = None if empty else datetime.utcnow()
+            session.commit()
+            return True
+
+    def get_user_grades(self) -> list[dict[str, Any]]:
+        """Offres corrigées par Eddy, les plus récentes d'abord (champs légers).
+
+        Chaque élément : id, title, company, status, v4_class et v4_display_score
+        (note de l'IA), v4_graded_at, user_v4_class, user_v4_score, user_v4_comment,
+        user_v4_at.
+        """
+        columns = (
+            Job.id,
+            Job.title,
+            Job.company,
+            Job.status,
+            Job.v4_class,
+            Job.v4_display_score,
+            Job.v4_graded_at,
+            Job.user_v4_class,
+            Job.user_v4_score,
+            Job.user_v4_comment,
+            Job.user_v4_at,
+        )
+        with self.SessionLocal() as session:
+            stmt = (
+                select(*columns)
+                .where(Job.user_v4_at.is_not(None))
+                .order_by(Job.user_v4_at.desc(), Job.id.desc())
             )
             names = [c.key for c in columns]
             return [dict(zip(names, row)) for row in session.execute(stmt).all()]

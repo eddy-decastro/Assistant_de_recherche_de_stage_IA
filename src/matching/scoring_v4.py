@@ -358,6 +358,131 @@ def build_feedback_block(
     return _render(lines) if lines else ""
 
 
+# --------------------------------------------------------------------------- #
+# 1 ter. Corrections de note par Eddy (N6), prioritaires sur les décisions
+# --------------------------------------------------------------------------- #
+USER_GRADES_HEADER = (
+    "CORRECTIONS D'EDDY (notes qu'il aurait mises lui-même ; PRIORITAIRES sur les décisions "
+    "ci-dessous). Pour une offre similaire (même entreprise, même type de mission), oriente "
+    "classe, étoiles et ajustement dans le sens de sa correction et de son « car » ; "
+    "ne les recopie pas aveuglément sur une offre différente, la grille reste la base"
+)
+DEFAULT_USER_GRADES_MAX_ITEMS = 10
+DEFAULT_USER_GRADES_MAX_CHARS = 1500
+
+
+def _grade_text(cls: Any, score: Any) -> str:
+    """« B 70 », « B », « 70 » ou « non notée »."""
+    letter = str(cls or "").strip().upper()
+    number = "" if score is None or score == "" else str(int(round(float(score))))
+    return " ".join(part for part in (letter, number) if part) or "non notée"
+
+
+def has_user_grade(job: dict[str, Any]) -> bool:
+    """Vrai si Eddy a laissé une correction (classe, note ou commentaire)."""
+    return bool(
+        str(job.get("user_v4_class") or "").strip()
+        or job.get("user_v4_score") is not None
+        or str(job.get("user_v4_comment") or "").strip()
+    )
+
+
+_LEADING_BECAUSE_RE = re.compile(r"^\s*(?:car\b|parce\s+que\b|parce\s+qu')\s*[:,]?\s*", re.IGNORECASE)
+
+
+def user_grade_reason(comment: Any) -> str:
+    """Le « car … » d'Eddy sur une ligne, sans le « car » initial s'il l'a tapé."""
+    return _LEADING_BECAUSE_RE.sub("", re.sub(r"\s+", " ", str(comment or "")).strip())
+
+
+def _user_grade_line(job: dict[str, Any]) -> str:
+    title = _short(job.get("title"), 70) or "Offre sans titre"
+    company = _short(job.get("company"), 40) or "entreprise inconnue"
+    ai = _grade_text(job.get("v4_class"), job.get("v4_display_score"))
+    eddy = _grade_text(job.get("user_v4_class"), job.get("user_v4_score"))
+    if eddy == "non notée":
+        eddy = "pas de note précise"
+    line = f"- {company} — {title} : IA {ai} → Eddy {eddy}"
+    comment = _short(user_grade_reason(job.get("user_v4_comment")), 160)
+    if comment:
+        line += f", car « {comment} »"
+    return line
+
+
+def build_user_grades_block(
+    grades: list[dict[str, Any]],
+    max_items: int = DEFAULT_USER_GRADES_MAX_ITEMS,
+    max_chars: int = DEFAULT_USER_GRADES_MAX_CHARS,
+) -> str:
+    """Construit le bloc « CORRECTIONS D'EDDY » (déterministe, borné).
+
+    Les corrections les plus récentes d'abord (``user_v4_at``, puis identifiant),
+    au plus ``max_items`` lignes, retirées par la fin jusqu'à tenir dans
+    ``max_chars``. Chaque ligne : entreprise, titre, note de l'IA, note d'Eddy et
+    son « car … ». Retourne ``""`` sans correction.
+    """
+    max_items = max(0, int(max_items))
+    if max_items == 0:
+        return ""
+    picked = sorted(
+        (g for g in grades if has_user_grade(g)),
+        key=lambda g: (str(g.get("user_v4_at") or ""), str(g.get("id") or "")),
+        reverse=True,
+    )[:max_items]
+    lines = [_user_grade_line(g) for g in picked]
+
+    def _render(selected: list[str]) -> str:
+        return USER_GRADES_HEADER + " :\n" + "\n".join(selected)
+
+    while lines and len(_render(lines)) > max_chars:
+        lines.pop()
+    return _render(lines) if lines else ""
+
+
+def user_grades_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Paramètres des corrections d'Eddy (``scoring_v4.user_grades``), avec valeurs par défaut."""
+    ug = ((config or {}).get("scoring_v4") or {}).get("user_grades") or {}
+    return {
+        "enabled": bool(ug.get("enabled", True)),
+        "max_items": int(ug.get("max_items", DEFAULT_USER_GRADES_MAX_ITEMS)),
+        "max_chars": int(ug.get("max_chars", DEFAULT_USER_GRADES_MAX_CHARS)),
+    }
+
+
+def build_calibration_block(db: Any, config: dict[str, Any] | None) -> str:
+    """Bloc complet injecté dans le prompt : corrections d'Eddy, puis décisions récentes.
+
+    Chaque partie est désactivable en config (``scoring_v4.user_grades.enabled``,
+    ``scoring_v4.feedback.enabled``) et ne fait jamais échouer la notation.
+    """
+    parts: list[str] = []
+    grades_cfg = user_grades_settings(config)
+    if grades_cfg["enabled"] and hasattr(db, "get_user_grades"):
+        try:
+            parts.append(
+                build_user_grades_block(
+                    db.get_user_grades(),
+                    max_items=grades_cfg["max_items"],
+                    max_chars=grades_cfg["max_chars"],
+                )
+            )
+        except Exception as exc:
+            logger.warning("Corrections d'Eddy indisponibles : %s", exc)
+    fb_cfg = feedback_settings(config)
+    if fb_cfg["enabled"]:
+        try:
+            parts.append(
+                build_feedback_block(
+                    db.get_feedback_jobs(),
+                    max_examples=fb_cfg["max_examples"],
+                    max_chars=fb_cfg["max_chars"],
+                )
+            )
+        except Exception as exc:
+            logger.warning("Bloc de décisions d'Eddy indisponible : %s", exc)
+    return "\n\n".join(part for part in parts if part)
+
+
 def feedback_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     """Paramètres de la boucle de retour (``scoring_v4.feedback``), avec valeurs par défaut."""
     fb = ((config or {}).get("scoring_v4") or {}).get("feedback") or {}
@@ -620,23 +745,15 @@ class LLMJudgeV4:
             else _resolve_provider_key("deepseek")
         )
 
-        # Boucle de retour (N3) : calculée une fois par juge, à partir de la base
-        # passée en paramètre (jamais lue implicitement) ou d'un bloc fourni.
+        # Boucle de retour (N3 + N6) : calculée une fois par juge, à partir de la
+        # base passée en paramètre (jamais lue implicitement) ou d'un bloc fourni.
+        # Corrections de note d'Eddy d'abord, puis ses décisions récentes.
         if feedback_block is not None:
             self.feedback_block = feedback_block
+        elif db is not None:
+            self.feedback_block = build_calibration_block(db, self.config)
         else:
             self.feedback_block = ""
-            settings = feedback_settings(self.config)
-            if db is not None and settings["enabled"]:
-                try:
-                    self.feedback_block = build_feedback_block(
-                        db.get_feedback_jobs(),
-                        max_examples=settings["max_examples"],
-                        max_chars=settings["max_chars"],
-                    )
-                except Exception as exc:  # la notation ne dépend jamais de ce bloc
-                    logger.warning("Bloc de décisions d'Eddy indisponible : %s", exc)
-                    self.feedback_block = ""
 
     @property
     def system_prompt(self) -> str:

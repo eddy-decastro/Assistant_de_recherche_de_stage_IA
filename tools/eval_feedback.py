@@ -8,7 +8,9 @@ main (hors archivage automatique et offre fermée) :
   avec l'ancienne note v3 en comparaison ;
 - détail par raison d'ignorer (``rejection_reason``) ;
 - liste des offres ignorées mais notées haut (>= 70 par défaut), pour guider
-  l'ajustement du prompt.
+  l'ajustement du prompt ;
+- écart entre l'IA et Eddy sur les offres dont il a corrigé la note (N6) :
+  classe exacte (%), écart absolu moyen et biais moyen de la note.
 
 LECTURE SEULE : la base est copiée dans un dossier temporaire (API ``backup`` de
 SQLite, source ouverte en ``mode=ro``) et seule la copie est lue.
@@ -38,11 +40,18 @@ from src.constants import (  # noqa: E402
     STATUS_REJECTED,
     ignore_reason_label,
 )
-from src.matching.scoring_v4 import is_applied_decision, is_manual_ignore  # noqa: E402
+from src.matching.scoring_v4 import (  # noqa: E402
+    has_user_grade,
+    is_applied_decision,
+    is_manual_ignore,
+    user_grade_reason,
+)
 
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "stage_copilot.db"
 DEFAULT_HIGH_THRESHOLD = 70.0
 NO_REASON = "(sans raison)"
+# Nombre de corrections listées dans le rapport (plus grands écarts d'abord).
+MAX_LISTED_CORRECTIONS = 10
 
 _WANTED_COLUMNS = (
     "id",
@@ -56,6 +65,10 @@ _WANTED_COLUMNS = (
     "v4_class",
     "v4_display_score",
     "rerank_score",
+    "user_v4_class",
+    "user_v4_score",
+    "user_v4_comment",
+    "user_v4_at",
 )
 
 
@@ -74,13 +87,14 @@ def copy_database_readonly(source: Path, target: Path) -> None:
 
 
 def load_decision_jobs(db_copy: Path) -> list[dict[str, Any]]:
-    """Lit (sur la copie) les offres décidées par Eddy, colonnes absentes tolérées."""
+    """Lit (sur la copie) les offres décidées ou corrigées par Eddy, colonnes absentes tolérées."""
     conn = sqlite3.connect(str(db_copy))
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         cols = [c for c in _WANTED_COLUMNS if c in existing]
+        corrected = " OR user_v4_at IS NOT NULL" if "user_v4_at" in existing else ""
         rows = conn.execute(
-            f"SELECT {', '.join(cols)} FROM jobs WHERE status IN (?, ?, ?, ?)",
+            f"SELECT {', '.join(cols)} FROM jobs WHERE status IN (?, ?, ?, ?){corrected}",
             (STATUS_APPLIED, STATUS_INTERVIEW, STATUS_REJECTED, STATUS_IGNORED),
         ).fetchall()
     finally:
@@ -109,6 +123,46 @@ def auc(positives: list[float], negatives: list[float]) -> float | None:
 
 def _scores(jobs: list[dict[str, Any]], column: str) -> list[float]:
     return [float(j[column]) for j in jobs if j.get(column) is not None]
+
+
+def evaluate_user_grades(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Écart IA vs Eddy sur les offres dont Eddy a corrigé la note (N6).
+
+    - ``class_exact`` : part des offres (classe IA et classe Eddy connues) où la
+      classe v4 est celle qu'Eddy aurait mise ;
+    - ``score_mae`` : écart absolu moyen entre ``v4_display_score`` et la note d'Eddy ;
+    - ``score_bias`` : écart moyen signé (IA - Eddy ; positif = l'IA note trop haut) ;
+    - ``items`` : les corrections, plus grands écarts de note d'abord.
+    """
+    corrected = [j for j in jobs if has_user_grade(j)]
+    class_pairs = [
+        (str(j["v4_class"]).strip().upper(), str(j["user_v4_class"]).strip().upper())
+        for j in corrected
+        if str(j.get("v4_class") or "").strip() and str(j.get("user_v4_class") or "").strip()
+    ]
+    score_gaps = [
+        float(j["v4_display_score"]) - float(j["user_v4_score"])
+        for j in corrected
+        if j.get("v4_display_score") is not None and j.get("user_v4_score") is not None
+    ]
+
+    def _gap(job: dict[str, Any]) -> float:
+        if job.get("v4_display_score") is None or job.get("user_v4_score") is None:
+            return -1.0
+        return abs(float(job["v4_display_score"]) - float(job["user_v4_score"]))
+
+    items = sorted(corrected, key=lambda j: (-_gap(j), str(j.get("id") or "")))
+    return {
+        "count": len(corrected),
+        "class_compared": len(class_pairs),
+        "class_exact": (
+            sum(1 for ai, eddy in class_pairs if ai == eddy) / len(class_pairs) if class_pairs else None
+        ),
+        "score_compared": len(score_gaps),
+        "score_mae": (sum(abs(g) for g in score_gaps) / len(score_gaps)) if score_gaps else None,
+        "score_bias": (sum(score_gaps) / len(score_gaps)) if score_gaps else None,
+        "items": items,
+    }
 
 
 def evaluate(jobs: list[dict[str, Any]], high_threshold: float = DEFAULT_HIGH_THRESHOLD) -> dict[str, Any]:
@@ -158,6 +212,7 @@ def evaluate(jobs: list[dict[str, Any]], high_threshold: float = DEFAULT_HIGH_TH
         "by_reason": reasons,
         "high_threshold": high_threshold,
         "high_ignored": high,
+        "user_grades": evaluate_user_grades(jobs),
     }
 
 
@@ -199,7 +254,40 @@ def format_report(result: dict[str, Any]) -> str:
             f"  - [{job.get('v4_class') or '?'} {int(round(float(job['v4_display_score'])))}] "
             f"{job.get('title') or 'Sans titre'} — {job.get('company') or '?'} : {reason}{suffix}"
         )
+    lines.append("")
+    lines.extend(_format_user_grades(result.get("user_grades") or evaluate_user_grades([])))
     return "\n".join(lines)
+
+
+def _grade(cls: Any, score: Any) -> str:
+    letter = str(cls or "").strip().upper() or "?"
+    return letter if score is None else f"{letter} {int(round(float(score)))}"
+
+
+def _format_user_grades(grades: dict[str, Any]) -> list[str]:
+    lines = ["ÉCART IA / EDDY SUR LES NOTES CORRIGÉES"]
+    if not grades["count"]:
+        lines.append("  Aucune note corrigée par Eddy.")
+        return lines
+    exact = grades["class_exact"]
+    lines.append(
+        f"  {grades['count']} offre(s) corrigée(s). Classe exacte : "
+        + ("n/d" if exact is None else f"{_fmt(exact * 100, 0)} %")
+        + f" (sur {grades['class_compared']})"
+    )
+    lines.append(
+        f"  Écart absolu moyen de note : {_fmt(grades['score_mae'], 1)} point(s) ; "
+        f"biais moyen (IA - Eddy) : {_fmt(grades['score_bias'], 1)} (sur {grades['score_compared']})"
+    )
+    for job in grades["items"][:MAX_LISTED_CORRECTIONS]:
+        comment = user_grade_reason(job.get("user_v4_comment"))
+        suffix = f" car « {comment} »" if comment else ""
+        lines.append(
+            f"  - {job.get('title') or 'Sans titre'} — {job.get('company') or '?'} : "
+            f"IA {_grade(job.get('v4_class'), job.get('v4_display_score'))} → "
+            f"Eddy {_grade(job.get('user_v4_class'), job.get('user_v4_score'))}{suffix}"
+        )
+    return lines
 
 
 def run(db_path: Path, high_threshold: float = DEFAULT_HIGH_THRESHOLD) -> tuple[dict[str, Any], str]:
