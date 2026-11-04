@@ -16,12 +16,26 @@ chaque test (fixture ``autouse``) :
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
 import requests
 import requests.adapters
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.storage.database import Database  # noqa: E402
+
+# Bases réelles (scores LLM coûteux) : aucun test ne doit les ouvrir en écriture.
+# Ouvrir une ``Database`` suffit à y écrire (create_all + migrations ALTER TABLE).
+REAL_DB_PATHS: frozenset[Path] = frozenset(
+    (PROJECT_ROOT / "data" / name).resolve() for name in ("stage_copilot.db", "jobs.db")
+)
 
 # Variables de clés lues par src/matching/* (llm_judge, scoring_v4, cover_letter…).
 LLM_KEY_ENV_VARS: tuple[str, ...] = (
@@ -110,3 +124,34 @@ def _block_real_llm_calls(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixtu
             + ". Mocker l'appel (ex. patch de _generate_short_llm_once ou d'un faux client).",
             pytrace=False,
         )
+
+
+def is_real_db_path(db_path: object) -> bool:
+    """Vrai si ``db_path`` désigne data/stage_copilot.db ou data/jobs.db (relatif au
+    répertoire courant, comme l'ouvre ``Database``, ou à la racine du projet)."""
+    path = Path(str(db_path))
+    candidates = {path.resolve()}
+    if not path.is_absolute():
+        candidates.add((PROJECT_ROOT / path).resolve())
+    return bool(candidates & REAL_DB_PATHS)
+
+
+@pytest.fixture(autouse=True)
+def _redirect_real_database(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Redirige vers une base jetable toute ``Database`` ouverte sur la vraie base.
+
+    Certaines pages Streamlit testées (Candidatures, Paramètres…) ouvrent la base
+    déclarée dans config.yaml : sans ce garde-fou, les migrations (ALTER TABLE)
+    s'appliqueraient à data/stage_copilot.db.
+    """
+    original_init = Database.__init__
+    redirected: list[str] = []
+
+    def guarded_init(self, db_path="data/stage_copilot.db"):  # type: ignore[no-untyped-def]
+        if is_real_db_path(db_path):
+            redirected.append(str(db_path))
+            db_path = tmp_path_factory.mktemp("base_redirigee") / "stage_copilot_test.db"
+        original_init(self, db_path)
+
+    monkeypatch.setattr(Database, "__init__", guarded_init)
+    yield redirected
