@@ -111,34 +111,19 @@ Correction de mon rapport précédent : la fusion R2 couvre bien toutes les tabl
 
 Chaque étape : tests verts (`pytest`) et `ruff check .`, puis commit sur `main`, puis push. Aucune étape n'écrit dans `data/stage_copilot.db` sauf les étapes marquées 🧑.
 
-**Étape 0 — Remettre la CI en marche (jour 1)**
-1. ✅ Pousser `main`.
-2. ⏳ P3 : garde-fou d'échec CI (test : `GITHUB_ACTIONS=1` sans R2 → code de sortie 1).
-3. 🧑 Pousser la base locale à jour sur R2, puis ajouter les secrets (§5).
-4. 🧑 Lancer le workflow à la main (`gh workflow run daily_scraper.yml`), vérifier dans le journal « Mémoire de collecte préchargée : » supérieur à 0 et « Notation v4 : N offres ».
-5. 🧑 `python scripts/sync_db.py --pull` sur le PC pour récupérer les offres du run.
+**État au 10/11 au soir** : tout le code du plan est fait et poussé (version de grille, export protégé, quotas par requête, 429, républications, rotation, profil fictif, front, thème indigo). Le run GitHub quotidien est abandonné.
 
-**Étape 1 — Notation complète (jours 1 à 3)**
-1. 🧑 Finir la mission Antigravity en cours (lots 088 à 091 et les 6 lots en désaccord), puis `tools/antigravity_v4.py ingest --dry-run`, puis `ingest`.
-2. ⏳ N10 : `export --dir` et protection des lots non ingérés.
-3. ⏳ N8 : colonne `v4_grid_version` + `export --stale`.
-4. 🧑 Vague 2 Antigravity avec le nouveau prompt, sur `--stale`.
-5. ⏳ N7 : notation de toutes les nouvelles offres en ligne, avec plafond de sécurité.
+**Reste à faire par Eddy (sur la vraie base, essai à blanc d'abord)**
+1. 🧑 Finir la mission Antigravity en cours, puis `tools/antigravity_v4.py ingest --dry-run`, puis `ingest`.
+2. 🧑 `tools/dedupe_reposts.py` puis `--apply` ; `tools/rotate_backups.py` puis `--apply` ; ranger les `.bak` de `data/` et supprimer `data/jobs.db` (vide).
+3. 🧑 Gros scraping, puis `export --stale` et vague 2 Antigravity (prompt : PROMPT_ANTIGRAVITY_renotation_complete.md).
+4. 🧑 N11 : une semaine de retours (raison à chaque « ignorer », quelques notes corrigées), puis `tools/eval_feedback.py`.
+5. 🧑 Décisions : Streamlit / Render (U7), dépôt public ou privé (X1).
 
-**Étape 2 — Collecte plus large (jour 4)**
-1. ⏳ S7 : plafonds par requête dans `config.yaml`, puis mesure sur un run (nombre de requêtes réellement lancées, part de classes A/B parmi les nouvelles).
-2. ⏳ S8 : rythme LinkedIn et arrêt sur 429.
-3. ⏳ S9 : date de publication LinkedIn + rattrapage sur le cache.
-
-**Étape 3 — Base propre (jour 5)**
-1. ⏳ D1 : `duplicate_of` + dédoublonnage à l'ingestion + script de rattrapage (essai sur copie, puis 🧑 sur la vraie base après sauvegarde).
-2. ⏳ D2, D3 : `CLAUDE.md`, nettoyage de `data/`, rotation des sauvegardes.
-3. ⏳ X1 : profil d'exemple fictif.
-
-**Étape 4 — Finitions (quand le reste tourne)**
-1. 🧑 U7 : décision Streamlit / Render.
-2. ⏳ U8, P4, D4.
-3. 🧑 N11 : une semaine de retours, puis `tools/eval_feedback.py` pour comparer v3 et v4.
+**Reste à coder (non prioritaire)**
+1. ⏳ Lenteur de `/api/jobs` (~20 s au premier chargement : toute la base est relue à chaque requête).
+2. ⏳ D4 : découper `src/storage/database.py`.
+3. ⏳ Mesurer l'effet des quotas par requête (S7) sur le prochain run.
 
 ## 5. Commandes pour Eddy (PowerShell)
 
