@@ -17,6 +17,7 @@ interface JobDetailProps {
   onApplied: () => void;
   onIgnore: () => void;
   onTrash: () => void;
+  onReinstate: () => void;
   onGradeV4: () => void;
   onSaveNotes: (text: string) => Promise<void>;
   onSaveGrade: (grade: UserGradePayload) => Promise<void>;
@@ -80,7 +81,10 @@ export function JobDetail({ job, classes, gradeBounds, ...actions }: JobDetailPr
 
       {job.excluded && (
         <p className="note note-alert">
-          <strong>Offre exclue.</strong> {job.exclusion_reason || "Motif non précisé."}
+          <strong>Offre exclue.</strong> {job.exclusion_reason || "Motif non précisé."}{" "}
+          <button type="button" className="btn ghost" onClick={actions.onReinstate}>
+            Remettre à trier
+          </button>
         </p>
       )}
       {job.contract_to_verify && (

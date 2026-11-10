@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import streamlit as st
 import html
 from src.constants import (
+    REINSTATED_REASON,
     BENCHMARK_PENALTY,
     CONTRACT_TYPE_LABELS,
     CONTRACT_TYPES,
@@ -369,7 +370,12 @@ def has_v4_score(job: dict[str, Any]) -> bool:
 
 
 def exclusion_info(job: dict[str, Any]) -> tuple[bool, str]:
-    """(exclue ?, motif). La v4 décide si elle a noté l'offre, sinon l'ancienne grille v3."""
+    """(exclue ?, motif). La v4 décide si elle a noté l'offre, sinon l'ancienne grille v3.
+
+    Une offre remise à trier par Eddy (``REINSTATED_REASON``) n'est jamais exclue.
+    """
+    if str(job.get("rejection_reason") or "") == REINSTATED_REASON:
+        return False, ""
     if has_v4_score(job):
         for flag in _v4_flags(job):
             if flag.startswith(V4_FLAG_EXCLUDED_PREFIX):

@@ -36,6 +36,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.constants import (
+    REINSTATED_REASON,
     IGNORE_COMMENT_MAX_LENGTH,
     IGNORE_REASONS,
     STATUS_IGNORED,
@@ -86,6 +87,8 @@ def _sync_v4_exclusion_status(record: Any, excluded: bool) -> None:
     Les statuts d'Eddy (POSTULÉ, ENTRETIEN, IGNORÉ, REJETÉ) ne sont jamais touchés.
     """
     if excluded and record.status == STATUS_NEW:
+        if (record.rejection_reason or "") == REINSTATED_REASON:
+            return  # Eddy a remis l'offre à trier : sa décision prime sur l'IA
         record.status = STATUS_EXCLUDED
     elif not excluded and record.status == STATUS_EXCLUDED:
         record.status = STATUS_NEW
@@ -706,6 +709,8 @@ class Database:
             record.status = status
             if rejection_reason is not None:
                 record.rejection_reason = rejection_reason[:300] or None
+            if status != STATUS_IGNORED:
+                record.rejection_comment = None  # le commentaire explique un « ignorer »
             if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
                 record.applied_at = datetime.utcnow()
             session.commit()
@@ -731,6 +736,8 @@ class Database:
                 record.status = status
                 if rejection_reason is not None:
                     record.rejection_reason = rejection_reason[:300] or None
+                if status != STATUS_IGNORED:
+                    record.rejection_comment = None  # le commentaire explique un « ignorer »
                 if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
                     record.applied_at = now
                 updated += 1

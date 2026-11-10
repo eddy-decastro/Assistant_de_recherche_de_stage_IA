@@ -213,6 +213,8 @@ export interface JobsQuery {
   /** Ne garder qu'une entreprise (JobItem.company_key ou nom brut, normalisé côté API). */
   company_key?: string;
   min_score?: number;
+  /** Borne haute exclusive de la note (onglet « 60 à 79 »). */
+  max_score?: number;
   hide_processed?: boolean;
   hide_excluded?: boolean;
   /** Onglet Exclues : seulement les offres exclues (hide_processed est alors ignoré). */

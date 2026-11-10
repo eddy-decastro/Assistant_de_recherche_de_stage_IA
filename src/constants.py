@@ -410,6 +410,9 @@ IGNORE_REASON_LABELS: dict[str, str] = {
 # décisions d'Eddy, elles sont exclues de la boucle de retour et de l'évaluation.
 AUTO_ARCHIVE_REASON = "auto_archive"
 CLOSED_OFFER_REASON = "offre_fermee"
+#: Offre exclue par l'IA qu'Eddy remet « à trier » : l'exclusion v4 ne s'applique
+#: plus (ni à l'affichage, ni à une nouvelle notation). Rangé dans rejection_reason.
+REINSTATED_REASON = "remis_a_trier"
 #: Republication d'une offre déjà en base (même entreprise, même titre, même texte).
 DUPLICATE_REASON = "doublon"
 AUTO_IGNORE_REASONS: frozenset[str] = frozenset(

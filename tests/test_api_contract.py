@@ -350,3 +350,35 @@ def test_sources_health(db: Database) -> None:
     assert ats["status"] == "degradee" and ats["label"]
     assert ats["boards"][0]["status"] == "http_404" and ats["boards"][0]["label"] == "Erreur HTTP 404"
     assert by_source["wttj"]["status"] == "ok"
+
+
+def test_max_score_borne_haute_exclusive(db: Database) -> None:
+    client = TestClient(create_app(db))
+    ids = _ids(client.get("/api/jobs", params={"min_score": 60, "max_score": 80}))
+    assert "e_contrat" in ids  # 70
+    assert "b_v4_haut" not in ids  # 90 : onglet cœur de cible seulement
+
+
+def test_remettre_a_trier_sort_des_exclues_et_resiste_a_la_renotation(db: Database) -> None:
+    from src.constants import REINSTATED_REASON
+
+    client = TestClient(create_app(db))
+    assert "d_exclue" in _ids(client.get("/api/jobs", params={"only_excluded": True}))
+    resp = client.post(
+        "/api/jobs/d_exclue/status", json={"status": STATUS_NEW, "rejection_reason": REINSTATED_REASON}
+    )
+    assert resp.status_code == 200
+    assert "d_exclue" not in _ids(client.get("/api/jobs", params={"only_excluded": True}))
+    assert "d_exclue" in _ids(client.get("/api/jobs"))
+    # Une nouvelle notation qui exclut encore ne ré-exclut pas l'offre.
+    db.update_v4("d_exclue", _v4(0.0, "E", [f"{V4_FLAG_EXCLUDED_PREFIX} CDI cité : « CDI »"]))
+    assert db.get_job("d_exclue")["status"] == STATUS_NEW
+
+
+def test_annuler_ignorer_efface_le_commentaire(db: Database) -> None:
+    client = TestClient(create_app(db))
+    reason = IGNORE_REASONS[0]
+    client.post("/api/jobs/a_v3_haut/ignore", json={"reason": reason, "comment": "trop loin"})
+    assert db.get_job("a_v3_haut")["rejection_comment"] == "trop loin"
+    client.post("/api/jobs/a_v3_haut/status", json={"status": STATUS_NEW, "rejection_reason": ""})
+    assert not db.get_job("a_v3_haut")["rejection_comment"]

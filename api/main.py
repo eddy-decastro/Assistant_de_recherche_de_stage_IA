@@ -56,6 +56,7 @@ from utils.data import (
     filter_jobs,
     is_contract_to_verify,
     job_age_days,
+    main_score,
     parse_timestamp,
     relative_date,
     source_color,
@@ -383,6 +384,7 @@ def create_app(db_instance: Database | None = None, *, liveness_checker: Any = N
         exclude_v4_tags: str = "",
         company_key_filter: str = Query(default="", alias="company_key"),
         min_score: float = 0.0,
+        max_score: float | None = None,
         hide_processed: bool = False,
         hide_excluded: bool = True,
         only_excluded: bool = False,
@@ -420,6 +422,9 @@ def create_app(db_instance: Database | None = None, *, liveness_checker: Any = N
             limit=None,
         )
         filtered = filter_jobs(jobs, flt)
+        if max_score is not None:
+            # Borne haute exclusive : l'onglet « 60 à 79 » ne recompte pas le cœur de cible.
+            filtered = [j for j in filtered if main_score(j) < max_score]
 
         if only_older_than_days is not None:
             filtered = [

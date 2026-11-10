@@ -36,7 +36,7 @@ const DEFAULT_GRADE_BOUNDS = { score_min: 0, score_max: 100, comment_max_length:
 const SEGMENT_DEFS: { key: Segment; label: string; title?: string; query: JobsQuery }[] = [
   { key: "all", label: "Toutes", query: {} },
   { key: "core", label: "Cœur de cible", title: "Note de 80 ou plus", query: { min_score: 80 } },
-  { key: "good", label: "60 et plus", title: "Note de 60 ou plus (cœur de cible compris)", query: { min_score: 60 } },
+  { key: "good", label: "60 à 79", title: "Note de 60 à 79 (le cœur de cible est dans son propre onglet)", query: { min_score: 60, max_score: 80 } },
   { key: "old", label: "Plus de 14 j", title: "Publiées il y a au moins 14 jours", query: { only_older_than_days: 14 } },
   {
     key: "excluded",
@@ -590,6 +590,10 @@ export default function StageCopilotPage() {
             onApplied={() => selectedJob && moveJobs([selectedJob], STATUS.applied, null, "Marquée postulée")}
             onIgnore={() => selectedJob && setIgnoreTarget([selectedJob])}
             onTrash={() => selectedJob && moveJobs([selectedJob], STATUS.rejected, "manual_trash", "Mise à la corbeille")}
+            onReinstate={() =>
+              // L'offre quitte l'onglet Exclues : on recharge pour que listes et compteurs suivent.
+              selectedJob && moveJobs([selectedJob], STATUS.new, "remis_a_trier", "Remise à trier").then(reload)
+            }
             onGradeV4={() => selectedJob && gradeV4([selectedJob])}
             onSaveNotes={async (text) => {
               if (!selectedJob) return;
