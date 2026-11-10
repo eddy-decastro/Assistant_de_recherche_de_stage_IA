@@ -1,51 +1,38 @@
+# Profil FICTIF d'exemple. Copier en data/profil_lettre.yaml (non suivi par Git)
+# et remplacer par ses propres faits vérifiés : la lettre de motivation n'utilise
+# que ce qui est écrit ici.
 identite:
   nom: Camille EXEMPLE
-  titre_court: "Élève-ingénieure IMT Mines Alès, double diplôme M2 Mathématiques en Action (Mines Saint-Étienne)"
+  titre_court: "Élève-ingénieure en école d'ingénieurs généraliste, double diplôme M2 Data Science"
   disponibilite: "stage de fin d'études de 6 mois à partir de début avril 2027"
 formation:
-  - "IMT Mines Alès, diplôme d'ingénieur, majeure Intelligence Artificielle & Data Science (2024 – présent)"
-  - "Mines Saint-Étienne, double diplôme Master 2 Mathématiques en Action (MAEA), majeure Data Science (2026 – présent) ; modélisation stochastique, optimisation, apprentissage statistique, calcul intensif, quantification d'incertitudes ; diplôme co-accrédité Mines Saint-Étienne, Centrale Lyon et ENS Lyon"
-  - "Université de Montpellier, Licence 3 de Mathématiques Générales, menée en parallèle (2025 – 2026)"
-  - "Lycée Descartes, Tours, CPGE PCSI / PC* (2022 – 2024)"
+  - "École d'ingénieurs X, diplôme d'ingénieur, majeure Intelligence Artificielle (2024 – présent)"
+  - "Université Y, double diplôme Master 2 Data Science (2026 – présent) ; optimisation, apprentissage statistique, calcul intensif"
+  - "Classes préparatoires MPSI / MP* (2022 – 2024)"
 experiences:
-  upc:
-    titre: "Stage de recherche en robustesse des modèles, UPC (Universitat Politècnica de Catalunya), Barcelone, mai à août 2026"
+  labo:
+    titre: "Stage de recherche en apprentissage automatique, laboratoire Z, mai à août 2026"
     faits:
-      - "audit de la robustesse d'un détecteur de fraude bancaire par réseau de neurones (AUC 98 %)"
-      - "une attaque adaptée trompait le modèle dans 48 % des cas"
-      - "conception d'une défense qui analyse le fonctionnement interne du réseau sous forme de graphes ; elle interceptait 68 % des attaques ayant trompé le réseau"
-      - "évaluation avec un protocole statistique fixé à l'avance : pas d'avantage significatif face à un modèle plus simple (SVM)"
-    lecon: "ne pas se contenter d'un bon chiffre, vérifier qu'un gain est réel"
-  medstay:
-    titre: "Projet : prévision de la durée d'hospitalisation avec marge d'erreur garantie"
+      - "étude de la robustesse d'un classifieur d'images (précision 94 %)"
+      - "une perturbation ciblée faisait chuter la précision à 61 %"
+      - "mise en place d'un protocole d'évaluation statistique fixé à l'avance"
+    lecon: "vérifier qu'un gain mesuré est réel avant de le présenter"
+  prevision:
+    titre: "Projet : prévision de la demande électrique avec intervalles de confiance"
     faits:
-      - "environ 70 000 patients"
-      - "la marge d'erreur contient la vraie valeur dans 90 % des cas, comme visé"
-      - "intervalles réduits de 11 % sans perte de fiabilité"
-      - "modèle mis en service sous forme d'API, avec plus de 120 tests"
-  stage_copilot:
-    titre: "Projet : Stage Copilot, outil de veille et de tri d'offres de stage par un modèle de langage (LLM)"
+      - "environ 50 000 observations horaires"
+      - "intervalles calibrés à 90 % comme visé"
+      - "modèle exposé sous forme d'API, avec tests automatisés"
+  veille:
+    titre: "Projet : outil de veille d'offres de stage noté par un modèle de langage (LLM)"
     faits:
-      - "plus de 1 200 offres collectées et évaluées automatiquement"
-      - "tableau de bord de suivi (Streamlit, SQLite)"
-  pants:
-    titre: "Projet de groupe PanTS : imagerie médicale sur 420 Go de scanners 3D"
-    faits:
-      - "détection de la phase d'injection du produit de contraste, 82 % de bonnes réponses, +10 points sur la référence"
-  cinefilm:
-    titre: "Projet CinéFilm IA : recommandation de films par recherche sémantique sur plus de 6 000 films"
+      - "collecte automatique de plusieurs sources"
+      - "tableau de bord de suivi (SQLite)"
 engagement:
-  - "assistant chef de troupe chez les Scouts Unitaires de France : direction d'un camp d'été, une trentaine d'adolescents"
-  - "président de l'association EM'Aumônerie pendant un an"
-  - "cours particuliers de mathématiques chaque semaine"
-  - "fondateur de Serviam, micro-entreprise de sites web pour artisans"
-positionnement: "Ingénieur ML à formation mathématique : ce qui me motive est de savoir quand un modèle se trompe et de le mesurer honnêtement, puis de mettre en service des modèles fiables."
+  - "trésorière d'une association étudiante pendant un an"
+  - "cours particuliers de mathématiques"
+positionnement: "Ingénieure ML à formation mathématique : savoir quand un modèle se trompe, le mesurer honnêtement, puis mettre en service des modèles fiables."
+# Mots ou chiffres que la lettre ne doit jamais employer (faits non vérifiés, jargon).
 interdits:
-  - Spearman
-  - "0,93"
-  - "0.93"
-  - n8n
   - certifié
-  - "96,2"
-  - McNemar
   - équipe internationale

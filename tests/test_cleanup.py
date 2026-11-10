@@ -432,3 +432,25 @@ if __name__ == "__main__":
     test_revalidation_preserve_les_vrais_stages()
     test_base_rejet_et_suppression()
     print("TOUS LES TESTS PASSENT")
+
+
+def test_rotate_backups_keeps_recent_and_one_per_month(tmp_path):
+    import os
+    import time
+
+    from tools.rotate_backups import plan_rotation
+
+    now = time.time()
+    for i in range(14):  # une sauvegarde par jour sur 14 jours
+        p = tmp_path / f"b{i:02d}.db"
+        p.write_bytes(b"x")
+        os.utime(p, (now - i * 86400, now - i * 86400))
+    old = tmp_path / "vieux.db"
+    old.write_bytes(b"x")
+    os.utime(old, (now - 120 * 86400, now - 120 * 86400))
+    (tmp_path / "vide.db").write_bytes(b"")
+    (tmp_path / "orphelin.db-shm").write_bytes(b"x")
+    victims = {p.name for p in plan_rotation(tmp_path, keep=10)}
+    assert "vide.db" in victims and "orphelin.db-shm" in victims
+    assert "vieux.db" not in victims  # seule de son mois
+    assert not victims & {f"b{i:02d}.db" for i in range(10)}
