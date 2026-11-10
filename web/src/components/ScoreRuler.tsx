@@ -34,7 +34,7 @@ export function ScorePill({ job }: { job: ScoreJob }) {
   }
   return (
     <span
-      className={`pill tone-${job.display_class_tone || job.display_align_tone}`}
+      className={`pill class-${job.display_class} tone-${job.display_class_tone || job.display_align_tone}`}
       title={`Classe ${job.display_class} : ${job.display_class_label} · ${job.display_align_label}`}
     >
       <b>{job.display_class}</b> {job.display_score}
@@ -70,7 +70,7 @@ export function ScoreRuler({ job }: { job: ScoreJob }) {
     <div className={`ruler tone-${job.display_align_tone}`} title={`Note ${score}/100, classe ${job.display_class}`}>
       <div className="ruler-figure">
         <span className="ruler-score">
-          <span className={`ruler-class tone-${job.display_class_tone}`}>{job.display_class}</span>
+          <span className={`ruler-class class-${job.display_class} tone-${job.display_class_tone}`}>{job.display_class}</span>
           {score}
         </span>
         <span className="ruler-label">

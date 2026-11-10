@@ -535,7 +535,7 @@ export default function StageCopilotPage() {
                 key={c.key}
                 type="button"
                 aria-pressed={on}
-                className={`chip ${on ? "active" : ""}`}
+                className={`chip class-${c.key} ${on ? "active" : ""}`}
                 title={c.label}
                 onClick={() => setV4Classes((p) => (on ? p.filter((x) => x !== c.key) : [...p, c.key]))}
               >

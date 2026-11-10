@@ -1,48 +1,75 @@
-/* Stage Copilot : bureau de tri clair, une seule couleur d'action (vert sapin),
-   les tonalités de score servent uniquement à lire la pertinence. */
+/* Stage Copilot : bureau de tri en indigo. Une couleur d'action (indigo), une couleur
+   par classe A-E pour repérer l'offre d'un coup d'œil, et des tonalités de note
+   (émeraude, bleu, ambre, rose) réservées à la pertinence. Contrastes texte >= 4,5:1. */
 :root {
-  --bg: #eceee9;
-  --surface: #f8f9f6;
-  --surface-2: #f1f3ef;
-  --ink: #17231f;
-  --muted: #5a6963;
-  --line: #d3d9d3;
-  --line-strong: #b9c2bb;
-  --primary: #1d6b57;
+  --bg: #f3f2fb;
+  --surface: #ffffff;
+  --surface-2: #f0eefb;
+  --ink: #1c1a33;
+  --muted: #5d5a78;
+  --line: #e2dff2;
+  --line-strong: #c8c3e3;
+  --primary: #4f46e5;
   --primary-ink: #ffffff;
-  --primary-soft: #dcebe5;
+  --primary-soft: #e8e6fd;
 
-  --t-positive: #1d6b57;
-  --t-accent: #34589a;
-  --t-warn: #93600f;
-  --t-alert: #a93636;
-  --t-mute: #5a6963;
+  --t-positive: #047857;
+  --t-accent: #2563eb;
+  --t-warn: #b45309;
+  --t-alert: #be123c;
+  --t-mute: #64748b;
 
-  --radius: 6px;
-  --radius-lg: 10px;
-  --shadow: 0 10px 30px rgba(23, 35, 31, 0.16);
+  /* Une teinte par classe (A recherche … E hors cible). */
+  --c-A: #7c3aed;
+  --c-B: #2563eb;
+  --c-C: #0f766e;
+  --c-D: #b45309;
+  --c-E: #64748b;
+
+  --topbar-bg: linear-gradient(100deg, #1e1b4b 0%, #312e81 55%, #4c1d95 100%);
+  --topbar-ink: #f1f0ff;
+  --topbar-muted: #c3c1f0;
+  --topbar-hover: rgba(255, 255, 255, 0.1);
+  --brand-gradient: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+
+  --radius: 8px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(30, 27, 75, 0.06), 0 1px 3px rgba(30, 27, 75, 0.08);
+  --shadow: 0 16px 40px rgba(30, 27, 75, 0.18);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121917;
-    --surface: #18211e;
-    --surface-2: #1e2925;
-    --ink: #e6ece8;
-    --muted: #93a39c;
-    --line: #2a3632;
-    --line-strong: #3b4a45;
-    --primary: #4fb394;
-    --primary-ink: #0c1512;
-    --primary-soft: #1f3a32;
+    --bg: #0e0d1f;
+    --surface: #16152c;
+    --surface-2: #1e1d3a;
+    --ink: #eceafb;
+    --muted: #a5a2c7;
+    --line: #2a2849;
+    --line-strong: #3e3b66;
+    --primary: #a5b4fc;
+    --primary-ink: #13112c;
+    --primary-soft: #2a2766;
 
-    --t-positive: #5cc4a3;
-    --t-accent: #8aa9e6;
-    --t-warn: #e0a64a;
-    --t-alert: #ef8a85;
-    --t-mute: #93a39c;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    --t-positive: #34d399;
+    --t-accent: #93c5fd;
+    --t-warn: #fbbf24;
+    --t-alert: #fb7185;
+    --t-mute: #94a3b8;
+
+    --c-A: #c4b5fd;
+    --c-B: #93c5fd;
+    --c-C: #5eead4;
+    --c-D: #fcd34d;
+    --c-E: #94a3b8;
+
+    --topbar-bg: linear-gradient(100deg, #0b0a1c 0%, #1e1b4b 60%, #2e1065 100%);
+    --topbar-ink: #eceafb;
+    --topbar-muted: #a9a6d8;
+    --topbar-hover: rgba(255, 255, 255, 0.08);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
     color-scheme: dark;
   }
 }
@@ -553,7 +580,7 @@ a.view { text-decoration: none; }
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(16, 24, 21, 0.45);
+  background: rgba(17, 15, 46, 0.5);
 }
 .modal {
   width: min(860px, 100%);
@@ -621,3 +648,92 @@ a.view { text-decoration: none; }
   .board-wrap { padding: 14px 16px; }
   .modal { padding: 18px 16px; }
 }
+
+/* ---------- Thème coloré (indigo) ---------- */
+.class-A { --cls: var(--c-A); }
+.class-B { --cls: var(--c-B); }
+.class-C { --cls: var(--c-C); }
+.class-D { --cls: var(--c-D); }
+.class-E { --cls: var(--c-E); }
+
+.btn, .chip, .segment, .view, .row, .card, .pill {
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.btn { box-shadow: var(--shadow-sm); }
+.btn.ghost, .btn.ghost:hover { box-shadow: none; }
+.btn:hover { border-color: var(--primary); color: var(--primary); }
+.btn.primary { background: linear-gradient(135deg, #6366f1, var(--primary)); }
+.btn.primary:hover { color: var(--primary-ink); filter: brightness(1.08); }
+.btn.positive { background: color-mix(in srgb, var(--t-positive) 10%, var(--surface)); }
+.btn.positive:hover { background: var(--t-positive); border-color: var(--t-positive); color: var(--surface); }
+.btn.alert:hover { border-color: var(--t-alert); color: var(--t-alert); }
+.field:focus { border-color: var(--primary); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+
+/* Barre du haut foncée : l'identité de l'appli. */
+.topbar { background: var(--topbar-bg); border-bottom: 0; color: var(--topbar-ink); }
+.brand-mark { width: 16px; height: 16px; border-radius: 5px; background: var(--brand-gradient); box-shadow: 0 0 12px rgba(167, 139, 250, 0.6); }
+.topbar .view { color: var(--topbar-muted); }
+.topbar .view:hover { color: var(--topbar-ink); background: var(--topbar-hover); }
+.topbar .view.active { color: #fff; background: rgba(255, 255, 255, 0.14); box-shadow: inset 0 -2px 0 #a78bfa; }
+.topbar .view-n { color: inherit; opacity: 0.8; }
+.topbar .field { border-color: rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.1); color: var(--topbar-ink); box-shadow: none; }
+.topbar .field::placeholder { color: var(--topbar-muted); }
+.topbar .field:focus { border-color: #a78bfa; box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.35); }
+.topbar select.field option { color: #1c1a33; background: #fff; }
+.topbar .btn { border-color: rgba(255, 255, 255, 0.25); background: rgba(255, 255, 255, 0.1); color: var(--topbar-ink); box-shadow: none; }
+.topbar .btn:hover { background: rgba(255, 255, 255, 0.18); }
+
+/* Filtres de classe : chaque lettre porte sa couleur. */
+.classes { background: var(--surface); }
+.chip[class*="class-"] b {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--cls);
+  color: var(--surface);
+  font-size: 11px;
+}
+.chip[class*="class-"]:hover { border-color: var(--cls); }
+.chip[class*="class-"].active { border-color: var(--cls); background: color-mix(in srgb, var(--cls) 14%, var(--surface)); }
+
+/* Liste : panneau blanc, sélection en indigo. */
+.segment.active { border-color: transparent; background: var(--primary-soft); color: var(--primary); }
+.segment.active .segment-n { color: inherit; }
+.list-pane { box-shadow: var(--shadow-sm); }
+.row.selected { background: var(--primary-soft); box-shadow: inset 4px 0 0 var(--primary); }
+
+/* Pastille de note : fond teinté de la couleur de la classe. */
+.pill[class*="class-"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--cls) 13%, var(--surface));
+  color: var(--cls);
+  font-weight: 700;
+}
+.pill[class*="class-"] b { opacity: 1; }
+.tag[class*="tone-"] { background: color-mix(in srgb, var(--tone) 9%, var(--surface)); }
+
+/* Détail : en-tête en carte, règle de note en dégradé. */
+.detail-head { padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.ruler-class[class*="class-"] { color: var(--cls); }
+.ruler-track { height: 10px; border-radius: 999px; box-shadow: none; background: var(--surface-2); }
+.ruler-fill { border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 55%, var(--surface)), var(--tone)); }
+.note { border-radius: 0 var(--radius) var(--radius) 0; box-shadow: var(--shadow-sm); }
+.note-alert { background: color-mix(in srgb, var(--t-alert) 7%, var(--surface)); }
+.note-warn { background: color-mix(in srgb, var(--t-warn) 8%, var(--surface)); }
+.block > h2 { color: var(--primary); text-transform: uppercase; letter-spacing: 0.06em; font-size: 11.5px; }
+
+/* Tableau des candidatures : une couleur par colonne. */
+.col-applied { --col: var(--t-accent); }
+.col-interview { --col: var(--c-A); }
+.col-refused { --col: var(--t-alert); }
+.col-archived { --col: var(--t-mute); }
+.board-head { border-bottom: 3px solid var(--col, var(--ink)); color: var(--col, var(--ink)); }
+.col-archived .board-head { border-bottom-color: var(--col); }
+.card { border-left: 3px solid var(--col, var(--line)); box-shadow: var(--shadow-sm); }
+.card:hover { box-shadow: 0 6px 18px rgba(30, 27, 75, 0.12); }
+
+.toast { background: #1e1b4b; color: #f1f0ff; }
+.busy { background: color-mix(in srgb, var(--primary) 12%, var(--surface)); }
