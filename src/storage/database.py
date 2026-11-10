@@ -278,6 +278,8 @@ class Job(Base):
     v4_raw_json = Column(Text, nullable=True)
     v4_model = Column(String(100), nullable=True)
     v4_graded_at = Column(DateTime, nullable=True)
+    # Empreinte de la grille v4 utilisée (voir scoring_v4.get_grid_version_v4)
+    v4_grid_version = Column(String(16), nullable=True)
 
     # --- Correction de note par Eddy (N6, colonnes utilisateur) ---
     # Ce qu'Eddy aurait mis : classe A..E (NULL = pas de classe), note 0-100
@@ -520,6 +522,7 @@ class Database:
                 "v4_raw_json": "TEXT",
                 "v4_model": "VARCHAR(100)",
                 "v4_graded_at": "DATETIME",
+                "v4_grid_version": "VARCHAR(16)",
                 # Correction de note par Eddy (N6)
                 "user_v4_class": "VARCHAR(1)",
                 "user_v4_score": "INTEGER",
@@ -1268,6 +1271,9 @@ class Database:
             else:
                 record.v4_raw_json = raw
             record.v4_model = v4_result.get("v4_model")
+            # Absente d'un résultat partiel (recalcul en code) : on garde la version.
+            if "v4_grid_version" in v4_result:
+                record.v4_grid_version = v4_result.get("v4_grid_version")
             graded_at = v4_result.get("v4_graded_at")
             if isinstance(graded_at, str):
                 try:

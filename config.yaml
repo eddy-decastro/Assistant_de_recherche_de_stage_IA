@@ -670,7 +670,10 @@ companies:
 database:
   path: data/stage_copilot.db
 ranking:
-  top_n_rerank: 20
+  # Plafond de sécurité d'offres notées par run (v4 au fil de l'eau). 20 laissait
+  # un stock d'offres non notées (444 au 10/11/2026 pour ~400 nouvelles par run).
+  # Coût DeepSeek estimé : ~0,1 à 0,2 centime par offre, soit < 1 $ pour 500.
+  top_n_rerank: 500
 llm:
   provider: deepseek
   base_url: https://api.deepseek.com

@@ -2,15 +2,18 @@
 
 Deux commandes :
 
-    python tools/antigravity_v4.py export [--batch-size 25]
-        Lecture seule. Écrit dans data/antigravity/ :
+    python tools/antigravity_v4.py export [--batch-size 25] [--stale] [--dir DOSSIER] [--force]
+        Lecture seule sur la base. Écrit dans data/antigravity/ (ou --dir) :
         - prompt_systeme_v4.txt : prompt v4 actuel, avec les décisions et corrections d'Eddy ;
         - schema_v4.json : schéma JSON attendu pour chaque offre ;
         - in/lot_XXX.json : offres à (re)noter (NOUVEAU, EXCLU, IGNORÉ auto_archive).
         Les offres décidées par Eddy (POSTULÉ, ENTRETIEN, REJETÉ, IGNORÉ à la main) ne sont
-        jamais exportées.
+        jamais exportées. --stale : seulement les offres sans note v4 ou notées avec une
+        autre version de la grille (v4_grid_version). L'export refuse de tourner si out/
+        contient des lots pas encore ingérés (sinon les entrées d'une mission en cours
+        seraient effacées) ; --force passe outre.
 
-    python tools/antigravity_v4.py ingest [--dry-run]
+    python tools/antigravity_v4.py ingest [--dry-run] [--dir DOSSIER]
         Lit data/antigravity/out/lot_XXX_out.json (et nouvelles_offres.json), copie la vraie
         base dans data/backups/ puis :
         - recalcule chaque note en code (compute_final_score_v4) et l'enregistre (update_v4) ;
@@ -44,6 +47,7 @@ from src.constants import (  # noqa: E402
 from src.matching.scoring_v4 import (  # noqa: E402
     V4JudgeOutput,
     build_calibration_block,
+    get_grid_version_v4,
     get_response_schema_v4,
     get_system_prompt_v4,
     v4_result_from_output,
@@ -54,6 +58,28 @@ REAL_DB = PROJECT_ROOT / "data" / "stage_copilot.db"
 WORK_DIR = PROJECT_ROOT / "data" / "antigravity"
 MODEL_LABEL = "antigravity:multi-agent"
 LIVENESS_STATES = ("ouverte", "fermee", "inconnue")
+INGESTED_MARKER = ".ingere"
+
+
+class PendingLotsError(RuntimeError):
+    """Des lots rendus par les agents n'ont pas encore été ingérés."""
+
+
+def pending_lots(out_dir: Path) -> list[Path]:
+    """Lots ``*_out.json`` plus récents que la dernière ingestion réelle (ou sans ingestion)."""
+    lots = sorted(out_dir.glob("lot_*_out.json"))
+    marker = out_dir / INGESTED_MARKER
+    if not marker.exists():
+        return lots
+    done_at = marker.stat().st_mtime
+    return [p for p in lots if p.stat().st_mtime > done_at]
+
+
+def is_stale(job: dict[str, Any], grid_version: str) -> bool:
+    """Note v4 absente ou faite avec une autre grille."""
+    if job.get("v4_display_score") is None:
+        return True
+    return (job.get("v4_grid_version") or "") != grid_version
 
 
 def _readonly_copy(db_path: Path) -> Path:
@@ -97,11 +123,27 @@ def _export_record(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def export(batch_size: int, db_path: Path = REAL_DB, out_dir: Path = WORK_DIR) -> int:
+def export(
+    batch_size: int,
+    db_path: Path = REAL_DB,
+    out_dir: Path = WORK_DIR,
+    stale_only: bool = False,
+    force: bool = False,
+) -> int:
+    pending = pending_lots(out_dir / "out")
+    if pending and not force:
+        raise PendingLotsError(
+            f"{len(pending)} lot(s) rendu(s) pas encore ingéré(s) dans {out_dir / 'out'} "
+            f"(ex. {pending[0].name}). Lance d'abord « ingest », ou utilise --dir pour "
+            "une nouvelle vague, ou --force pour écraser les entrées."
+        )
     copy = _readonly_copy(db_path)
     db = Database(str(copy))
     config = load_config()
     jobs = [j for j in db.get_jobs(limit=100000) if is_exportable(j)]
+    if stale_only:
+        current = get_grid_version_v4()
+        jobs = [j for j in jobs if is_stale(j, current)]
     jobs.sort(key=lambda j: str(j["id"]))
 
     in_dir = out_dir / "in"
@@ -234,6 +276,8 @@ def ingest(dry_run: bool, db_path: Path = REAL_DB, work_dir: Path = WORK_DIR) ->
 
     known_urls = {str(j.get("url") or "") for j in jobs.values()}
     stats["nouvelles_offres"] = _insert_new_offers(db, out_dir / "nouvelles_offres.json", known_urls)
+    if not dry_run:
+        (out_dir / INGESTED_MARKER).write_text(datetime.now().isoformat(), encoding="utf-8")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
     return stats
 
@@ -243,13 +287,24 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_exp = sub.add_parser("export")
     p_exp.add_argument("--batch-size", type=int, default=25)
+    p_exp.add_argument("--stale", action="store_true",
+                       help="Seulement les offres sans note v4 ou notées avec une autre grille.")
+    p_exp.add_argument("--force", action="store_true",
+                       help="Exporter même si des lots rendus n'ont pas été ingérés.")
     p_ing = sub.add_parser("ingest")
     p_ing.add_argument("--dry-run", action="store_true")
+    for p in (p_exp, p_ing):
+        p.add_argument("--dir", type=Path, default=WORK_DIR,
+                       help="Dossier de la vague (défaut : data/antigravity).")
     args = parser.parse_args(argv)
     if args.cmd == "export":
-        export(args.batch_size)
+        try:
+            export(args.batch_size, out_dir=args.dir, stale_only=args.stale, force=args.force)
+        except PendingLotsError as exc:
+            print(f"Export refusé : {exc}")
+            return 1
     else:
-        ingest(args.dry_run)
+        ingest(args.dry_run, work_dir=args.dir)
     return 0
 
 

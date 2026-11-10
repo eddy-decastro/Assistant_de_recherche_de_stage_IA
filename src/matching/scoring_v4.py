@@ -221,6 +221,22 @@ def _load_candidate_logistics_context() -> str:
         return ""
 
 
+def get_grid_version_v4() -> str:
+    """Empreinte courte de la grille (``data/prompt_v4.txt`` seul).
+
+    Les précisions logistiques locales et le bloc de calibration (décisions d'Eddy)
+    sont exclus : ils changent souvent sans changer la grille. Une note dont
+    ``v4_grid_version`` diffère de cette valeur est périmée et peut être renotée.
+    """
+    import hashlib
+
+    prompt_path = PROJECT_ROOT / "data" / "prompt_v4.txt"
+    text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    lines = text.replace("\r\n", "\n").split("\n")
+    normalized = "\n".join(line.rstrip() for line in lines).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def get_system_prompt_v4(feedback_block: str | None = None) -> str:
     """Charge data/prompt_v4.txt et y injecte les paramètres logistiques locaux s'ils existent.
 
@@ -734,6 +750,7 @@ def v4_result_from_output(
         "v4_flags_json": json.dumps(breakdown.flags, ensure_ascii=False),
         "v4_raw_json": json.dumps(raw_stored, ensure_ascii=False),
         "v4_model": model_label,
+        "v4_grid_version": get_grid_version_v4(),
         "v4_graded_at": datetime.utcnow(),
         "excluded": breakdown.excluded,
         "exclusion_reason": breakdown.exclusion_reason,

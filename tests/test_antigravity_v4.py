@@ -85,3 +85,52 @@ def test_ingest_grades_and_applies_liveness(tmp_path: Path) -> None:
     assert not db.get_job("postule").get("v4_model")
     assert stats["nouvelles_offres"] == 1
     assert list((tmp_path / "backups").glob("stage_copilot_avant_antigravity_*.db"))
+
+
+def test_export_refuses_when_lots_not_ingested(tmp_path: Path) -> None:
+    import pytest
+
+    db_path = _setup(tmp_path)
+    work = tmp_path / "ag"
+    (work / "out").mkdir(parents=True)
+    (work / "out" / "lot_001_out.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ag.PendingLotsError):
+        ag.export(10, db_path=db_path, out_dir=work)
+    assert ag.export(10, db_path=db_path, out_dir=work, force=True) == 4
+
+
+def test_real_ingest_marks_lots_as_ingested(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    work = tmp_path / "ag"
+    (work / "out").mkdir(parents=True)
+    (work / "out" / "lot_001_out.json").write_text(
+        json.dumps({"nouveau": {"evaluation": _valid_llm_payload()}}), encoding="utf-8"
+    )
+    ag.ingest(True, db_path=db_path, work_dir=work)  # essai à blanc : ne marque rien
+    assert ag.pending_lots(work / "out")
+    ag.ingest(False, db_path=db_path, work_dir=work)
+    assert ag.pending_lots(work / "out") == []
+    assert ag.export(10, db_path=db_path, out_dir=work) == 4
+
+
+def test_export_stale_only_skips_current_grid(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    work = tmp_path / "ag"
+    (work / "out").mkdir(parents=True)
+    (work / "out" / "lot_001_out.json").write_text(
+        json.dumps({"nouveau": {"evaluation": _valid_llm_payload()}}), encoding="utf-8"
+    )
+    ag.ingest(False, db_path=db_path, work_dir=work)
+    job = Database(str(db_path)).get_job("nouveau")
+    assert job["v4_grid_version"] == ag.get_grid_version_v4()
+    n = ag.export(10, db_path=db_path, out_dir=work, stale_only=True)
+    assert n == 3
+    ids = {r["id"] for r in json.loads((work / "in" / "lot_001.json").read_text(encoding="utf-8"))}
+    assert "nouveau" not in ids
+
+
+def test_grid_version_ignores_calibration_block() -> None:
+    from src.matching.scoring_v4 import get_grid_version_v4
+
+    assert len(get_grid_version_v4()) == 12
+    assert get_grid_version_v4() == get_grid_version_v4()
