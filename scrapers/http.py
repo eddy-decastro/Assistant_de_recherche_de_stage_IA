@@ -58,6 +58,7 @@ class RetryingClient(httpx.Client):
         max_retries: int = 3,
         backoff_seconds: float = 2.0,
         max_wait_seconds: float = 30.0,
+        rate_limit_backoff_seconds: float = 0.0,
         sleep: Callable[[float], None] = time.sleep,
         **kwargs,
     ) -> None:
@@ -65,6 +66,9 @@ class RetryingClient(httpx.Client):
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
         self.max_wait_seconds = max(0.0, float(max_wait_seconds))
+        #: Attente de base propre au 429 sans ``Retry-After`` : LinkedIn renvoie des
+        #: 429 en rafale quand on rejoue au bout de 2 s ; il faut laisser retomber.
+        self.rate_limit_backoff_seconds = max(0.0, float(rate_limit_backoff_seconds))
         self._sleep = sleep
         #: Nombre de rejeux effectués (visible pour le rapport / les tests).
         self.retries_done = 0
@@ -75,7 +79,10 @@ class RetryingClient(httpx.Client):
             asked = parse_retry_after(response.headers.get("Retry-After"))
             if asked is not None:
                 return asked if asked <= self.max_wait_seconds else None
-        base = self.backoff_seconds * (2**attempt)
+        start = self.backoff_seconds
+        if response is not None and response.status_code == 429:
+            start = max(start, self.rate_limit_backoff_seconds)
+        base = start * (2**attempt)
         return min(self.max_wait_seconds, base + random.uniform(0, base * 0.25))
 
     def send(self, request: httpx.Request, **kwargs) -> httpx.Response:  # type: ignore[override]

@@ -249,3 +249,14 @@ def test_cache_ci_sauvegarde_meme_en_echec():
     assert restores and saves, steps
     assert "always()" in str(saves[0].get("if", ""))
     assert "run_attempt" in saves[0]["with"]["key"]
+
+
+def test_429_attend_plus_longtemps_que_503():
+    sleeps: list[float] = []
+    client, _ = _client([429, 200], sleeps, rate_limit_backoff_seconds=8.0)
+    client.get("https://x.test/")
+    assert 8.0 <= sleeps[0] <= 10.0
+    sleeps.clear()
+    client, _ = _client([503, 200], sleeps, rate_limit_backoff_seconds=8.0)
+    client.get("https://x.test/")
+    assert sleeps[0] < 2.0

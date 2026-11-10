@@ -34,7 +34,7 @@ CACHE_NAMESPACE = "linkedin"
 LOCATION = "France"
 SLEEP_RANGE = (2.0, 4.0)
 #: Pause entre deux fiches détail récupérées pendant la collecte (anti-429).
-DETAIL_SLEEP_RANGE = (1.0, 2.5)
+DETAIL_SLEEP_RANGE = (2.0, 4.0)
 #: Contrainte « stage » ajoutée aux requêtes (opérateurs booléens LinkedIn).
 INTERNSHIP_KEYWORDS_CLAUSE = "(stage OR stagiaire OR internship OR intern)"
 _INTERNSHIP_QUERY_RE = re.compile(r"\b(?:stage|stages|stagiaire|intern|interns|internship|pfe)\b", re.IGNORECASE)

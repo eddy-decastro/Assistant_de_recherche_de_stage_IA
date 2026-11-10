@@ -125,12 +125,17 @@ scrapers:
       enabled: true
       sort: date
       target_new_per_source: 150
-      max_offers_per_query: 150
+      # Plafond par requête (S7, 10/11/2026) : à 150, « Data Scientist » et
+      # « Machine Learning » remplissaient l'objectif de la source et les requêtes
+      # de niche (stage LLM, research intern, R&D IA) ne tournaient jamais.
+      # 20 x 20 requêtes = 400 > 150 : l'objectif se répartit sur ~8 requêtes au moins.
+      max_offers_per_query: 20
       window_days: 14
       early_stop_after_known: 10
       arm_early_stop: true
       early_stop_min_pages: 2
-      max_pages_per_query: 20
+      # 10 pages LinkedIn = 100 cartes par requête ; au-delà, surtout des 429.
+      max_pages_per_query: 10
       stop_when_older_than_window: true
       use_server_window_filter: true
       trust_source_order: false
@@ -138,7 +143,7 @@ scrapers:
       enabled: true
       sort: relevance
       target_new_per_source: 50
-      max_offers_per_query: 50
+      max_offers_per_query: 8
       window_days: null
       # Arrêt anticipé armé : 3 pages LinkedIn pleines d'offres déjà connues
       # (mesuré : ~80 % de connues en Pertinence) = plus rien à gagner, et

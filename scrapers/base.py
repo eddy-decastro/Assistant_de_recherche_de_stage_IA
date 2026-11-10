@@ -365,6 +365,7 @@ class BaseScraper(ABC):
             max_retries=self.config.http_max_retries,
             backoff_seconds=self.config.http_backoff_seconds,
             max_wait_seconds=self.config.http_max_wait_seconds,
+            rate_limit_backoff_seconds=self.config.http_rate_limit_backoff_seconds,
             headers={
                 "User-Agent": self.config.user_agent,
                 "Accept": "application/json, text/html;q=0.9, */*;q=0.8",

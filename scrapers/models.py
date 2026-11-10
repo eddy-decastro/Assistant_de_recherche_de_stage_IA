@@ -636,6 +636,9 @@ class ScraperConfig(BaseModel):
     http_max_retries: int = 3
     http_backoff_seconds: float = 2.0
     http_max_wait_seconds: float = 30.0
+    #: Attente de base après un 429 sans ``Retry-After`` (doublée à chaque essai,
+    #: plafonnée par ``http_max_wait_seconds``) : 8 s, 16 s, 30 s.
+    http_rate_limit_backoff_seconds: float = 8.0
     user_agent: str = DEFAULT_USER_AGENT
     enabled_sources: list[Source] = Field(
         default_factory=lambda: ["wttj", "linkedin", "jobteaser"]
