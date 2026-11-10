@@ -64,7 +64,7 @@ $env:PYTHONIOENCODING='utf-8'
 Copy-Item data\stage_copilot.db ("data\backups\stage_copilot_avant_scraping_" + (Get-Date -Format "yyyyMMdd_HHmm") + ".db")
 .venv\Scripts\python.exe run_scrapers.py *> data\antigravity\scraping_soiree.log
 ```
-Collecte seule, sans appel LLM. Durée attendue : 8 à 15 minutes. Si elle dépasse 20 minutes, arrête-la (Ctrl+C) : les offres déjà collectées sont gardées.
+Collecte seule, sans appel LLM. Durée attendue : 8 à 15 minutes, plus si LinkedIn renvoie des 429. **Ne l'arrête jamais (pas de Ctrl+C)** : les offres ne sont enregistrées en base qu'à la toute fin, un arrêt les perd toutes. Si elle dure trop, lance l'étape 3 sans l'attendre : les offres du scraping seront notées à la vague suivante.
 
 Puis rangement des republications (même offre publiée plusieurs fois) : d'abord l'essai, puis l'écriture (sauvegarde automatique) :
 ```powershell
