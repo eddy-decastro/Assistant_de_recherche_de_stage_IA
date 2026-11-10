@@ -410,7 +410,11 @@ IGNORE_REASON_LABELS: dict[str, str] = {
 # décisions d'Eddy, elles sont exclues de la boucle de retour et de l'évaluation.
 AUTO_ARCHIVE_REASON = "auto_archive"
 CLOSED_OFFER_REASON = "offre_fermee"
-AUTO_IGNORE_REASONS: frozenset[str] = frozenset({AUTO_ARCHIVE_REASON, CLOSED_OFFER_REASON})
+#: Republication d'une offre déjà en base (même entreprise, même titre, même texte).
+DUPLICATE_REASON = "doublon"
+AUTO_IGNORE_REASONS: frozenset[str] = frozenset(
+    {AUTO_ARCHIVE_REASON, CLOSED_OFFER_REASON, DUPLICATE_REASON}
+)
 
 # Longueur maximale du commentaire libre accompagnant une raison d'ignorer.
 IGNORE_COMMENT_MAX_LENGTH = 500

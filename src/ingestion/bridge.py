@@ -12,7 +12,9 @@ quota du juge LLM pour la même offre.
 
 from __future__ import annotations
 
+import difflib
 import logging
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +24,7 @@ from sqlalchemy import func, select
 
 from scrapers.models import RawJob, canonical_url
 from src.config import load_config
-from src.constants import STATUS_NEW, TIER_NEUTRAL
+from src.constants import AUTO_ARCHIVE_REASON, CLOSED_OFFER_REASON, STATUS_NEW, TIER_NEUTRAL
 from src.storage.cleanup import (
     TITLE_SIMILARITY_THRESHOLD,
     companies_match,
@@ -94,6 +96,48 @@ def resolve_database(db_session_or_path: Database | str | Path | None = None) ->
     return Database(db_session_or_path)
 
 
+#: Similarité minimale des descriptions COMPLÈTES pour qu'une offre de la MÊME
+#: plateforme soit une republication. Le texte entier, pas son début : les grands
+#: groupes (Thales sur Workday) publient plusieurs sujets distincts sous le même
+#: titre avec le même paragraphe de présentation en tête.
+REPOST_DESCRIPTION_SIMILARITY = 0.92
+_REPOST_PREFIX_CHARS = 8000
+
+
+def normalized_text(text: str | None) -> str:
+    return re.sub(r"\W+", " ", (text or "").casefold()).strip()
+
+
+def description_similarity(a: str | None, b: str | None) -> float:
+    """Similarité (0 à 1) des débuts de description normalisés ; 0 si l'une est vide."""
+    na, nb = normalized_text(a)[:_REPOST_PREFIX_CHARS], normalized_text(b)[:_REPOST_PREFIX_CHARS]
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    return difflib.SequenceMatcher(None, na, nb, autojunk=False).ratio()
+
+
+def is_repost(
+    company_a: str, title_a: str, description_a: str | None,
+    company_b: str, title_b: str, description_b: str | None,
+    location_a: str | None = None, location_b: str | None = None,
+) -> bool:
+    """Même offre republiée (même plateforme ou non) : entreprise, titre ET texte."""
+    return (
+        companies_match(company_a, company_b)
+        and normalized_text(title_a) == normalized_text(title_b)
+        and same_city(location_a, location_b)
+        and description_similarity(description_a, description_b) >= REPOST_DESCRIPTION_SIMILARITY
+    )
+
+
+def same_city(a: str | None, b: str | None) -> bool:
+    """Même ville (premier élément du lieu), ou lieu inconnu d'un côté."""
+    ca, cb = normalized_text((a or "").split(",")[0]), normalized_text((b or "").split(",")[0])
+    return not ca or not cb or ca == cb
+
+
 def _company_bucket(company: str) -> str:
     """Clé de regroupement : premier mot de l'entreprise normalisée.
 
@@ -135,9 +179,12 @@ def _load_cross_source_candidates(
                 Job.company,
                 Job.title,
                 func.length(func.coalesce(Job.description, "")),
+                Job.description,
+                Job.rejection_reason,
+                Job.location,
             )
         ).all()
-    for job_id, source, company, title, description_length in rows:
+    for job_id, source, company, title, description_length, description, reason, location in rows:
         bucket = _company_bucket(str(company or ""))
         if bucket in buckets:
             by_bucket.setdefault(bucket, []).append(
@@ -147,6 +194,11 @@ def _load_cross_source_candidates(
                     "company": str(company or ""),
                     "title": str(title or ""),
                     "description_length": int(description_length or 0),
+                    "description": str(description or ""),
+                    "location": str(location or ""),
+                    # Une offre fermée ou archivée qui réapparaît est de nouveau ouverte :
+                    # sa republication n'est pas un doublon.
+                    "closed": str(reason or "") in (AUTO_ARCHIVE_REASON, CLOSED_OFFER_REASON),
                 }
             )
     return by_bucket
@@ -161,8 +213,10 @@ def _partition_new_jobs(
 
     1. URL canonique et identifiant calculé (même plateforme, liens variables) ;
     2. même annonce sur une **autre plateforme** déjà en base (entreprise et titre
-       équivalents) : l'offre est ignorée ; si la fiche en base n'a pas de
-       description et que la nouvelle en a une, la description est récupérée ;
+       équivalents), ou **republication** sur la même plateforme (même entreprise,
+       même titre et texte similaire, voir ``is_repost``) : l'offre est ignorée,
+       sauf si la fiche en base est fermée ou archivée ; si la fiche en base n'a pas
+       de description et que la nouvelle en a une, la description est récupérée ;
     3. même annonce sur plusieurs plateformes **dans le lot** : seule la version
        à la description la plus longue est conservée.
 
@@ -230,6 +284,14 @@ def _partition_new_jobs(
                 for row in in_database.get(bucket, [])
                 if _same_offer(
                     job.source, job.company, job.title, row["source"], row["company"], row["title"]
+                )
+                or (
+                    not row["closed"]
+                    and is_repost(
+                        job.company, job.title, description,
+                        row["company"], row["title"], row["description"],
+                        job.location, row["location"],
+                    )
                 )
             ),
             None,
