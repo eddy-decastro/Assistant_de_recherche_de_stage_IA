@@ -13,6 +13,9 @@ Deux commandes :
         contient des lots pas encore ingérés (sinon les entrées d'une mission en cours
         seraient effacées) ; --force passe outre.
 
+        --verifier-plus-vieux-que 7 : ajoute les offres à trier déjà notées et publiées
+        depuis au moins 7 jours, avec ``"mission": "verifier"`` (vivacité seule).
+
     python tools/antigravity_v4.py ingest [--dry-run] [--dir DOSSIER]
         Lit data/antigravity/out/lot_XXX_out.json (et nouvelles_offres.json), copie la vraie
         base dans data/backups/ puis :
@@ -102,10 +105,39 @@ def is_exportable(job: dict[str, Any]) -> bool:
     return status == STATUS_IGNORED and (job.get("rejection_reason") or "") == AUTO_ARCHIVE_REASON
 
 
-def _export_record(job: dict[str, Any]) -> dict[str, Any]:
+def job_age_days(job: dict[str, Any], now: datetime | None = None) -> float | None:
+    """Âge de l'offre en jours (date de publication, sinon date de collecte)."""
+    raw = job.get("published_at") or job.get("created_at")
+    if not raw:
+        return None
+    when = raw if isinstance(raw, datetime) else None
+    if when is None:
+        try:
+            when = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if when.tzinfo is not None:
+        when = when.replace(tzinfo=None)
+    return ((now or datetime.now()) - when).total_seconds() / 86400
+
+
+def needs_liveness_check(job: dict[str, Any], min_age_days: float) -> bool:
+    """Offre encore « à trier » (ou auto-archivée) assez ancienne pour être revérifiée."""
+    status = job.get("status")
+    auto_archived = status == STATUS_IGNORED and (job.get("rejection_reason") or "") == AUTO_ARCHIVE_REASON
+    if status != STATUS_NEW and not auto_archived:
+        return False
+    age = job_age_days(job)
+    return age is not None and age >= min_age_days
+
+
+def _export_record(job: dict[str, Any], mission: str = "noter") -> dict[str, Any]:
     published = job.get("published_at") or job.get("created_at") or ""
     return {
         "id": job["id"],
+        # « noter » : évaluation complète + vivacité ; « verifier » : vivacité seule
+        # (l'offre a déjà une note à jour, on veut seulement savoir si elle est fermée).
+        "mission": mission,
         "title": job.get("title") or "",
         "company": job.get("company") or "",
         "location": job.get("location") or "",
@@ -129,6 +161,7 @@ def export(
     out_dir: Path = WORK_DIR,
     stale_only: bool = False,
     force: bool = False,
+    verify_older_than_days: float | None = None,
 ) -> int:
     pending = pending_lots(out_dir / "out")
     if pending and not force:
@@ -140,11 +173,22 @@ def export(
     copy = _readonly_copy(db_path)
     db = Database(str(copy))
     config = load_config()
-    jobs = [j for j in db.get_jobs(limit=100000) if is_exportable(j)]
+    exportable = [j for j in db.get_jobs(limit=100000) if is_exportable(j)]
+    jobs = exportable
     if stale_only:
         current = get_grid_version_v4()
         jobs = [j for j in jobs if is_stale(j, current)]
     jobs.sort(key=lambda j: str(j["id"]))
+    to_grade = {str(j["id"]) for j in jobs}
+    to_verify: list[dict[str, Any]] = []
+    if verify_older_than_days is not None:
+        to_verify = sorted(
+            (j for j in exportable
+             if str(j["id"]) not in to_grade and needs_liveness_check(j, verify_older_than_days)),
+            # Meilleures notes d'abord : si le temps manque, les offres qui comptent sont vérifiées.
+            key=lambda j: (-(j.get("v4_display_score") or 0.0), str(j["id"])),
+        )
+    records = [_export_record(j) for j in jobs] + [_export_record(j, "verifier") for j in to_verify]
 
     in_dir = out_dir / "in"
     in_dir.mkdir(parents=True, exist_ok=True)
@@ -158,14 +202,17 @@ def export(
         json.dumps(get_response_schema_v4(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     n_lots = 0
-    for start in range(0, len(jobs), batch_size):
+    for start in range(0, len(records), batch_size):
         n_lots += 1
-        lot = [_export_record(j) for j in jobs[start:start + batch_size]]
+        lot = records[start:start + batch_size]
         (in_dir / f"lot_{n_lots:03d}.json").write_text(
             json.dumps(lot, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-    print(f"{len(jobs)} offres exportées en {n_lots} lots dans {in_dir}")
-    return len(jobs)
+    print(
+        f"{len(records)} offres exportées en {n_lots} lots dans {in_dir} "
+        f"({len(jobs)} à noter, {len(to_verify)} à vérifier seulement)"
+    )
+    return len(records)
 
 
 def _apply_liveness(db: Database, job: dict[str, Any], liveness: dict[str, Any]) -> str:
@@ -243,8 +290,8 @@ def ingest(dry_run: bool, db_path: Path = REAL_DB, work_dir: Path = WORK_DIR) ->
     db = Database(str(target))
     config = load_config()
     jobs = {j["id"]: j for j in db.get_jobs(limit=100000)}
-    stats = {"notees": 0, "invalides": 0, "inconnues": 0, "ignorees_decision_eddy": 0,
-             "fermees": 0, "reouvertes": 0, "nouvelles_offres": 0}
+    stats = {"notees": 0, "verifiees_seulement": 0, "invalides": 0, "inconnues": 0,
+             "ignorees_decision_eddy": 0, "fermees": 0, "reouvertes": 0, "nouvelles_offres": 0}
 
     for path in sorted(out_dir.glob("lot_*_out.json")):
         results = json.loads(path.read_text(encoding="utf-8"))
@@ -255,6 +302,19 @@ def ingest(dry_run: bool, db_path: Path = REAL_DB, work_dir: Path = WORK_DIR) ->
                 continue
             if not is_exportable(job):
                 stats["ignorees_decision_eddy"] += 1
+                continue
+            if "evaluation" not in entry:
+                # Mission « verifier » : la note reste, seule la vivacité s'applique.
+                if not entry.get("vivacite"):
+                    stats["invalides"] += 1
+                    print(f"  {path.name} {job_id[:10]} invalide : ni évaluation ni vivacité")
+                    continue
+                stats["verifiees_seulement"] += 1
+                action = _apply_liveness(db, job, entry["vivacite"])
+                if action == "fermee":
+                    stats["fermees"] += 1
+                elif action == "reouverte":
+                    stats["reouvertes"] += 1
                 continue
             try:
                 validated = V4JudgeOutput.model_validate(entry["evaluation"])
@@ -291,6 +351,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="Seulement les offres sans note v4 ou notées avec une autre grille.")
     p_exp.add_argument("--force", action="store_true",
                        help="Exporter même si des lots rendus n'ont pas été ingérés.")
+    p_exp.add_argument("--verifier-plus-vieux-que", type=float, default=None, metavar="JOURS",
+                       dest="verify_days",
+                       help="Ajouter, en « vérifier seulement », les offres à trier déjà notées "
+                            "et publiées il y a au moins JOURS jours.")
     p_ing = sub.add_parser("ingest")
     p_ing.add_argument("--dry-run", action="store_true")
     for p in (p_exp, p_ing):
@@ -299,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "export":
         try:
-            export(args.batch_size, out_dir=args.dir, stale_only=args.stale, force=args.force)
+            export(args.batch_size, out_dir=args.dir, stale_only=args.stale, force=args.force,
+                   verify_older_than_days=args.verify_days)
         except PendingLotsError as exc:
             print(f"Export refusé : {exc}")
             return 1

@@ -134,3 +134,39 @@ def test_grid_version_ignores_calibration_block() -> None:
 
     assert len(get_grid_version_v4()) == 12
     assert get_grid_version_v4() == get_grid_version_v4()
+
+
+def test_export_verify_only_old_offers_and_ingest_liveness_alone(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta
+
+    db_path = tmp_path / "base.db"
+    db = Database(str(db_path))
+    old = _job("vieille", STATUS_NEW)
+    old["published_at"] = datetime.now() - timedelta(days=20)
+    recent = _job("recente", STATUS_NEW)
+    recent["published_at"] = datetime.now() - timedelta(days=2)
+    db.upsert_job(old)
+    db.upsert_job(recent)
+    work = tmp_path / "ag"
+    (work / "out").mkdir(parents=True)
+    # Les deux offres sont notées avec la grille actuelle.
+    (work / "out" / "lot_001_out.json").write_text(json.dumps({
+        "vieille": {"evaluation": _valid_llm_payload()},
+        "recente": {"evaluation": _valid_llm_payload()},
+    }), encoding="utf-8")
+    ag.ingest(False, db_path=db_path, work_dir=work)
+
+    n = ag.export(10, db_path=db_path, out_dir=work, stale_only=True, verify_older_than_days=7)
+    lot = json.loads((work / "in" / "lot_001.json").read_text(encoding="utf-8"))
+    assert n == 1 and lot[0]["id"] == "vieille" and lot[0]["mission"] == "verifier"
+
+    score_before = Database(str(db_path)).get_job("vieille")["v4_display_score"]
+    for p in (work / "out").glob("lot_*_out.json"):
+        p.unlink()
+    (work / "out" / "lot_001_out.json").write_text(json.dumps({
+        "vieille": {"vivacite": {"etat": "fermee", "verifie": True, "preuve": "No longer accepting applications"}},
+    }), encoding="utf-8")
+    stats = ag.ingest(False, db_path=db_path, work_dir=work)
+    job = Database(str(db_path)).get_job("vieille")
+    assert stats["verifiees_seulement"] == 1 and stats["fermees"] == 1
+    assert job["status"] == STATUS_IGNORED and job["v4_display_score"] == score_before
