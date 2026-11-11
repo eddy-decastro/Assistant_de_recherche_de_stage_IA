@@ -48,6 +48,10 @@ scrapers:
   # rien mais apparaît en « http_404 » ou « vide » dans le résumé du run.
   # Retirés (morts) : lever mistral/owkin/qonto/shift-technology/backmarket,
   # greenhouse huggingface/alan/criteo, ashby bioptimus, smartrecruiters sanofi.
+  # Ajoutés le 11/11/2026 après sonde des API publiques (stages en France trouvés) :
+  # artefact (17), vestiairecollective (8), voodoo (5), doctrine (4), malt, heetch,
+  # younited, veepee, pennylane, sorare. Sources par API : aucun risque de blocage,
+  # on peut les lire en entier à chaque passage.
   ats_boards:
     lever:
       - contentsquare
@@ -55,6 +59,12 @@ scrapers:
       - alice-bob
       - swile
       - ekimetrics
+      - vestiairecollective
+      - doctrine
+      - malt
+      - heetch
+      - younited
+      - veepee
     greenhouse:
       - datadog
       - dataiku
@@ -63,6 +73,7 @@ scrapers:
       - mirakl
       - shifttechnology
       - helsing
+      - artefact
     ashby:
       - mistral.ai
       - dust
@@ -77,6 +88,9 @@ scrapers:
       - ledger
       - sonio
       - lifen
+      - voodoo
+      - pennylane
+      - sorare
     smartrecruiters:
       - Ubisoft2
     workable:

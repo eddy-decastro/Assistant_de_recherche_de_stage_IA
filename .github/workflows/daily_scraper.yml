@@ -2,9 +2,23 @@ name: 🌙 Daily Scraper Pipeline
 
 on:
   schedule:
-    # Tous les jours à 06:00 UTC
-    - cron: '0 6 * * *'
-  workflow_dispatch: # Permet de lancer manuellement depuis l'interface GitHub
+    # Collecte COMPLÈTE (Fraîcheur + Rattrapage) : le lundi à 05:00 UTC.
+    - cron: '0 5 * * 1'
+    # Collecte LÉGÈRE (Fraîcheur seule) : 3 fois par jour (07:00, 12:00, 18:00 UTC).
+    # Petits passages fréquents = nouvelles offres vues tôt, sans se faire bloquer
+    # par LinkedIn (dépôt public : minutes GitHub Actions gratuites).
+    - cron: '0 7,12,18 * * *'
+  workflow_dispatch: # Lancement manuel depuis l'interface GitHub
+    inputs:
+      mode:
+        description: "complet ou leger"
+        required: false
+        default: "complet"
+
+# Jamais deux collectes en même temps (elles écriraient la même base R2).
+concurrency:
+  group: scraper-pipeline
+  cancel-in-progress: false
 
 jobs:
   scrape-and-sync:
@@ -58,7 +72,14 @@ jobs:
           # JobTeaser est désactivé (config.yaml) : si réactivé, ajouter
           # JOBTEASER_COOKIES. LinkedIn est lu sans compte.
 
-        run: python run_pipeline.py
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 5 * * 1" ] || [ "${{ github.event_name }}" = "workflow_dispatch" -a "${{ github.event.inputs.mode }}" != "leger" ]; then
+            echo "Collecte complète"
+            python run_pipeline.py
+          else
+            echo "Collecte légère"
+            python run_pipeline.py --leger
+          fi
 
       - name: Sauvegarde du cache des fiches
         if: always()

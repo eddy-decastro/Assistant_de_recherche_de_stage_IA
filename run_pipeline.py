@@ -54,6 +54,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Désactive la synchronisation Cloud (R2) avant et après le scraping",
     )
     parser.add_argument(
+        "--leger",
+        action="store_true",
+        help=(
+            "Collecte légère : passe « Fraîcheur » seule (nouvelles offres depuis le dernier "
+            "passage, arrêt dès que le flux est connu). Faite pour tourner plusieurs fois par "
+            "jour sans se faire bloquer ; la collecte complète (avec « Rattrapage ») reste "
+            "hebdomadaire."
+        ),
+    )
+    parser.add_argument(
         "--regrade-v1",
         action="store_true",
         help="Réévalue les offres v1 avec le nouveau juge LLM v3.",
@@ -124,10 +134,10 @@ def main(argv: list[str] | None = None) -> None:
     db = Database()
 
     print("\n" + "=" * 60)
-    print(" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES (LinkedIn & WTTJ)")
+    print(f" 🚀 ÉTAPE 1 : COLLECTE DES OFFRES ({'légère' if args.leger else 'complète'})")
     print("=" * 60)
     # Lancement de la collecte (hybride)
-    degraded_sources = run_scrapers_main([]) or 0
+    degraded_sources = run_scrapers_main(["--passes", "freshness"] if args.leger else []) or 0
 
     print("\n" + "=" * 60)
     print(" 📖 ÉTAPE 2 : ENRICHISSEMENT DES DESCRIPTIONS (Backfill)")
