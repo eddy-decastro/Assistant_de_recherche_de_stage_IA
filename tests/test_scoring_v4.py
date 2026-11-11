@@ -407,3 +407,32 @@ def test_unranked_jobs_ordered_by_freshness_not_semantic(tmp_path: Path) -> None
     finally:
         db.engine.dispose()
 
+
+
+
+def test_apprentissage_statistique_ne_prouve_pas_une_alternance() -> None:
+    from src.matching.scoring_v4 import quote_supports_contract
+
+    assert not quote_supports_contract("ALTERNANCE", "apprentissage statistique")
+    assert not quote_supports_contract("ALTERNANCE", "apprentissage profond")
+    assert not quote_supports_contract("ALTERNANCE", "Stage/ Alternance")
+    assert quote_supports_contract("ALTERNANCE", "Contrat d'apprentissage de 24 mois")
+    assert quote_supports_contract(
+        "ALTERNANCE", "You must already be enrolled in a work-study program in a French school"
+    )
+    assert quote_supports_contract("CDI_CDD", "Poste en CDI basé à Paris")
+    assert not quote_supports_contract("CDI_CDD", "Stage pouvant déboucher sur un CDI")
+
+
+def test_fausse_alternance_non_exclue_mais_contrat_a_verifier() -> None:
+    from src.constants import V4_FLAG_CONTRACT_TO_CHECK
+    from src.matching.scoring_v4 import V4JudgeOutput, compute_final_score_v4
+
+    job = _sample_job()
+    job["description"] += " Méthodes d'apprentissage statistique sur séries temporelles."
+    payload = _valid_llm_payload()
+    payload["contract_type"] = "ALTERNANCE"
+    payload["contract_quote"] = "apprentissage statistique"
+    breakdown = compute_final_score_v4(V4JudgeOutput.model_validate(payload), job, None)
+    assert not breakdown.excluded
+    assert V4_FLAG_CONTRACT_TO_CHECK in breakdown.flags

@@ -221,6 +221,28 @@ def _load_candidate_logistics_context() -> str:
         return ""
 
 
+# Une citation « alternance » doit parler du CONTRAT : le seul mot « apprentissage »
+# désigne le plus souvent le machine learning (« apprentissage statistique »,
+# « apprentissage profond »), ce qui a exclu à tort de vrais stages (10/11/2026).
+_ALTERNANCE_PROOF_RE = re.compile(
+    r"\b(alternance|alternant|alternante|apprentie?s?|contrat d['’]apprentissage|en apprentissage"
+    r"|contrat de professionnalisation|contrat pro|work[- ]?study|apprenticeship|apprentice)\b",
+    re.IGNORECASE,
+)
+# Une citation qui ouvre aussi la porte au stage (« Stage / Alternance ») ne prouve rien.
+_INTERNSHIP_MENTION_RE = re.compile(r"\b(stage|stagiaire|internship|intern|pfe)\b", re.IGNORECASE)
+
+
+def quote_supports_contract(contract_type: str | None, quote: str | None) -> bool:
+    """La citation prouve-t-elle vraiment un contrat incompatible avec un stage ?"""
+    text = str(quote or "")
+    if _INTERNSHIP_MENTION_RE.search(text):
+        return False
+    if contract_type == "ALTERNANCE":
+        return bool(_ALTERNANCE_PROOF_RE.search(text))
+    return True
+
+
 def get_grid_version_v4() -> str:
     """Empreinte courte de la grille (``data/prompt_v4.txt`` seul).
 
@@ -582,7 +604,11 @@ def compute_final_score_v4(
 
     contract_quote = str(judge_out.contract_quote or "").strip()
     contract_incompatible = judge_out.contract_type in ("ALTERNANCE", "CDI_CDD")
-    contract_proven = contract_incompatible and verify_citation(contract_quote, doc_text)
+    contract_proven = (
+        contract_incompatible
+        and verify_citation(contract_quote, doc_text)
+        and quote_supports_contract(judge_out.contract_type, contract_quote)
+    )
     # Contrat incompatible annoncé sans citation vérifiable : pas d'exclusion,
     # l'offre est notée normalement et signalée « contrat à vérifier ».
     contract_to_check = contract_incompatible and not contract_proven
