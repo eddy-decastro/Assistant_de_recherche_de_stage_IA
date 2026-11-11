@@ -253,12 +253,11 @@ function CurrentOffer({
           <CopyButton value={item.cover_letter} label="la lettre de motivation" />
         </div>
         {item.cover_letter ? (
-          <textarea
-            className={`field ${styles.letter}`}
-            readOnly
-            value={item.cover_letter}
-            aria-labelledby="lettre-titre"
-          />
+          // Texte visible (pas un <textarea>) : la lecture du texte de la page par
+          // Claude in Chrome ne voit pas le contenu d'un champ de saisie.
+          <p className={styles.textBlock} id="lettre-texte" aria-labelledby="lettre-titre">
+            {item.cover_letter}
+          </p>
         ) : (
           <p className="muted">Aucune lettre pour cette offre.</p>
         )}

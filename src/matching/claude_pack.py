@@ -189,6 +189,62 @@ def prepare_job_application_bundle(
     }
 
 
+def _prepare_bundles_parallel(
+    jobs: list[dict[str, Any]],
+    *,
+    db: Any,
+    config: dict[str, Any],
+    output_dir: Path,
+    generate_missing_letters: bool,
+    export_pdf: bool,
+) -> list[dict[str, Any]]:
+    """Prépare les dossiers en parallèle (une lettre Gemini ≈ 20-35 s : 3 à la fois).
+
+    Les appels LLM tournent dans des fils ; les lettres sont enregistrées en base
+    ensuite, dans le fil principal (une seule connexion SQLite écrit). L'ordre des
+    offres est conservé. Si une offre échoue, les lettres réussies sont quand même
+    enregistrées, puis l'erreur est remontée.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = max(1, int((config.get("llm") or {}).get("cover_letter_concurrency", 3)))
+
+    def _one(job: dict[str, Any]) -> dict[str, Any] | Exception:
+        try:
+            return prepare_job_application_bundle(
+                job,
+                db=None,
+                config=config,
+                output_dir=output_dir,
+                generate_missing_letter=generate_missing_letters,
+                export_pdf=export_pdf,
+            )
+        except Exception as exc:  # remonté après l'enregistrement des réussites
+            return exc
+
+    with ThreadPoolExecutor(max_workers=min(workers, max(1, len(jobs)))) as pool:
+        results = list(pool.map(_one, jobs))
+
+    bundles: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for job, res in zip(jobs, results):
+        if isinstance(res, Exception):
+            errors.append(f"{job.get('company') or '?'} : {res}")
+            continue
+        had_letter = bool(str(job.get("cover_letter") or "").strip()) and not str(
+            job.get("cover_letter") or ""
+        ).startswith("⚠️")
+        if db is not None and hasattr(db, "update_cover_letter") and res.get("cover_letter") and not had_letter:
+            try:
+                db.update_cover_letter(str(job.get("id") or ""), res["cover_letter"])
+            except Exception:
+                pass
+        bundles.append(res)
+    if errors:
+        raise RuntimeError("Échec de préparation : " + " ; ".join(errors))
+    return bundles
+
+
 def build_queue_prompt(*, queue_url: str = QUEUE_URL, auto_submit: bool = False) -> str:
     """Prompt court et stable pour Claude in Chrome : il dépile la file ``/file``."""
     submit_rule = (
@@ -204,8 +260,9 @@ def build_queue_prompt(*, queue_url: str = QUEUE_URL, auto_submit: bool = False)
         "lettre en texte, réponses types et consignes de l'offre. N'invente rien d'autre.",
         "3. Ouvre l'URL de l'offre dans un nouvel onglet et remplis le formulaire.",
         "4. Règles strictes :",
-        "   - Ne crée jamais de compte et ne saisis jamais de mot de passe. Si un compte est requis, "
-        "reviens sur la file, écris « Échec : compte requis. » et clique « Échec ».",
+        "   - Ne crée jamais de compte et ne saisis jamais de mot de passe. Si le site demande de "
+        "te connecter et qu'aucune session d'Eddy n'est ouverte, reviens sur la file, écris "
+        "« Échec : compte requis, Eddy se connecte. » et clique « Échec ».",
         "   - Tu ne peux pas joindre de PDF : colle la lettre en texte et remplis tout le reste. "
         "Si un CV est obligatoire et non joint, ne soumets pas, laisse l'onglet ouvert et "
         "écris « CV à joindre » dans le compte rendu.",
@@ -243,17 +300,14 @@ def build_claude_pack(
     target_dir = Path(output_dir) if output_dir is not None else READY_DIR
     do_export_pdf = export_pdfs if save_pdfs is None else bool(save_pdfs)
 
-    bundles = [
-        prepare_job_application_bundle(
-            job,
-            db=db,
-            config=cfg,
-            output_dir=target_dir,
-            generate_missing_letter=generate_missing_letters,
-            export_pdf=do_export_pdf,
-        )
-        for job in jobs
-    ]
+    bundles = _prepare_bundles_parallel(
+        jobs,
+        db=db,
+        config=cfg,
+        output_dir=target_dir,
+        generate_missing_letters=generate_missing_letters,
+        export_pdf=do_export_pdf,
+    )
     candidate_form_data = build_candidate_form_data(cfg)
 
     queue_result: dict[str, Any] = {"added": [], "requeued": [], "skipped": [], "enabled": False}

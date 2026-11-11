@@ -111,17 +111,17 @@ APPLY_METHODS: dict[str, dict[str, Any]] = {
     "workday": {
         "label": "Workday (compte requis)",
         "needs_account": True,
-        "hint": "Workday exige un compte candidat.",
+        "hint": "Workday exige un compte candidat : remplis seulement si la session d'Eddy est déjà ouverte.",
     },
     "taleo": {
         "label": "Taleo (compte requis)",
         "needs_account": True,
-        "hint": "Taleo exige un compte candidat.",
+        "hint": "Taleo exige un compte candidat : remplis seulement si la session d'Eddy est déjà ouverte.",
     },
     "successfactors": {
         "label": "SuccessFactors (compte requis)",
         "needs_account": True,
-        "hint": "SuccessFactors exige un compte candidat.",
+        "hint": "SuccessFactors exige un compte candidat : remplis seulement si la session d'Eddy est déjà ouverte.",
     },
     "jobteaser": {
         "label": "JobTeaser (session école)",
@@ -535,8 +535,10 @@ def offer_instructions(item: Mapping[str, Any], bundle: Mapping[str, Any]) -> li
     lines = [f"Méthode : {item.get('method_label') or ''}. {_method_hint(item, bundle)}".strip()]
     if item.get("needs_account"):
         lines.append(
-            "Compte requis : ne crée aucun compte, ne saisis aucun mot de passe. "
-            "Clique « Échec » avec le compte rendu « Échec : compte requis. » et passe à la suite."
+            "Compte requis : si Eddy est déjà connecté (session ouverte sur ce site), remplis "
+            "normalement. Si une page de connexion ou de création de compte s'affiche, ne crée "
+            "aucun compte et ne saisis aucun mot de passe : clique « Échec » avec le compte rendu "
+            "« Échec : compte requis, Eddy se connecte. » et passe à la suite."
         )
     lines.append(
         "Lettre : colle le texte de la lettre dans le champ prévu. Tu ne peux joindre aucun PDF."

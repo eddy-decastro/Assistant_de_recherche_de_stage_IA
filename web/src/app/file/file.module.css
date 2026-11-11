@@ -90,7 +90,6 @@
   overflow-wrap: anywhere;
   line-height: 1.55;
 }
-.letter { width: 100%; min-height: 300px; }
 
 .blockHead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 

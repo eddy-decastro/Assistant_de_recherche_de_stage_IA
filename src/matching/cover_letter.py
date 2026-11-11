@@ -21,6 +21,10 @@ from src.config import load_config
 from src.env import load_env_file
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
+# Secours Gemini, dans l'ordre : modèles vérifiés le 11/11/2026 (liste de l'API).
+GEMINI_FALLBACK_MODELS = ("gemini-3-flash-preview", "gemini-2.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite")
+DEFAULT_DEEPSEEK_LETTER_MODEL = "deepseek-flash"
+LETTER_PROVIDERS = ("gemini", "deepseek")
 
 DEFAULT_CANDIDATE: dict[str, str] = {
     "name": "Eddy DE CASTRO",
@@ -479,7 +483,7 @@ def check_letter(
 
 
 class CoverLetterGenerator:
-    """Générateur de lettre de motivation (DeepSeek V3 prioritaire, Google Gemini en secours)."""
+    """Générateur de lettre de motivation (Gemini puis DeepSeek par défaut, ordre réglable : llm.cover_letter_provider)."""
 
     def __init__(
         self,
@@ -492,6 +496,13 @@ class CoverLetterGenerator:
         llm_cfg = self.config.get("llm", {})
         self.model = str(llm_cfg.get("cover_letter_model") or llm_cfg.get("model", DEFAULT_MODEL))
         self.temperature = float(llm_cfg.get("cover_letter_temperature", 0.4))
+        # Gemini d'abord (gratuit) ; DeepSeek seulement s'il reste du crédit.
+        first = str(llm_cfg.get("cover_letter_provider") or "gemini").lower()
+        self.provider_order: tuple[str, ...] = (
+            (first,) + tuple(p for p in LETTER_PROVIDERS if p != first)
+            if first in LETTER_PROVIDERS else LETTER_PROVIDERS
+        )
+        self.deepseek_model = str(llm_cfg.get("cover_letter_deepseek_model") or DEFAULT_DEEPSEEK_LETTER_MODEL)
         self.candidate = get_candidate_info(self.config)
         self.facts = get_letter_facts()
         self.system_prompt = build_system_prompt(self.candidate)
@@ -648,7 +659,7 @@ class CoverLetterGenerator:
         cv_text: str | None = None,
         custom_instruction: str | None = None,
     ) -> str | None:
-        """Génère la lettre de motivation via le modèle principal : DeepSeek (deepseek-chat)."""
+        """Génère la lettre de motivation via DeepSeek (``llm.cover_letter_deepseek_model``)."""
         if not self.deepseek_api_key:
             return None
 
@@ -660,7 +671,7 @@ class CoverLetterGenerator:
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "deepseek-chat",
+            "model": self.deepseek_model,
             "messages": [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt_content},
@@ -708,56 +719,51 @@ class CoverLetterGenerator:
         cv: str,
         custom_instruction: str | None = None,
     ) -> str | None:
-        """Exécute un appel à la cascade LLM (DeepSeek puis Gemini)."""
+        """Exécute un appel à la cascade LLM (ordre ``provider_order``, Gemini d'abord par défaut)."""
         prompt_content = self._build_user_prompt(job, cv, custom_instruction=custom_instruction)
+        self.last_error = ""
+        for provider in self.provider_order:
+            if provider == "deepseek" and self.deepseek_api_key:
+                ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
+                if ds_result and not ds_result.startswith("⚠️"):
+                    self.last_source = "deepseek"
+                    return ds_result
+            elif provider == "gemini" and self.api_key:
+                raw_text = self._call_gemini(prompt_content)
+                if raw_text:
+                    self.last_source = "gemini"
+                    return self._postprocess_letter(raw_text)
+        return None
 
-        # Niveau 1 : DeepSeek V3 (modèle principal)
-        if self.deepseek_api_key:
-            ds_result = self.generate_with_deepseek(job, cv_text=cv, custom_instruction=custom_instruction)
-            if ds_result and not ds_result.startswith("⚠️"):
-                self.last_source = "deepseek"
-                return ds_result
+    def _gemini_models(self) -> list[str]:
+        models: list[str] = []
+        for m in (self.model, *GEMINI_FALLBACK_MODELS):
+            if m and m not in models:
+                models.append(m)
+        return models
 
-        # Niveau 2 : Google Gemini (secours)
-        if self.api_key:
-            client = self._client or genai.Client(api_key=self.api_key)
-            fallback_models: list[str] = []
-            for m in [
-                self.model,
-                "gemini-3-flash-preview",
-                "gemini-3.8-flash",
-                "gemini-3.7-flash",
-                "gemini-3.6-flash",
-                "gemini-3.5-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-flash-latest",
-                "gemini-flash-lite-latest",
-            ]:
-                if m and m not in fallback_models:
-                    fallback_models.append(m)
-
-            self.last_error = ""
-            for model_candidate in fallback_models:
-                try:
-                    response = client.models.generate_content(
-                        model=model_candidate,
-                        contents=prompt_content,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self.system_prompt,
-                            temperature=self.temperature,
-                        ),
-                    )
-                    raw_text = (response.text or "").strip()
-                    if raw_text:
-                        self.last_source = "gemini"
-                        return self._postprocess_letter(raw_text)
-                except APIError as exc:
-                    self.last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
-                    continue
-                except Exception as exc:
-                    self.last_error = f"⚠️ Erreur : {exc}"
-                    continue
-
+    def _call_gemini(self, prompt_content: str) -> str | None:
+        """Essaie les modèles Gemini dans l'ordre ; renvoie le premier texte non vide."""
+        client = self._client or genai.Client(api_key=self.api_key)
+        for model_candidate in self._gemini_models():
+            try:
+                response = client.models.generate_content(
+                    model=model_candidate,
+                    contents=prompt_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        temperature=self.temperature,
+                    ),
+                )
+                raw_text = (response.text or "").strip()
+                if raw_text:
+                    return raw_text
+            except APIError as exc:
+                self.last_error = f"⚠️ Erreur API Gemini ({exc.code}) : {exc.message}"
+                continue
+            except Exception as exc:
+                self.last_error = f"⚠️ Erreur : {exc}"
+                continue
         return None
 
     def generate(
@@ -767,7 +773,7 @@ class CoverLetterGenerator:
         custom_instruction: str | None = None,
         allow_fallback: bool = True,
     ) -> str:
-        """Génère une lettre de motivation (DeepSeek V3 prioritaire, Gemini en secours) et la vérifie."""
+        """Génère une lettre de motivation (fournisseurs dans ``provider_order``) et la vérifie."""
         self.last_warnings = []
         if not self.available:
             return (
@@ -927,51 +933,36 @@ class CoverLetterGenerator:
 
         prompt_content = "\n".join(prompt_parts)
 
-        if self.deepseek_api_key:
-            try:
-                resp = requests.post(
-                    "https://api.deepseek.com/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.deepseek_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": [
-                            {"role": "system", "content": self.system_prompt},
-                            {"role": "user", "content": prompt_content},
-                        ],
-                        "temperature": self.temperature,
-                        "max_tokens": 600,
-                    },
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                raw = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-                if raw:
-                    return self._clean_short_motivation(raw)
-            except Exception:
-                pass
-
-        if self.api_key:
-            client = self._client or genai.Client(api_key=self.api_key)
-            for model_candidate in [self.model, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest"]:
-                if not model_candidate:
-                    continue
+        for provider in self.provider_order:
+            if provider == "deepseek" and self.deepseek_api_key:
                 try:
-                    response = client.models.generate_content(
-                        model=model_candidate,
-                        contents=prompt_content,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self.system_prompt,
-                            temperature=self.temperature,
-                        ),
+                    resp = requests.post(
+                        "https://api.deepseek.com/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.deepseek_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": self.deepseek_model,
+                            "messages": [
+                                {"role": "system", "content": self.system_prompt},
+                                {"role": "user", "content": prompt_content},
+                            ],
+                            "temperature": self.temperature,
+                            "max_tokens": 600,
+                        },
+                        timeout=30,
                     )
-                    raw = (response.text or "").strip()
+                    resp.raise_for_status()
+                    raw = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
                     if raw:
                         return self._clean_short_motivation(raw)
                 except Exception:
-                    continue
+                    pass
+            elif provider == "gemini" and self.api_key:
+                raw = self._call_gemini(prompt_content)
+                if raw:
+                    return self._clean_short_motivation(raw)
         return None
 
     def generate_short_motivation(

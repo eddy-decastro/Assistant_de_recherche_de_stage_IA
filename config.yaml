@@ -688,7 +688,11 @@ llm:
   provider: deepseek
   base_url: https://api.deepseek.com
   model: deepseek-chat
+  # Lettres : Gemini d'abord (gratuit), DeepSeek en secours (payant, crédit à 0 $
+  # le 11/11/2026). « deepseek » pour inverser l'ordre.
+  cover_letter_provider: gemini
   cover_letter_model: gemini-3-flash-preview
+  cover_letter_deepseek_model: deepseek-flash
   cover_letter_temperature: 0.4
   temperature: 0.0
   timeout_seconds: 60
