@@ -2,7 +2,7 @@
 
 > Mise à jour du 10/11 au soir : le run GitHub quotidien est abandonné (collecte à la main et par Antigravity). Le §4 ne s'applique plus pour l'étape 0 ; le coût DeepSeek est estimé au §6.
 
-Suite de [AUDIT.md](../AUDIT.md). Ce document part de l'état réel du 10/11/2026 :
+Suite de [AUDIT_2026-11-04.md](AUDIT_2026-11-04.md). Ce document part de l'état réel du 10/11/2026 :
 base locale (copie lue), journaux GitHub Actions, configuration et code.
 Statut : ⏳ à faire · ✅ fait · 🧑 action d'Eddy (secrets, décision, commande sur la vraie base).
 

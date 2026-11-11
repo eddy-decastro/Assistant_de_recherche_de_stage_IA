@@ -1,102 +1,218 @@
-# Audit Stage Copilot — 04/11/2026
+# Audit du 11/11/2026 : postuler plus vite et plus simplement
 
-Audit en lecture seule (API locale, code, base), puis plan de correction validé par Eddy.
-Statut de chaque point : ⏳ à faire · ✅ fait · ❌ abandonné.
+Audit en lecture seule du code (API, file de candidature, lettres, front Next.js, base, CI).
+Aucun fichier de code n'a été modifié. Les chiffres viennent d'une copie temporaire de
+`data/stage_copilot.db` (fichier principal, sans le journal WAL : ils peuvent avoir quelques heures de retard).
 
-## Constats
+Audits précédents : [docs/AUDIT_2026-11-04.md](docs/AUDIT_2026-11-04.md) (notation, scraping, interface)
+et [docs/PLAN_AMELIORATION_2026-11-10.md](docs/PLAN_AMELIORATION_2026-11-10.md).
 
-### Notation
-- Deux notes coexistent et se contredisent : la liste est triée par la note v3, la pastille affiche la v4.
-  Exemples : UMA « Research Scientist » v3 90 / v4 E 0, Kering « Junior AI Scientist » 88 / E 0,
-  Harmattan AI 82 / E 0. Ce sont des CDI mal étiquetés « stage » par LinkedIn ; la v3 affiche
-  quand même « Stage de 6 mois à Paris ».
-- La v4 classe en CDI sans citation (`quote` vide) : décision juste ici, mais invérifiable.
-- Offre exclue : 0 étoile partout, mais justifications positives affichées à côté.
-- 227 axes ont `quote: "reputation"`, une citation factice autorisée par le prompt.
-- Les notes séparent mal ce sur quoi Eddy postule et ce qu'il ignore à la main
-  (AUC ≈ 0,53 v3, 0,55 v4 ; petit échantillon : 26 ignorées à la main).
-- Tag Thèse / CIFRE en double (`cifre_these` et `these_cifre`).
-- Les « questions d'entretien » sont collées dans le champ `reasoning`.
-- v4 désactivée dans le pipeline quotidien (`scoring_v4.enabled: false`) : 424 offres notées sur 2 337.
+Statut : ⏳ à faire · ✅ fait · 🧑 action d'Eddy.
 
-### Scraping
-- Sources `ats` et `academic` codées mais absentes de `enabled_sources`. Sondes du 04/11 :
-  CNRS RSS 302, CEA 404, Lever `mistral` vide, Greenhouse `huggingface` 404, SmartRecruiters `sanofi` vide.
-  Seuls Ashby (`dust`) et le RSS Inria répondent.
-- Pas de Workday (Thales, Safran, EDF, Schneider, Stellantis : classes A/B).
-- Archivage automatique à 21 jours : 981 offres archivées, dont 92 notées ≥ 80 (NAVER Labs à 100).
-- WTTJ : pas de filtre pays (environ 30 % de stages hors France, diagnostic du 30/09).
-- À trier : 45 offres LinkedIn contre 274 WTTJ, alors que LinkedIn domine la base.
+## 1. Le constat principal
 
-### Interface
-- Deux notes affichées (grand chiffre v3, pastille v4).
-- Doublons visuels par entreprise (HGH Infrared : 4 lignes quasi identiques).
-- Dates arrondies (« Il y a 8 j / 20 j ») ; NAVER affiche 24 j pour une offre publiée il y a 135 j.
-- Liste plafonnée à 250 offres sur 319.
+La collecte et la notation marchent. C'est la candidature qui bloque.
 
-### Candidature avec Claude in Chrome
-- Le Pack Claude est un long prompt à coller ; rien ne revient dans l'app après candidature.
-- Claude in Chrome ne téléverse pas de PDF, ne crée pas de compte, ne saisit pas de mot de passe.
+| Mesure | Valeur |
+|---|---|
+| Offres à trier | 1 113 |
+| dont notées 80 ou plus (cœur de cible) | 76 |
+| dont notées 60 à 79 | 281 |
+| dont pas encore notées | 274 |
+| Candidatures envoyées (POSTULÉ + ENTRETIEN) | 46 |
+| Candidatures depuis début octobre (5 semaines) | 1 |
+| Offres dans la file Claude (`apply_queue`) | 0, la file n'a jamais servi |
+| Lettres de motivation en base | 1 |
+| CV PDF dans `data/` | aucun, et `candidate.cv_pdf_path` absent de `config.yaml` |
 
-### Autres
-- Règle Git contradictoire entre `CLAUDE.md` du projet et global.
-- Scripts ponctuels non suivis et fichiers de plan obsolètes à la racine.
+76 offres au cœur de cible attendent, et l'outil de candidature construit le 04/11
+(Pack Claude, page `/file`) n'a jamais traité une seule offre. La suite explique pourquoi
+et propose quoi changer, du plus rentable au moins rentable.
 
-## Plan validé
+## 2. Problèmes bloquants (ils empêchent de postuler vite)
 
-### Notation
-| # | Action | Statut |
-|---|---|---|
-| N1 | Une seule note : v4 principale, v3 retirée de l'affichage et du tri ; v4 activée dans le pipeline | ✅ La v4 est activée, notée au fil de l'eau (offres NOUVEAU seulement) et sert au tri partout : API, front, Streamlit et notifications ; le juge v3 ne tourne plus que si `scoring_v3.rerank_enabled` vaut true. |
-| N2 | `contract_quote` obligatoire ; sans citation → « contrat à vérifier » ; exclusions dans un onglet à part | ✅ Sans citation vérifiée, l'offre est notée avec le badge « Contrat à vérifier » au lieu d'être exclue ; l'onglet Exclues du front montre le motif et les étoiles brutes. |
-| N3 | Raison en un clic quand on ignore une offre → exemples injectés dans le prompt + jeu d'évaluation | ✅ Le menu « Ignorer… » propose 10 raisons et un commentaire, les décisions alimentent le bloc « DÉCISIONS RÉCENTES D'EDDY » du prompt, et `tools/eval_feedback.py` mesure l'AUC (v4 0,69 contre 0,74 pour la v3 au 04/11). |
-| N4 | Supprimer `quote: "reputation"` ; la réputation passe uniquement par `reputation_points` | ✅ L'exception est retirée du prompt et du code ; elle ne s'appliquera aux 424 notes existantes qu'après un `--recompute-scores-v4` (voir « Reste à faire »). |
-| N5 | Dédoublonner le tag Thèse / CIFRE ; séparer les questions d'entretien du `reasoning` | ✅ `cifre_these` est ramené à `these_cifre` à la lecture, et les questions d'entretien vont dans `questions_entretien`, plus dans `reasoning`. |
-| N6 | Eddy corrige la note de l'IA (classe + note + « car … ») ; ces corrections sont injectées dans le prompt v4 | ✅ Le bloc « Ma note » du détail enregistre la correction (`user_v4_*`, protégé à la sync R2), qui est injectée en tête du prompt sous « CORRECTIONS D'EDDY » ; `eval_feedback` calcule l'écart IA / Eddy. |
+### B1. Préparer un dossier est lent et fragile
+- Chaque offre demande jusqu'à 4 appels LLM à la suite : 2 pour la lettre
+  (`CoverLetterGenerator.generate`, un essai puis une correction) et 2 pour la motivation courte
+  (`generate_short_motivation`). Chaque appel peut durer 35 s.
+- Tout se fait dans une seule requête HTTP, offre après offre
+  ([claude_pack.py:246](src/matching/claude_pack.py:246), [api/main.py:712](api/main.py:712)).
+  Un pack de 10 offres peut prendre plusieurs minutes, avec un simple message « Préparation… ».
+- Le front passe par le relais de Next.js, qui coupe par défaut une requête au bout de 30 s.
+  Non testé en vrai : à vérifier, mais un pack de plusieurs offres a toutes les chances d'échouer.
+- Dans `build_claude_pack`, une seule lettre en échec fait échouer tout le pack (erreur 503).
+  `add_jobs_to_queue` gère bien ce cas, offre par offre ; les deux chemins ne sont pas alignés.
+- La motivation courte n'est pas enregistrée en base : elle est refaite (et repayée) à chaque pack.
+- Cocher « envoi automatique » dans le pack refait tout le dossier de chaque offre
+  ([PackModal.tsx:60](web/src/components/PackModal.tsx:60) appelle `queueAdd`, qui régénère).
 
-### Scraping
-| # | Action | Statut |
-|---|---|---|
-| S1 | Réparer et activer `ats` et `academic` ; une source en panne ne bloque rien, la cause est visible | ✅ Les 27 boards ATS, Inria et CEA sont « ok » au 04/11 (CNRS retiré) ; un board en panne donne une alerte, pas un arrêt, et `/api/sources/health` en expose la cause. |
-| S2 | Ajouter un scraper Workday (API JSON publique) | ✅ 11 grands groupes (Thales, Airbus, Renault, Sanofi…), stages France seulement, activé dans `enabled_sources` et dans la page Paramètres. |
-| S3 | Sources recherche (GdR, ABG…) : Eddy s'en charge avec Claude in Chrome | ❌ (hors code) |
-| S4 | Remplacer l'archivage par âge par une détection « offre fermée » (HTTP + texte « n'accepte plus de candidatures ») | ✅ L'archivage par âge est coupé ; seules les offres NOUVEAU dont la page prouve la fermeture passent en IGNORÉ (`offre_fermee`), et un 429 ou une page anti-robot ne concluent rien. Le rendement réel reste à observer au prochain run. |
-| S5 | Filtre pays France sur WTTJ | ✅ `scrapers.wttj_country: FR` (333 stages, tous en France, au lieu de 415 dont 33 % à l'étranger). |
-| S6 | Diagnostiquer le faible volume LinkedIn (429, arrêt anticipé) | ✅ Ce n'était ni un 429 ni un arrêt anticipé : LinkedIn invité ignore `f_JT=I`, donc le quota se remplissait de CDI exclus ensuite. Les requêtes reçoivent maintenant des mots-clés de stage (17 stages sur 20 au lieu de 0). |
+### B2. La page `/file` est faite pour un robot, pas pour toi
+- Impossible de marquer une offre « postulé » sans écrire un compte rendu de 2 phrases
+  ([file/page.tsx:85](web/src/app/file/page.tsx:85)). Utile pour Claude, pénible pour un humain.
+- Aucun bouton « Passer », « Retirer de la file » ou « Réessayer ». La route `DELETE /api/queue/{id}`
+  existe, mais `api.queueRemove` n'est appelé nulle part dans le front.
+- Une offre en échec reste dans la liste sans aucune action possible. Pour la relancer,
+  il faut retourner au tri, la retrouver et refaire un Pack.
+- Une seule offre visible à la fois, dans l'ordre imposé.
 
-### Interface
-| # | Action | Statut |
-|---|---|---|
-| U1 | Une seule note affichée, avec la classe | ✅ Une pastille « B 82 », « non notée » ou « exclue » dans la liste et les cartes, tri par défaut « Meilleure note » ; l'ancienne grille v3 est repliée en archive. |
-| U2 | Regrouper les offres d'une même entreprise | ✅ Une offre par entreprise en tête avec « N autres offres chez X », dépliable ; la clé `company_key` fusionne les variantes (« Naval Group [FR] »). |
-| U3 | Vraie date de publication | ✅ La date affichée et l'âge partent de la date de publication, et « Collectée il y a… » s'affiche en italique quand cette date est inconnue. |
-| U4 | Raccourcis clavier (J/K, P, I) avec aide visible | ✅ J/K et flèches, O, P, I (choix de raison au chiffre), L et ?, avec une ligne d'aide toujours visible sous la liste. |
-| U5 | Chargement au défilement (plus de limite à 250) | ✅ Pages de 100 avec `offset` / `has_more`, chargées au défilement, sans plafond. |
-| U6 | Libellés de classe dans les filtres du haut | ✅ Les boutons de classe affichent la lettre, le libellé court et le compte (« A Recherche 34 »), avec le libellé complet au survol. |
+### B3. « Postulé » ne veut pas dire « envoyé »
+- Quand Claude clique « Marquer postulé », l'offre passe au statut POSTULÉ avec une date
+  ([apply_queue.py:647](src/matching/apply_queue.py:647)), alors que par défaut il n'a pas le droit
+  de cliquer Envoyer. Le formulaire est juste rempli dans un onglet.
+- Si l'onglet est fermé ou oublié, l'offre est comptée comme candidature alors que rien n'est parti.
+  La date de relance (14 jours) est fausse aussi.
+- Le badge « À finir par toi » existe, mais aucune liste ne regroupe ces offres.
 
-### Candidature avec Claude in Chrome
-| # | Action | Statut |
-|---|---|---|
-| C1 | Page file d'attente `/file` + endpoint « marquer postulé » ; Claude laisse un compte rendu caveman de 2 phrases | ✅ Le Pack Claude remplit la file, et `/file` montre l'offre courante avec les boutons « Marquer postulé » / « Échec » et un compte rendu de 2 phrases au plus, vérifié côté page et côté API. Testée en vrai seulement sur une file vide. |
-| C2 | Le CV PDF est téléversé à la main : Claude s'arrête sur ce champ et le signale | ✅ Le prompt et la page disent de ne pas soumettre sans CV et d'écrire « CV à joindre » ; il manque encore le chemin du CV PDF dans la config (voir « Reste à faire »). |
-| C3 | Étiqueter chaque offre par méthode de candidature (sans compte d'abord) | ✅ 13 méthodes reconnues (WTTJ, LinkedIn, Greenhouse, Workday, JobTeaser…), « compte requis » signalé, offres sans compte en tête de file. LinkedIn simplifiée ou externe reste incertain. |
+### B4. Le CV PDF reste un geste manuel à chaque offre
+- L'audit du 04/11 notait « Claude in Chrome ne téléverse pas de PDF ». L'extension a aujourd'hui
+  un outil de téléversement de fichier (visible dans ma session). Non testé sur un vrai formulaire.
+- Aucun CV PDF n'est rangé dans `data/` et le chemin n'est pas configuré : la page `/file`
+  affiche « Aucun CV PDF configuré ».
 
-### Autres
-| # | Action | Statut |
-|---|---|---|
-| A1 | Commit direct sur `main` (règle du projet alignée sur la règle globale) | ✅ |
-| A2 | Supprimer les fichiers anciens et inutiles | ✅ 12 scripts ponctuels v4, `data/v4_batches/` et 3 vieux plans déplacés dans `data/backups/archive_20261104/` (rien de définitif) ; `web/package-lock.json` suivi. |
-| A3 | Garde-fous de tests : aucun appel LLM réel, aucune ouverture de la vraie base | ✅ `tests/conftest.py` vide les clés LLM, bloque les hôtes LLM et redirige toute `Database` ouverte sur `data/stage_copilot.db` ou `data/jobs.db` vers une base jetable (la page Candidatures testée ouvrait la vraie base). |
+### B5. Le profil candidat n'est modifiable que dans l'ancienne interface
+- La page Paramètres (coordonnées, CV) n'existe que dans Streamlit, qui est déprécié.
+  Le front Next.js n'a que deux pages : le tri et la file.
+- Si l'e-mail ou le téléphone manque, le dossier contient le texte « [À compléter dans Paramètres] »
+  ([claude_pack.py:69](src/matching/claude_pack.py:69)), que Claude peut coller tel quel dans un formulaire.
+- École, niveau, durée, date de début, type de contrat et autorisation de travail sont écrits en dur
+  dans le code ([claude_pack.py:74](src/matching/claude_pack.py:74)), comme l'accroche courte
+  (ligne 91) et le nom du PDF ([api/main.py:699](api/main.py:699)). Changer ta date de début
+  demande de modifier du Python.
 
-## Reste à faire
+## 3. Problèmes majeurs
 
-1. **Recalculer les notes v4 existantes** (à lancer par Eddy, ça écrit dans la vraie base). D'abord copier `data/stage_copilot.db` dans `data/backups/`, puis lancer `python run_pipeline.py --recompute-scores-v4`. Effets attendus : N2 et N4 s'appliquent aux 424 notes existantes, 227 axes débouché cités « reputation » perdent une étoile, et les CDI notés sans citation passent en « contrat à vérifier ».
-2. **CV PDF** (C2) : renseigner `candidate.cv_pdf_path: data/<CV>.pdf` dans `config.yaml`, sinon la page `/file` affiche « Aucun CV PDF configuré ».
-3. **981 offres archivées par âge** (raison `auto_archive`) : elles restent IGNORÉ. Les remettre en NOUVEAU pour que la détection d'offre fermée les trie demande un script ponctuel sur la vraie base, après sauvegarde. C'est à Eddy de décider.
-4. **Observer le prochain run** : le rendement de la détection d'offre fermée (S4, WTTJ coupe en anti-robot après une rafale) et le volume de stages LinkedIn (S6).
-5. **Boucle de retour (N3, N6)** : aucune des 40 offres ignorées n'a encore de raison, et aucune note n'est corrigée. Il faut qu'Eddy s'en serve, puis relancer `tools/eval_feedback.py` pour voir si l'AUC v4 dépasse la v3.
-6. **Petits manques du front** :
-   - l'onglet « 60 et plus » inclut le cœur de cible, faute de `max_score` dans l'API ;
-   - annuler un « ignorer » laisse le commentaire en base ;
-   - pas d'action « Remettre à trier » dans l'onglet Exclues.
-7. **Sources absentes** : Safran, Schneider (iCIMS), Stellantis, EDF et TotalEnergies ne sont pas sur Workday. S3 (GdR, ABG) reste hors code.
+### M1. Pas de lien direct vers le formulaire de candidature
+- Aucun scraper ne collecte `apply_url` ni `easy_apply`, et la table `jobs` n'a pas ces colonnes.
+  `detect_apply_method` les lit quand même : il devine depuis l'URL de l'annonce et la source.
+- Conséquence : toute offre LinkedIn est classée « site de l'entreprise », jamais « candidature simplifiée ».
+  « Ouvrir l'offre » mène à l'annonce, pas au formulaire : un ou deux clics de plus à chaque fois.
+- LinkedIn pèse 406 des 1 113 offres à trier.
+
+### M2. Le tri n'aide pas à choisir les candidatures faciles
+- La méthode de candidature (sans compte, compte requis, e-mail) n'apparaît qu'une fois l'offre
+  dans la file. Dans le tri, rien ne dit « celle-ci se fait en 2 minutes ».
+- Pas de filtre ni de tri « sans compte d'abord ».
+- Le raccourci `P` marque « postulé » sans ouvrir l'offre. Il n'existe pas de geste unique
+  « ouvrir l'offre et préparer ce qu'il faut coller ».
+
+### M3. Les relances ne sont qu'une étiquette
+- Le tableau affiche « À relancer : postulé il y a N jours », sans action.
+- `generate_followup_message` existe dans [cover_letter.py:1000](src/matching/cover_letter.py:1000),
+  mais n'est branché que dans Streamlit.
+- Rien n'enregistre qu'une relance a été faite, ni la date d'un entretien.
+
+### M4. Réponses types trop courtes
+- `build_standard_answers` couvre 9 questions. Il manque les classiques des formulaires :
+  niveau d'anglais et autres langues, mobilité, permis, « comment avez-vous connu l'entreprise »,
+  questions de diversité (à laisser « ne souhaite pas répondre »), lien vers un portfolio.
+- Les réponses ne sont pas modifiables sans toucher au code.
+- Aucune version anglaise des réponses, alors que les lettres savent détecter une offre en anglais.
+
+### M5. L'API locale est ouverte à tous les sites web
+- `allow_origins=["*"]` et aucune authentification ([api/main.py:178](api/main.py:178)).
+  N'importe quelle page ouverte dans ton navigateur peut appeler `http://127.0.0.1:8000` :
+  lire tes coordonnées (`/api/queue/current`), changer des statuts, lancer des notations payantes.
+- Le risque est réel parce que Claude in Chrome visite des sites inconnus pendant que l'API tourne.
+- Correction simple : n'autoriser que `http://localhost:3000`.
+
+### M6. Chaque action recharge beaucoup
+- Chaque changement de statut relance `/api/stats` plus 4 requêtes de comptage, chacune filtrant
+  toute la base en Python. Le plan du 10/11 note déjà environ 20 s au premier chargement.
+- Ça ralentit le tri en rafale au clavier, le geste le plus fréquent.
+
+## 4. Problèmes mineurs
+
+- « Copier » de la lettre n'a pas de gestion d'erreur ([LetterModal.tsx:64](web/src/components/LetterModal.tsx:64)).
+- La CI ne vérifie pas le front (ni `tsc`, ni `next build`) et le front n'a aucun test.
+- Le workflow `daily_scraper.yml` tourne encore chaque jour à 06:00 UTC alors que le run GitHub est abandonné.
+- L'API dépend du code Streamlit (`components/job_feed/serialize.py`, `utils/data.py`) :
+  impossible de supprimer Streamlit sans déplacer ces deux fichiers. Environ 6 000 lignes d'ancienne interface restent maintenues.
+- `src/storage/database.py` fait 2 055 lignes (déjà noté D4).
+- `datetime.utcnow()` est déprécié depuis Python 3.12.
+- `data/` reste encombré (`.bak`, sauvegarde du 30/09, `jobs.db` vide) : déjà noté le 10/11.
+- Le tableau des candidatures n'a pas de glisser-déposer (menu « Déplacer vers… » à la place).
+
+## 5. Améliorations proposées
+
+Classées par gain pour toi. « Effort » : S = une heure ou deux, M = une demi-journée, L = une journée ou plus.
+
+### Lot 1 : postuler toi-même en un geste (le plus rentable)
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P1 | Bouton « Postuler » dans le détail (raccourci `A`) : ouvre l'offre dans un onglet et affiche un panneau « kit » avec un bouton Copier par champ (coordonnées, accroche, lettre, réponses types). C'est le contenu de `/file`, sans passer par la file | M | ⏳ |
+| P2 | Dans ce panneau, deux boutons : « C'est envoyé » (POSTULÉ, sans compte rendu) et « Plus tard » | S | ⏳ |
+| P3 | La lettre se rédige en arrière-plan dès l'ouverture du panneau ; le reste du kit est utilisable tout de suite | M | ⏳ |
+| P4 | Compteur du jour dans la barre du haut (« 3 candidatures aujourd'hui, objectif 5 ») | S | ⏳ |
+
+### Lot 2 : dossiers prêts d'avance
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P5 | Préparation en arrière-plan : « Ajouter à la file » répond tout de suite, l'offre passe par un état « en préparation ». `utils/task_manager.py` fait déjà ce travail pour Streamlit | M | ⏳ |
+| P6 | Commande `python tools/prepare_top.py --n 20` : prépare les lettres des 20 meilleures offres pendant que tu fais autre chose (essai à blanc par défaut, sauvegarde avant écriture) | M | ⏳ |
+| P7 | Enregistrer la motivation courte en base au lieu de la refaire à chaque pack | S | ⏳ |
+| P8 | Une lettre en échec n'arrête plus le pack ; « envoi automatique » ne régénère plus rien | S | ⏳ |
+
+### Lot 3 : une file utilisable par toi et par Claude
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P9 | Nouvel état « À finaliser » : Claude a rempli, tu dois cliquer Envoyer. L'offre ne passe POSTULÉ qu'après ton clic « Envoyé » | M | ⏳ |
+| P10 | Liste « À finir par moi » en haut de `/file`, avec le lien de l'offre et le bouton « Envoyé » | S | ⏳ |
+| P11 | Boutons « Passer », « Retirer » et « Réessayer » sur chaque ligne de la file | S | ⏳ |
+| P12 | Compte rendu facultatif quand c'est toi qui cliques | S | ⏳ |
+
+### Lot 4 : ton profil au même endroit
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P13 | Sortir du code l'école, le niveau, les dates, la durée, l'accroche : tout dans `data/candidate.local.yaml` (déjà ignoré par Git) | S | ⏳ |
+| P14 | Banque de réponses modifiable dans le même fichier, en français et en anglais | M | ⏳ |
+| P15 | Page `/profil` dans le front Next.js pour modifier ces champs et voir ce qui manque | M | ⏳ |
+| P16 | Refuser de préparer un dossier si l'e-mail, le téléphone ou le CV PDF manque, avec un message clair | S | ⏳ |
+| P17 | 🧑 Déposer ton CV dans `data/` et renseigner `candidate.cv_pdf_path` | 5 min | 🧑 |
+
+### Lot 5 : le bon lien et la bonne méthode
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P18 | Collecter le lien de candidature et « candidature simplifiée » sur LinkedIn et WTTJ (deux colonnes à ajouter, migration) | L | ⏳ |
+| P19 | Afficher la méthode dans le tri (pastille « sans compte », « compte requis », « e-mail ») | S | ⏳ |
+| P20 | Filtre et tri « candidatures faciles d'abord » | S | ⏳ |
+| P21 | Offres par e-mail : bouton qui ouvre ta messagerie avec destinataire, objet et lettre pré-remplis. Tu envoies toi-même | S | ⏳ |
+
+### Lot 6 : Claude fait plus
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P22 | Tester le téléversement du CV par Claude in Chrome sur un formulaire Lever ou Greenhouse. Si ça marche, retirer la règle « tu ne peux joindre aucun PDF » du prompt et de `/file` | S | ⏳ |
+| P23 | Piloter la file depuis Claude Code (ou l'app Claude) au lieu de coller un prompt : Claude lit `/api/queue/current` directement | M | ⏳ |
+
+Limites qui restent : Claude ne crée pas de compte et ne saisit pas de mot de passe. Les sites
+Workday, Taleo et SuccessFactors (234 offres Workday à trier) demandent donc un compte que tu crées
+toi-même, une fois par entreprise.
+
+### Lot 7 : suivi après candidature
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P24 | Bouton « Relancer » sur les cartes de plus de 14 jours : message généré (le code existe), bouton Copier, date de relance enregistrée | M | ⏳ |
+| P25 | Date d'entretien sur la carte, affichée en tête de colonne | S | ⏳ |
+
+### Lot 8 : technique
+| # | Proposition | Effort | Statut |
+|---|---|---|---|
+| P26 | CORS limité à `http://localhost:3000` | S | ⏳ |
+| P27 | Compteurs des onglets renvoyés par un seul appel au lieu de 5 | M | ⏳ |
+| P28 | CI : ajouter `npx tsc --noEmit` et `npm run build` pour le front | S | ⏳ |
+| P29 | Désactiver le cron de `daily_scraper.yml` (garder le lancement manuel) | S | ⏳ |
+| P30 | Déplacer `serialize.py` et `utils/data.py` hors de Streamlit, puis décider du sort de Streamlit (branche + PR : suppression massive) | L | ⏳ |
+
+## 6. Par où commencer
+
+1. P17 (5 minutes, toi) puis les lots 1 et 4 : tu peux postuler toi-même en 2 ou 3 minutes par offre, sans dépendre de Claude in Chrome.
+2. Lot 2 : les lettres sont prêtes avant que tu t'assoies.
+3. Lots 3 et 6 : Claude remplit, tu valides.
+4. Lots 5, 7 et 8 ensuite.
+
+## 7. Vérifications
+
+- `pytest` : 533 tests verts en 1 min 48 (journal dans `runs/audit_pytest.log`).
+- `ruff check .` : aucune erreur.
+- `npx tsc --noEmit` dans `web/` : aucune erreur de type.
+- Non vérifié : la coupure à 30 s du relais Next.js (B1), le téléversement de fichier par Claude in Chrome (B4),
+  l'application en fonctionnement (je ne l'ai pas lancée).
