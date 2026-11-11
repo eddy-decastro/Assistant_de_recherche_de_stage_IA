@@ -68,6 +68,23 @@ def pytest_configure(config: pytest.Config) -> None:
         "allow_blocked_llm_attempt: le test vérifie volontairement le blocage d'un appel LLM "
         "(la tentative reste bloquée, mais ne fait pas échouer le test).",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_scoring_switch: le test lit le vrai interrupteur llm.scoring_api "
+        "(sinon la notation par API est considérée comme active).",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _api_scoring_on_by_default(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """La vraie config coupe la notation par API (llm.scoring_api: false). Les tests
+    des juges LLM supposent l'ancien comportement : on le rétablit, sauf pour les
+    tests marqués ``real_scoring_switch``. Les appels réseau restent bloqués."""
+    if request.node.get_closest_marker("real_scoring_switch") is None:
+        always_on = lambda _config=None: True  # noqa: E731
+        for module in ("src.matching.scoring_v4", "src.matching.llm_judge", "src.matching.llm_providers"):
+            monkeypatch.setattr(f"{module}.api_scoring_enabled", always_on, raising=False)
+    yield
 
 
 class RealLLMCallBlocked(requests.ConnectionError):

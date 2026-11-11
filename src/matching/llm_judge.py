@@ -39,6 +39,7 @@ from src.matching.llm_providers import (  # noqa: F401  (ré-exports : ancien em
     OpenAICompatibleProvider,
     _is_api_retryable,
     _log_retry,
+    api_scoring_enabled,
     get_global_rate_limiter,
 )
 from src.matching.scoring_v3 import (  # noqa: F401  (ré-exports : ancien emplacement)
@@ -235,7 +236,9 @@ class LLMJudge:
 
     @property
     def available(self) -> bool:
-        """True si une clé API principale ou de secours est configurée."""
+        """True si une clé API principale ou de secours est configurée (et la notation par API permise)."""
+        if not api_scoring_enabled(self.config):
+            return False
         return bool(self.api_key or self.fallback_api_key)
 
     @property

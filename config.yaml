@@ -680,6 +680,11 @@ ranking:
   # Coût DeepSeek estimé : ~0,1 à 0,2 centime par offre, soit < 1 $ pour 500.
   top_n_rerank: 500
 llm:
+  # Notation des offres par API : coupée (11/11/2026). Les API (DeepSeek, puis
+  # Gemini en secours) ne servent plus qu'aux lettres de motivation. Les offres
+  # se notent à la main, par agents : python tools/antigravity_v4.py export --stale,
+  # notation par Antigravity ou Claude Code, puis ingest. true = ancien comportement.
+  scoring_api: false
   provider: deepseek
   base_url: https://api.deepseek.com
   model: deepseek-chat

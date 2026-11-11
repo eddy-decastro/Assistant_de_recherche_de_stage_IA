@@ -38,9 +38,11 @@ jobs:
           restore-keys: |
             scrape-detail-cache-
 
-      - name: Lancement du Pipeline (Scraping + IA + Cloud Sync)
+      # Collecte seulement : la notation par API est coupée (config.yaml, llm.scoring_api).
+      # Les clés IA restent pour les lettres de motivation pré-générées (si activées).
+      - name: Lancement du Pipeline (Scraping + Cloud Sync, sans notation)
         env:
-          # Clés API IA
+          # Clés API IA (lettres de motivation uniquement)
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           

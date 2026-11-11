@@ -144,8 +144,20 @@ def main(argv: list[str] | None = None) -> None:
     # Évaluation des nouvelles offres (uniquement si des offres sont non notées).
     # La v4 est la note principale ; la v3 ne tourne que si scoring_v3.rerank_enabled.
     from src.matching.live_scorer import scoring_modes
+    from src.matching.llm_providers import api_scoring_enabled
 
-    use_v4, use_v3 = scoring_modes(load_config())
+    pipeline_cfg = load_config()
+    use_v4, use_v3 = scoring_modes(pipeline_cfg)
+    if not api_scoring_enabled(pipeline_cfg):
+        # Les API ne servent qu'aux lettres : la notation se lance à la main (agents).
+        waiting = len(db.get_unranked_v4_jobs(limit=100000, statuses=(STATUS_NEW,)))
+        logger.info(
+            "Notation par API coupée (llm.scoring_api: false) : %d offre(s) à noter. "
+            "Lance « python tools/antigravity_v4.py export --stale » puis fais noter "
+            "les lots par Antigravity ou Claude Code, puis « ingest ».",
+            waiting,
+        )
+        use_v4 = use_v3 = False
     pending = (use_v4 and db.get_unranked_v4_jobs(limit=1, statuses=(STATUS_NEW,))) or (
         use_v3 and db.get_unranked_jobs(limit=1)
     )

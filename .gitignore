@@ -53,3 +53,6 @@ data/profil_lettre.yaml
 
 # --- Lots de notation hors ligne (Antigravity) ---
 data/antigravity/
+
+# Fichiers mis de côté avant suppression manuelle
+data/a_supprimer/

@@ -40,8 +40,10 @@ from src.constants import (
 from src.eligibility import experience_reason, not_internship_reason
 from src.env import load_env_file
 from src.matching.llm_providers import (
+    API_SCORING_OFF_REASON,
     GeminiRateLimiter,
     OpenAICompatibleProvider,
+    api_scoring_enabled,
     get_global_rate_limiter,
 )
 from src.matching.scoring_v3 import is_title_excluded_contract, verify_citation
@@ -850,6 +852,8 @@ class LLMJudgeV4:
 
     @property
     def available(self) -> bool:
+        if not api_scoring_enabled(self.config):
+            return False
         return bool(
             self._client
             or self.google_api_key
@@ -934,6 +938,8 @@ class LLMJudgeV4:
 
     def judge(self, job: dict[str, Any]) -> dict[str, Any]:
         """Évalue une offre en v4 : filtre titre amont -> Gemini (2 essais) -> Groq -> DeepSeek -> NON_NOTE."""
+        if not api_scoring_enabled(self.config):
+            return self._non_note_result(API_SCORING_OFF_REASON)
         # 1. Exclusion amont par le titre (économise le quota API)
         exclusion_kws = self.config.get("scoring_v3", {}).get("exclusion_contract_keywords", [])
         title_excluded, title_reason = is_title_excluded_contract(job.get("title", ""), exclusion_kws)

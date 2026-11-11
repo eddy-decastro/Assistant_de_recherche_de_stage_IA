@@ -13,6 +13,23 @@ from tenacity import RetryCallState
 logger = logging.getLogger("src.matching.llm_providers")
 
 
+API_SCORING_OFF_REASON = (
+    "notation par API désactivée (llm.scoring_api: false) : "
+    "noter via Antigravity ou Claude Code (tools/antigravity_v4.py export / ingest)"
+)
+
+
+def api_scoring_enabled(config: dict[str, Any] | None) -> bool:
+    """Vrai si les juges LLM peuvent appeler une API pour NOTER les offres.
+
+    ``llm.scoring_api: false`` réserve les API aux lettres de motivation : la notation
+    se fait hors ligne par agents (Antigravity, Claude Code). Absent = activé
+    (compatibilité avec les anciennes configs et les tests).
+    """
+    llm_cfg = (config or {}).get("llm") or {}
+    return bool(llm_cfg.get("scoring_api", True))
+
+
 class DailyQuotaExceededError(Exception):
     """Exception levée lorsque le quota journalier de requêtes (RPD) est épuisé."""
     pass
