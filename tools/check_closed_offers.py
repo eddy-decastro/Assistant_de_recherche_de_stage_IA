@@ -20,6 +20,7 @@ là où elle s'était arrêtée sans resonder les offres déjà vues.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 import tempfile
@@ -42,6 +43,9 @@ from src.storage.database import Database  # noqa: E402
 from tools.antigravity_v4 import job_age_days  # noqa: E402
 
 REAL_DB = PROJECT_ROOT / "data" / "stage_copilot.db"
+# Offres que le code n'a pas pu trancher (anti-robot, 429, page ambiguë) : à faire
+# vérifier par des agents (tools/antigravity_v4.py export --verifier-ids ce_fichier).
+UNKNOWN_FILE = PROJECT_ROOT / "data" / "antigravity" / "vivacite_inconnues.json"
 
 
 def _copy(db_path: Path, target: Path) -> Path:
@@ -78,6 +82,7 @@ def run(
     reopen: bool = False,
     max_checks: int | None = None,
     checker: Any = None,
+    unknown_out: Path | None = None,
 ) -> Counter:
     if apply:
         backup_dir = db_path.parent / "backups"
@@ -104,6 +109,7 @@ def run(
 
     stats: Counter = Counter()
     by_source: Counter = Counter()
+    unknown_ids: list[str] = []
     start = time.monotonic()
     try:
         for index, job in enumerate(candidates, start=1):
@@ -125,6 +131,8 @@ def run(
                 stats["rouvertes"] += 1
             else:
                 stats[verdict.status] += 1
+                if verdict.status == "inconnu":
+                    unknown_ids.append(str(job["id"]))
             if index % 50 == 0 or index == len(candidates):
                 elapsed = time.monotonic() - start
                 print(f"  {index}/{len(candidates)} en {elapsed / 60:.1f} min — {dict(stats)}", flush=True)
@@ -132,6 +140,10 @@ def run(
         if own_checker:
             checker.close()
 
+    if unknown_out is not None:
+        unknown_out.parent.mkdir(parents=True, exist_ok=True)
+        unknown_out.write_text(json.dumps(unknown_ids, ensure_ascii=False, indent=0), encoding="utf-8")
+        print(f"{len(unknown_ids)} offre(s) non tranchée(s) -> {unknown_out} (à faire vérifier par des agents)")
     print("Par source :", {f"{s}/{v}": n for (s, v), n in sorted(by_source.items())})
     print(f"Bilan : {dict(stats)} {'(écrit en base)' if apply else '(rien écrit dans la vraie base)'}")
     return stats
@@ -145,8 +157,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Sonder aussi les offres auto-archivées et remettre à trier les ouvertes.")
     parser.add_argument("--max", type=int, default=None, help="Nombre maximal d'offres sondées.")
     parser.add_argument("--db", type=Path, default=REAL_DB)
+    parser.add_argument("--liste-inconnues", type=Path, default=UNKNOWN_FILE, dest="unknown_out",
+                        help="Fichier JSON des offres non tranchées (défaut : data/antigravity/vivacite_inconnues.json).")
     args = parser.parse_args(argv)
-    run(args.apply, db_path=args.db, age_days=args.age, reopen=args.reopen, max_checks=args.max)
+    run(args.apply, db_path=args.db, age_days=args.age, reopen=args.reopen, max_checks=args.max,
+        unknown_out=args.unknown_out)
     return 0
 
 

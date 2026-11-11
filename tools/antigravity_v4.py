@@ -13,6 +13,9 @@ Deux commandes :
         contient des lots pas encore ingérés (sinon les entrées d'une mission en cours
         seraient effacées) ; --force passe outre.
 
+        --verifier-ids FICHIER : ajoute en « vérifier » les offres listées (JSON d'ids), par
+        exemple celles que tools/check_closed_offers.py n'a pas pu trancher.
+
         --verifier-plus-vieux-que 7 : ajoute les offres à trier déjà notées et publiées
         depuis au moins 7 jours, avec ``"mission": "verifier"`` (vivacité seule).
 
@@ -162,6 +165,7 @@ def export(
     stale_only: bool = False,
     force: bool = False,
     verify_older_than_days: float | None = None,
+    verify_ids: set[str] | None = None,
 ) -> int:
     pending = pending_lots(out_dir / "out")
     if pending and not force:
@@ -188,6 +192,13 @@ def export(
             # Meilleures notes d'abord : si le temps manque, les offres qui comptent sont vérifiées.
             key=lambda j: (-(j.get("v4_display_score") or 0.0), str(j["id"])),
         )
+    if verify_ids:
+        # Offres que la vérification par code n'a pas su trancher (check_closed_offers).
+        already = to_grade | {str(j["id"]) for j in to_verify}
+        to_verify += [
+            j for j in exportable
+            if str(j["id"]) in verify_ids and str(j["id"]) not in already
+        ]
     records = [_export_record(j) for j in jobs] + [_export_record(j, "verifier") for j in to_verify]
 
     in_dir = out_dir / "in"
@@ -355,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
                        dest="verify_days",
                        help="Ajouter, en « vérifier seulement », les offres à trier déjà notées "
                             "et publiées il y a au moins JOURS jours.")
+    p_exp.add_argument("--verifier-ids", type=Path, default=None, dest="verify_ids",
+                       help="Fichier JSON d'identifiants à vérifier seulement (ex. "
+                            "data/antigravity/vivacite_inconnues.json écrit par check_closed_offers).")
     p_ing = sub.add_parser("ingest")
     p_ing.add_argument("--dry-run", action="store_true")
     for p in (p_exp, p_ing):
@@ -363,8 +377,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "export":
         try:
+            ids = (set(json.loads(args.verify_ids.read_text(encoding="utf-8")))
+                   if args.verify_ids else None)
             export(args.batch_size, out_dir=args.dir, stale_only=args.stale, force=args.force,
-                   verify_older_than_days=args.verify_days)
+                   verify_older_than_days=args.verify_days, verify_ids=ids)
         except PendingLotsError as exc:
             print(f"Export refusé : {exc}")
             return 1

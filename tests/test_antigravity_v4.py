@@ -170,3 +170,22 @@ def test_export_verify_only_old_offers_and_ingest_liveness_alone(tmp_path: Path)
     job = Database(str(db_path)).get_job("vieille")
     assert stats["verifiees_seulement"] == 1 and stats["fermees"] == 1
     assert job["status"] == STATUS_IGNORED and job["v4_display_score"] == score_before
+
+
+def test_export_verify_ids_from_code_check(tmp_path: Path) -> None:
+    """--verifier-ids : seules les offres non tranchées par le code partent en « vérifier »."""
+    db_path = tmp_path / "base.db"
+    db = Database(str(db_path))
+    for name in ("inconnue", "ouverte"):
+        db.upsert_job(_job(name, STATUS_NEW))
+    work = tmp_path / "ag"
+    (work / "out").mkdir(parents=True)
+    (work / "out" / "lot_001_out.json").write_text(json.dumps({
+        "inconnue": {"evaluation": _valid_llm_payload()},
+        "ouverte": {"evaluation": _valid_llm_payload()},
+    }), encoding="utf-8")
+    ag.ingest(False, db_path=db_path, work_dir=work)
+
+    n = ag.export(10, db_path=db_path, out_dir=work, stale_only=True, verify_ids={"inconnue", "absente"})
+    lot = json.loads((work / "in" / "lot_001.json").read_text(encoding="utf-8"))
+    assert n == 1 and lot[0]["id"] == "inconnue" and lot[0]["mission"] == "verifier"
