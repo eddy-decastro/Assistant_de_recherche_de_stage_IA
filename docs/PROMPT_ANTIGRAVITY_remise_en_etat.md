@@ -1,3 +1,5 @@
+> **Remplacé le 11/11/2026** par `docs/PROMPT_ANTIGRAVITY_agents_remise_a_zero.md` : le recalcul, le scraping, les doublons identiques et la vérification des offres fermées par code ont été faits par Claude Code. Ne lance plus ce prompt.
+
 # Mission Antigravity : remise en état de la base, gros scraping, notation (sans API de LLM)
 
 À coller tel quel dans Antigravity, à la racine du dépôt `Assistant_recherche_de_stage` (Windows, PowerShell).

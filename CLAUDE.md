@@ -12,8 +12,10 @@ App Web Next.js (port 3000) + FastAPI (port 8000) + SQLite de suivi de candidatu
 - Tests : `pytest` (config dans `pytest.ini`).
 - Lint : `ruff check .`
 - App : `python run_web.py` (FastAPI sur http://127.0.0.1:8000 + Next.js React sur http://localhost:3000). Ne PAS lancer `run_app.py` (Streamlit déprécié).
-- Pipeline : `python run_scrapers.py`, `python run_pipeline.py`.
-- Notation hors ligne : `python tools/antigravity_v4.py export --stale` puis `ingest --dry-run`, puis `ingest`.
+- Pipeline : `python run_scrapers.py`, `python run_pipeline.py` (complet), `python run_pipeline.py --leger` (passe Fraîcheur seule). L'Action GitHub fait une collecte légère 3 fois par jour et une complète le lundi.
+- Notation : **jamais par API** (`llm.scoring_api: false`, les API DeepSeek/Gemini ne servent qu'aux lettres). Notation par agents (Antigravity, Claude Code) : `python tools/antigravity_v4.py export --stale` puis `ingest --dry-run`, puis `ingest`. Prompt : `docs/PROMPT_ANTIGRAVITY_agents_remise_a_zero.md`.
+- Offres fermées : `python tools/check_closed_offers.py --apply` (code), puis les non tranchées (`data/antigravity/vivacite_inconnues.json`) par agents via `antigravity_v4.py export --verifier-ids`.
+- Doublons : identiques par code (`tools/dedupe_reposts.py`), le reste par agents entreprise par entreprise (`tools/agents_doublons.py export` / `ingest`).
 - Entretien de la base (essai à blanc par défaut, `--apply` pour écrire) : `python tools/dedupe_reposts.py`, `python tools/rotate_backups.py`.
 
 ## Conventions
