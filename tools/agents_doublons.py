@@ -231,6 +231,8 @@ mission décrite (republication, version anglaise et française, LinkedIn + site
 titre légèrement reformulé, même référence d'offre).
 Ce n'est PAS un doublon : sujets différents (ex. « NLP » et « vision »), villes différentes
 avec des textes différents, deux stages distincts de la même équipe. Dans le doute : PAS doublon.
+Même poste publié dans deux régions différentes (ex. Grenoble et Paris) : PAS doublon, Eddy
+choisit la ville (l'ingestion refuse de toute façon ces retraits).
 
 Pour chaque ensemble de doublons, choisis l'offre à GARDER :
 1. une offre où "decision_eddy" vaut true (il a déjà postulé ou décidé) ;
@@ -295,6 +297,31 @@ def export(max_per_lot: int = 40, db_path: Path = REAL_DB, out_dir: Path = WORK_
     return stats
 
 
+# Lieux considérés comme une même zone (Île-de-France) ou des villes voisines.
+_SAME_AREA = frozenset({
+    "paris", "ville de paris", "levallois-perret", "saint-denis", "rueil-malmaison", "châtillon",
+    "osny", "pontoise", "gif-sur-yvette", "essonne", "palaiseau", "saclay", "massy", "vélizy-villacoublay",
+    "boulogne-billancourt", "issy-les-moulineaux", "courbevoie", "puteaux", "la défense", "nanterre",
+})
+_NEIGHBOURS = frozenset({frozenset({"toulouse", "blagnac"}), frozenset({"croutelle", "ligugé"})})
+
+
+def _city(location: str | None) -> str:
+    return (location or "").split(",")[0].strip().casefold()
+
+
+def same_area(a: str | None, b: str | None) -> bool:
+    """Même ville, même zone (Île-de-France) ou lieu imprécis (« France », vide).
+
+    Un poste publié à Grenoble ET à Paris n'est pas retiré : Eddy peut préférer l'une des
+    deux villes (correction du 12/11/2026 : 17 retraits interrégionaux annulés).
+    """
+    ca, cb = _city(a), _city(b)
+    if ca == cb or not ca or not cb or "france" in (ca, cb):
+        return True
+    return (ca in _SAME_AREA and cb in _SAME_AREA) or frozenset({ca, cb}) in _NEIGHBOURS
+
+
 def _load_groups(in_dir: Path) -> dict[str, dict[str, set[str]]]:
     """``{lot: {groupe: ids}}`` : la vérité sur ce qui a été envoyé aux agents."""
     sent: dict[str, dict[str, set[str]]] = {}
@@ -319,7 +346,7 @@ def ingest(dry_run: bool, db_path: Path = REAL_DB, work_dir: Path = WORK_DIR) ->
     db = Database(str(target))
     jobs = {j["id"]: j for j in db.get_jobs(limit=100000)}
     stats = {"retirees": 0, "refusees_decision_eddy": 0, "refusees_hors_groupe": 0,
-             "deja_hors_jeu": 0, "lots_lus": 0}
+             "refusees_villes_differentes": 0, "deja_hors_jeu": 0, "lots_lus": 0}
     for path in sorted((work_dir / "out").glob("lot_*_out.json")):
         lot_name = path.stem.removesuffix("_out")
         groups_sent = sent.get(lot_name, {})
@@ -341,6 +368,9 @@ def ingest(dry_run: bool, db_path: Path = REAL_DB, work_dir: Path = WORK_DIR) ->
                         continue
                     if is_eddy_decision(job):
                         stats["refusees_decision_eddy"] += 1
+                        continue
+                    if not same_area(jobs[keep].get("location"), job.get("location")):
+                        stats["refusees_villes_differentes"] += 1
                         continue
                     if job.get("status") not in (STATUS_NEW, STATUS_EXCLUDED):
                         stats["deja_hors_jeu"] += 1

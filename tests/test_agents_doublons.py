@@ -78,3 +78,30 @@ def test_ingest_protects_eddy_and_checks_group(tmp_path: Path) -> None:
     assert "doublon de keep" in dup["user_notes"]
     assert fresh.get_job("eddy")["status"] == STATUS_APPLIED
     assert fresh.get_job("autre")["status"] == STATUS_NEW
+
+
+def test_same_area_rule() -> None:
+    assert ad.same_area("Paris, France", "Levallois-Perret")
+    assert ad.same_area("Toulouse", "Blagnac, France")
+    assert ad.same_area("Lyon", "France")
+    assert not ad.same_area("Grenoble", "Paris, France")
+    assert not ad.same_area("Bordeaux", "Lyon")
+
+
+def test_ingest_refuses_cross_region(tmp_path: Path) -> None:
+    db_path = tmp_path / "base.db"
+    db = Database(str(db_path))
+    keep, other = _job("keep", "Stage vision"), _job("grenoble", "Stage vision")
+    other["location"] = "Grenoble"
+    db.upsert_job(keep)
+    db.upsert_job(other)
+    work = tmp_path / "vague"
+    (work / "in").mkdir(parents=True)
+    (work / "out").mkdir()
+    (work / "in" / "lot_001.json").write_text(json.dumps({"groupes": [{"groupe": "g0001", "entreprise": "Thales",
+        "offres": [{"id": "keep"}, {"id": "grenoble"}]}]}), encoding="utf-8")
+    (work / "out" / "lot_001_out.json").write_text(json.dumps({"groupes": [{"groupe": "g0001", "doublons": [
+        {"garder": "keep", "retirer": ["grenoble"], "raison": "multi-sites"}]}]}), encoding="utf-8")
+    stats = ad.ingest(dry_run=False, db_path=db_path, work_dir=work)
+    assert stats["retirees"] == 0 and stats["refusees_villes_differentes"] == 1
+    assert Database(str(db_path)).get_job("grenoble")["status"] == STATUS_NEW
