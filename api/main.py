@@ -491,7 +491,10 @@ def create_app(db_instance: Database | None = None, *, liveness_checker: Any = N
     ) -> dict[str, Any]:
         if payload.status not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail=f"Statut invalide : {payload.status}")
-        ok = db.update_status(job_id, payload.status, rejection_reason=payload.rejection_reason)
+        # user_action : un clic d'Eddy efface un motif automatique (auto_archive…).
+        ok = db.update_status(
+            job_id, payload.status, rejection_reason=payload.rejection_reason, user_action=True
+        )
         invalidate()
         if not ok:
             raise HTTPException(status_code=404, detail="Offre introuvable")
@@ -518,7 +521,7 @@ def create_app(db_instance: Database | None = None, *, liveness_checker: Any = N
             )
         else:
             count = db.bulk_update_status(
-                payload.ids, payload.status, rejection_reason=payload.rejection_reason
+                payload.ids, payload.status, rejection_reason=payload.rejection_reason, user_action=True
             )
         invalidate()
         return {"ok": True, "updated": count, "status": payload.status}

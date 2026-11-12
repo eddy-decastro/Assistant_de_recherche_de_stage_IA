@@ -449,3 +449,40 @@ def test_reopen_rediscovered_only_auto_archived(tmp_path: Path) -> None:
     assert "Revue au scraping" in db.get_job("archivee")["user_notes"]
     assert db.get_job("fermee")["status"] == STATUS_IGNORED
     assert db.get_job("absente")["status"] == STATUS_IGNORED
+
+
+def test_manual_archive_is_never_reopened(tmp_path: Path) -> None:
+    """Offre archivée par le temps qu'Eddy remet à trier puis ignore sans motif :
+    le motif automatique est effacé, le scraping ne la remet pas à trier."""
+    from src.constants import STATUS_IGNORED
+    from src.notifications import reopen_rediscovered
+
+    db = Database(tmp_path / "test.db")
+    db.upsert_job({"id": "j", "title": "Stage ML", "company": "X", "url": "https://example.com/jobs/j",
+                   "canonical_url": "example.com/jobs/j", "status": STATUS_IGNORED})
+    db.update_status("j", STATUS_IGNORED, rejection_reason="auto_archive")
+    db.update_status("j", STATUS_NEW, user_action=True)
+    db.update_status("j", STATUS_IGNORED, user_action=True)
+    assert db.get_job("j")["rejection_reason"] in (None, "")
+    assert reopen_rediscovered(db, {"example.com/jobs/j"}) == 0
+    assert db.get_job("j")["status"] == STATUS_IGNORED
+
+    # Même règle en lot ; un motif choisi par Eddy est conservé.
+    db.update_status("j", STATUS_IGNORED, rejection_reason="auto_archive")
+    db.bulk_update_status(["j"], STATUS_IGNORED, user_action=True)
+    assert db.get_job("j")["rejection_reason"] in (None, "")
+    db.update_status("j", STATUS_IGNORED, rejection_reason="lieu")
+    db.bulk_update_status(["j"], STATUS_IGNORED, user_action=True)
+    assert db.get_job("j")["rejection_reason"] == "lieu"
+
+
+def test_automatic_status_change_keeps_auto_reason(tmp_path: Path) -> None:
+    """Sans user_action (code automatique), le motif est conservé comme avant."""
+    from src.constants import STATUS_IGNORED
+
+    db = Database(tmp_path / "test.db")
+    db.upsert_job({"id": "j", "title": "Stage ML", "company": "X", "url": "https://example.com/jobs/j",
+                   "status": STATUS_IGNORED})
+    db.update_status("j", STATUS_IGNORED, rejection_reason="auto_archive")
+    db.update_status("j", STATUS_IGNORED)
+    assert db.get_job("j")["rejection_reason"] == "auto_archive"

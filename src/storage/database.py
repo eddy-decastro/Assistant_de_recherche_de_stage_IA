@@ -36,6 +36,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.constants import (
+    AUTO_IGNORE_REASONS,
     REINSTATED_REASON,
     IGNORE_COMMENT_MAX_LENGTH,
     IGNORE_REASONS,
@@ -698,8 +699,15 @@ class Database:
         job_id: str,
         status: str,
         rejection_reason: str | None = None,
+        user_action: bool = False,
     ) -> bool:
-        """Met à jour le statut d'une offre. Retourne False si l'offre n'existe pas."""
+        """Met à jour le statut d'une offre. Retourne False si l'offre n'existe pas.
+
+        ``user_action=True`` (clic d'Eddy dans l'appli) : un motif AUTOMATIQUE resté
+        sur l'offre (``auto_archive``, ``offre_fermee``, ``doublon``) est effacé quand
+        aucun motif n'est donné. Sinon une offre qu'Eddy archive lui-même garderait
+        « auto_archive » et le scraping la remettrait à trier (reopen_rediscovered).
+        """
         if status not in VALID_STATUSES:
             raise ValueError(f"Statut invalide: {status!r} (attendu: {sorted(VALID_STATUSES)})")
         with self.SessionLocal() as session:
@@ -709,6 +717,8 @@ class Database:
             record.status = status
             if rejection_reason is not None:
                 record.rejection_reason = rejection_reason[:300] or None
+            elif user_action and (record.rejection_reason or "") in AUTO_IGNORE_REASONS:
+                record.rejection_reason = None
             if status != STATUS_IGNORED:
                 record.rejection_comment = None  # le commentaire explique un « ignorer »
             if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
@@ -721,8 +731,12 @@ class Database:
         job_ids: Iterable[str],
         status: str,
         rejection_reason: str | None = None,
+        user_action: bool = False,
     ) -> int:
-        """Met à jour en lot le statut d'une liste d'offres dans une seule transaction."""
+        """Met à jour en lot le statut d'une liste d'offres dans une seule transaction.
+
+        ``user_action`` : même règle que ``update_status`` (motif automatique effacé).
+        """
         if status not in VALID_STATUSES:
             raise ValueError(f"Statut invalide: {status!r} (attendu: {sorted(VALID_STATUSES)})")
         ids = [str(jid) for jid in job_ids if jid]
@@ -736,6 +750,8 @@ class Database:
                 record.status = status
                 if rejection_reason is not None:
                     record.rejection_reason = rejection_reason[:300] or None
+                elif user_action and (record.rejection_reason or "") in AUTO_IGNORE_REASONS:
+                    record.rejection_reason = None
                 if status != STATUS_IGNORED:
                     record.rejection_comment = None  # le commentaire explique un « ignorer »
                 if status in (STATUS_APPLIED, STATUS_INTERVIEW) and record.applied_at is None:
