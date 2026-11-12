@@ -747,10 +747,13 @@ automations:
   # expired_offers_recheck_days jours sont servies par le cache, gratuitement).
   expired_offers_max_checks: 40
   expired_offers_recheck_days: 3
-  # Ancien archivage par âge (IGNORÉ au-delà de N jours, sans appel réseau) :
-  # désactivé le 04/11/2026, il archivait des offres encore ouvertes.
-  auto_archive_enabled: false
-  auto_archive_age_days: 21
+  # Archivage par âge (12/11/2026) : une offre « à trier » ni publiée ni REVUE au
+  # scraping depuis N jours passe en IGNORÉ (auto_archive). L'âge compte depuis le
+  # dernier passage du scraping (seen_jobs.last_seen_at) : une offre encore en ligne
+  # n'est pas archivée, et une offre archivée que le scraping revoit revient à trier
+  # avec sa note (reopen_rediscovered). Retrouvables dans l'appli (offres ignorées).
+  auto_archive_enabled: true
+  auto_archive_age_days: 30
   # Envoyer un résumé de fin de pipeline par Webhook (Discord / Slack / Telegram)
   notifications_enabled: false
   notification_min_score: 75

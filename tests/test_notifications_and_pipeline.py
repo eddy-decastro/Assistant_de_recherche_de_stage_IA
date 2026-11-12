@@ -409,3 +409,43 @@ def test_pipeline_conditional_steps(tmp_path: Path) -> None:
         assert mock_backfill.call_count == 1
         # Étape 1 + Étape 3 (rerank) + Étape 4 (recompute-scores car v1 présent)
         assert mock_scrapers.call_count == 3
+
+
+def test_archive_counts_from_last_scraping_sighting(tmp_path: Path) -> None:
+    """Une vieille offre encore revue au scraping (seen_jobs) n'est pas archivée."""
+    from src.notifications import archive_old_offers
+
+    db = Database(tmp_path / "test.db")
+    old = datetime.now() - timedelta(days=60)
+    for job_id in ("vue_recemment", "jamais_revue"):
+        db.upsert_job({"id": job_id, "title": "Stage ML", "company": "X",
+                       "url": f"https://example.com/jobs/{job_id}", "status": STATUS_NEW,
+                       "canonical_url": f"example.com/jobs/{job_id}",
+                       "created_at": old, "published_at": old})
+    url = db.get_job("vue_recemment")["canonical_url"]
+    assert url
+    db.upsert_seen_jobs([{"source": "linkedin", "external_key": "k1", "canonical_url": url,
+                          "title": "Stage ML", "decision": "KNOWN", "rejection_reason": None,
+                          "filter_version": None, "job_id": "vue_recemment"}])
+    config = {"automations": {"auto_archive_enabled": True, "auto_archive_age_days": 30}}
+    assert archive_old_offers(db, config=config) == 1
+    assert db.get_job("vue_recemment")["status"] == STATUS_NEW
+    assert db.get_job("jamais_revue")["status"] == "IGNORÉ"
+
+
+def test_reopen_rediscovered_only_auto_archived(tmp_path: Path) -> None:
+    from src.constants import STATUS_IGNORED
+    from src.notifications import reopen_rediscovered
+
+    db = Database(tmp_path / "test.db")
+    for job_id, reason in (("archivee", "auto_archive"), ("fermee", "offre_fermee"), ("absente", "auto_archive")):
+        db.upsert_job({"id": job_id, "title": "Stage ML", "company": "X",
+                       "url": f"https://example.com/jobs/{job_id}", "status": STATUS_IGNORED,
+                       "canonical_url": f"example.com/jobs/{job_id}"})
+        db.update_status(job_id, STATUS_IGNORED, rejection_reason=reason)
+    seen = {db.get_job("archivee")["canonical_url"], db.get_job("fermee")["canonical_url"]}
+    assert reopen_rediscovered(db, seen) == 1
+    assert db.get_job("archivee")["status"] == STATUS_NEW
+    assert "Revue au scraping" in db.get_job("archivee")["user_notes"]
+    assert db.get_job("fermee")["status"] == STATUS_IGNORED
+    assert db.get_job("absente")["status"] == STATUS_IGNORED

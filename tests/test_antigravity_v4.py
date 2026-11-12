@@ -47,9 +47,10 @@ def test_export_skips_eddy_decisions(tmp_path: Path) -> None:
     before = _rows(db_path)
     work = tmp_path / "ag"
     n = ag.export(10, db_path=db_path, out_dir=work)
-    assert n == 4
+    # Les offres auto-archivées (plus de 30 jours sans être revues) ne partent plus à la notation.
+    assert n == 2
     ids = {r["id"] for r in json.loads((work / "in" / "lot_001.json").read_text(encoding="utf-8"))}
-    assert ids == {"nouveau", "exclu", "archive", "archive_ferme"}
+    assert ids == {"nouveau", "exclu"}
     assert (work / "prompt_systeme_v4.txt").read_text(encoding="utf-8").strip()
     assert _rows(db_path) == before
 
@@ -96,7 +97,7 @@ def test_export_refuses_when_lots_not_ingested(tmp_path: Path) -> None:
     (work / "out" / "lot_001_out.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ag.PendingLotsError):
         ag.export(10, db_path=db_path, out_dir=work)
-    assert ag.export(10, db_path=db_path, out_dir=work, force=True) == 4
+    assert ag.export(10, db_path=db_path, out_dir=work, force=True) == 2
 
 
 def test_real_ingest_marks_lots_as_ingested(tmp_path: Path) -> None:
@@ -110,7 +111,7 @@ def test_real_ingest_marks_lots_as_ingested(tmp_path: Path) -> None:
     assert ag.pending_lots(work / "out")
     ag.ingest(False, db_path=db_path, work_dir=work)
     assert ag.pending_lots(work / "out") == []
-    assert ag.export(10, db_path=db_path, out_dir=work) == 4
+    assert ag.export(10, db_path=db_path, out_dir=work) == 2
 
 
 def test_export_stale_only_skips_current_grid(tmp_path: Path) -> None:
@@ -124,7 +125,7 @@ def test_export_stale_only_skips_current_grid(tmp_path: Path) -> None:
     job = Database(str(db_path)).get_job("nouveau")
     assert job["v4_grid_version"] == ag.get_grid_version_v4()
     n = ag.export(10, db_path=db_path, out_dir=work, stale_only=True)
-    assert n == 3
+    assert n == 1
     ids = {r["id"] for r in json.loads((work / "in" / "lot_001.json").read_text(encoding="utf-8"))}
     assert "nouveau" not in ids
 

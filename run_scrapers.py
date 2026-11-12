@@ -1001,6 +1001,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.dedupe:
         _dedupe_jobs(db, dry_run=args.dry_run)
 
+    # 3 bis. Une offre auto-archivée (plus de 30 jours) que le scraping revoit dans les
+    #        résultats est encore en ligne : elle revient à trier, avec sa note.
+    seen_urls = {entry.canonical_url for entry in (getattr(result, "seen", None) or []) if entry.canonical_url}
+    if seen_urls:
+        from src.notifications import reopen_rediscovered
+
+        reopened = reopen_rediscovered(db, seen_urls)
+        if reopened:
+            logger.info(" Offres archivées revues      : %d remise(s) à trier (note conservée)", reopened)
+
     # 4. Télémétrie : mémoire de collecte (toutes les cartes vues, y compris les
     #    rejets) puis une ligne par passe avec sa raison exacte d'arrêt.
     lost_passes: list[PassReport] = []

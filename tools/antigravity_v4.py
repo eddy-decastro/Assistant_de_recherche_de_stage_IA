@@ -178,7 +178,12 @@ def export(
     db = Database(str(copy))
     config = load_config()
     exportable = [j for j in db.get_jobs(limit=100000) if is_exportable(j)]
-    jobs = exportable
+    # À noter : offres vivantes seulement. Les auto-archivées (plus de 30 jours sans être
+    # revues au scraping) ne sont pas notées ; si elles reviennent, elles le seront.
+    jobs = [
+        j for j in exportable
+        if not (j.get("status") == STATUS_IGNORED and (j.get("rejection_reason") or "") == AUTO_ARCHIVE_REASON)
+    ]
     if stale_only:
         current = get_grid_version_v4()
         jobs = [j for j in jobs if is_stale(j, current)]

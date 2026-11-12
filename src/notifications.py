@@ -32,6 +32,8 @@ logger = logging.getLogger("src.notifications")
 __all__ = [
     "archive_expired_offers",
     "archive_old_offers",
+    "reopen_rediscovered",
+    "last_seen_by_url",
     "pregenerate_top_cover_letters",
     "send_pipeline_digest",
 ]
@@ -290,22 +292,61 @@ def archive_expired_offers(
     return archived_count
 
 
+def last_seen_by_url(db: Database) -> dict[str, datetime]:
+    """Dernière fois où chaque offre a été revue par le scraping (``seen_jobs.last_seen_at``).
+
+    Clé : URL canonique. Une offre encore présente dans les résultats de recherche y
+    est « revue » à chaque passage, même si sa date de publication est ancienne.
+    """
+    engine = getattr(db, "engine", None)
+    if engine is None:
+        return {}
+    from sqlalchemy import text
+
+    seen: dict[str, datetime] = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT canonical_url, MAX(last_seen_at) FROM seen_jobs "
+                "WHERE canonical_url IS NOT NULL AND canonical_url != '' GROUP BY canonical_url"
+            ))
+            for url, when in rows:
+                dt = _parse_datetime(when if isinstance(when, datetime) else str(when or ""))
+                if dt is not None:
+                    seen[str(url)] = dt.replace(tzinfo=None)
+    except Exception as exc:  # table absente (vieille base, tests) : on ignore
+        logger.debug("seen_jobs illisible : %s", exc)
+    return seen
+
+
+def _last_activity(job: dict[str, Any], seen: dict[str, datetime]) -> datetime | None:
+    """Date la plus récente entre la publication (ou collecte) et le dernier passage du scraping."""
+    dates = [
+        d.replace(tzinfo=None)
+        for d in (_parse_datetime(job.get("published_at")) or _parse_datetime(job.get("created_at")),)
+        if d is not None
+    ]
+    url = str(job.get("canonical_url") or "")
+    if url and url in seen:
+        dates.append(seen[url])
+    return max(dates) if dates else None
+
+
 def archive_old_offers(
     db: Database,
     config: dict[str, Any] | None = None,
 ) -> int:
-    """Passe en IGNORÉ (archivé) les offres 'NOUVEAU' plus vieilles que ``auto_archive_age_days``.
+    """Archive (IGNORÉ, raison ``auto_archive``) les offres « à trier » trop anciennes.
 
-    DÉSACTIVÉ par défaut (``auto_archive_enabled: false``) depuis le 04/11/2026 :
-    l'âge archivait des offres encore ouvertes (981 offres, dont 92 notées ≥ 80).
-    La détection d'offre fermée (``archive_expired_offers``) la remplace.
+    L'âge compte depuis la DERNIÈRE ACTIVITÉ : la date de publication (sinon de
+    collecte) ou, si elle est plus récente, la dernière fois que le scraping a revu
+    l'offre dans les résultats de recherche (``seen_jobs``). Une offre toujours en ligne
+    et revue récemment n'est donc pas archivée. Une offre archivée qui réapparaît au
+    scraping est remise à trier avec sa note (``reopen_rediscovered``).
 
-    L'âge se mesure à la date de publication si elle est connue, sinon à la date
-    de collecte. Les offres POSTULÉ, ENTRETIEN, IGNORÉ, REJETÉ et EXCLU ne sont
-    jamais touchées. Aucun appel réseau.
-
-    Returns:
-        Nombre d'offres archivées.
+    Réglages : ``automations.auto_archive_enabled`` et ``auto_archive_age_days``.
+    Seules les offres NOUVEAU sont touchées (jamais les décisions d'Eddy). Aucun
+    appel réseau.
     """
     cfg = config or load_config()
     auto_cfg = cfg.get("automations") or {}
@@ -313,26 +354,60 @@ def archive_old_offers(
     if not auto_cfg.get("auto_archive_enabled", False):
         return 0
 
-    age_days = int(auto_cfg.get("auto_archive_age_days", 21))
+    age_days = int(auto_cfg.get("auto_archive_age_days", 30))
 
     try:
         jobs = db.get_jobs(statuses=STATUS_NEW)
     except TypeError:
         jobs = db.get_jobs(status=STATUS_NEW)
+    seen = last_seen_by_url(db)
 
     archived_count = 0
     for job in jobs:
-        dt = _parse_datetime(job.get("published_at")) or _parse_datetime(job.get("created_at"))
+        dt = _last_activity(job, seen)
         if not dt or not _is_older_than(dt, age_days):
             continue
         db.update_status(job["id"], STATUS_IGNORED, rejection_reason="auto_archive")
         existing_notes = (job.get("user_notes") or "").strip()
-        auto_note = f"[Auto] Archivée : offre de plus de {age_days} jours"
+        auto_note = (
+            f"[Auto] Archivée : ni publiée ni revue au scraping depuis {age_days} jours "
+            "(revient à trier si le scraping la retrouve)"
+        )
         new_notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
         db.update_user_notes(job["id"], new_notes)
         archived_count += 1
 
     return archived_count
+
+
+def reopen_rediscovered(db: Database, seen_urls: Any) -> int:
+    """Remet « à trier » les offres auto-archivées que le scraping vient de revoir.
+
+    ``seen_urls`` : URL canoniques des cartes croisées pendant le run (toutes
+    décisions). Seules les offres IGNORÉ avec la raison ``auto_archive`` sont
+    rouvertes : une fermeture prouvée (``offre_fermee``), un doublon ou une décision
+    d'Eddy ne bougent pas. La note v4 est conservée : pas besoin de renoter.
+    """
+    urls = {str(u) for u in seen_urls if u}
+    if not urls:
+        return 0
+    try:
+        archived = db.get_jobs(statuses=STATUS_IGNORED)
+    except TypeError:
+        archived = db.get_jobs(status=STATUS_IGNORED)
+    today = datetime.now().strftime("%d/%m/%Y")
+    reopened = 0
+    for job in archived:
+        if (job.get("rejection_reason") or "") != "auto_archive":
+            continue
+        if str(job.get("canonical_url") or "") not in urls:
+            continue
+        db.update_status(job["id"], STATUS_NEW, rejection_reason="")
+        note = f"[Auto] Revue au scraping le {today} : remise à trier"
+        current = (job.get("user_notes") or "").strip()
+        db.update_user_notes(job["id"], f"{current}\n{note}".strip() if current else note)
+        reopened += 1
+    return reopened
 
 
 def pregenerate_top_cover_letters(
